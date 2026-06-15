@@ -33,6 +33,21 @@ MLX_API void reset_peak_memory();
  * */
 MLX_API size_t get_cache_memory();
 
+/* Get the number of live Metal resources (buffers).
+ *
+ * This is a COUNT, independent of byte usage. The Metal backend throws when it
+ * reaches the resource limit (see get_resource_limit). Many small cached
+ * buffers can push this count high while byte usage stays low.
+ * */
+MLX_API size_t get_num_resources();
+
+/* Get the hard ceiling on the number of live Metal resources (buffers).
+ *
+ * Defaults to the iogpu.rsrc_limit sysctl (~499000 when unset). Allocation
+ * throws once get_num_resources() reaches this value.
+ * */
+MLX_API size_t get_resource_limit();
+
 /* Set the memory limit.
  * The memory limit is a guideline for the maximum amount of memory to use
  * during graph evaluation. If the memory limit is exceeded and there is no

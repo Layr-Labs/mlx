@@ -37,6 +37,17 @@ class MetalAllocator : public allocator::Allocator {
   size_t get_cache_memory() {
     return buffer_cache_.cache_size();
   };
+  // Live Metal resource (buffer) COUNT and its hard ceiling. The count limit
+  // (default iogpu.rsrc_limit, ~499000) is independent of the byte limits and
+  // is what malloc() throws on when reached; exposed so callers can observe and
+  // bound it (it can be far higher than byte usage implies when many tiny
+  // buffers accumulate in the cache).
+  size_t get_num_resources() {
+    return num_resources_;
+  };
+  size_t get_resource_limit() {
+    return resource_limit_;
+  };
   size_t set_cache_limit(size_t limit);
   size_t set_memory_limit(size_t limit);
   size_t get_memory_limit();
@@ -70,6 +81,14 @@ class MetalAllocator : public allocator::Allocator {
   size_t wired_limit_{0};
   size_t num_resources_{0};
   size_t resource_limit_{0};
+
+  // Count-aware cache-reclaim high-water mark (Darkbloom): when num_resources_
+  // reaches resource_high_water_num_/den_ of resource_limit_ (90%), malloc()
+  // proactively clears the (pure-reuse) buffer cache so the resource COUNT can
+  // never reach resource_limit_ and throw, regardless of buffer-byte sizes.
+  // Integer fraction to avoid float work in the allocation hot path.
+  static constexpr size_t resource_high_water_num_ = 9;
+  static constexpr size_t resource_high_water_den_ = 10;
 
   std::mutex mutex_;
 };

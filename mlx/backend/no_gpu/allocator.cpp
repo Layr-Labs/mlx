@@ -203,6 +203,12 @@ size_t get_memory_limit() {
 size_t get_cache_memory() {
   return allocator::common_allocator().get_cache_memory();
 }
+size_t get_num_resources() {
+  return 0;
+}
+size_t get_resource_limit() {
+  return 0;
+}
 size_t set_cache_limit(size_t limit) {
   return allocator::common_allocator().set_cache_limit(limit);
 }

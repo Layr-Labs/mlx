@@ -123,6 +123,12 @@ size_t get_memory_limit() {
 size_t get_cache_memory() {
   return 0;
 }
+size_t get_num_resources() {
+  return 0;
+}
+size_t get_resource_limit() {
+  return 0;
+}
 size_t set_cache_limit(size_t) {
   return 0;
 }

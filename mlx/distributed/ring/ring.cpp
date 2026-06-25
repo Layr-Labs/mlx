@@ -91,7 +91,15 @@ namespace mlx::core::distributed::ring {
 
 constexpr const size_t ALL_SUM_SIZE = 8 * 1024 * 1024;
 constexpr const size_t ALL_SUM_BUFFERS = 2;
-constexpr const int CONN_ATTEMPTS = 5;
+// Raised from the upstream default of 5. The ring join requires both ranks to
+// reach group init within the connect retry window. When nodes are started
+// independently on separate machines (rather than co-launched), each may spend
+// seconds loading its shard before reaching accept(); with only 5 attempts we
+// observed the connecting side aborting with errno 60 (ETIMEDOUT) before its
+// peer was listening. A larger attempt count lets independently-started nodes
+// rendezvous reliably. (Does not affect co-launched setups, which connect on
+// the first attempt.)
+constexpr const int CONN_ATTEMPTS = 60;
 constexpr const int CONN_WAIT = 1000;
 constexpr const char* RING_TAG = "[ring]";
 

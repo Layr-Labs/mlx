@@ -26,9 +26,12 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/distributed.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/eval.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/event.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/fft.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/fence.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/gemms/block_mask.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/gemms/gemv.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/gemms/cublas_gemm.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/gemms/gather_gemm.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/gemms/grouped_gemm_unaligned.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/hadamard.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/jit_module.cpp
@@ -55,6 +58,12 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/sort.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/ternary.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/utils.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/qmm.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/qmm_naive.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/qmm_sm80.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/qmm_sm90.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/qmv.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm/fp_qmv.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/affine_quantize.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/fp_quantize.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/quantized.cpp
@@ -64,7 +73,6 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/worker.cpp)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/binary)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/quantized/qmm)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/unary)
 
 # fp4 is not available on < 12.8
@@ -117,8 +125,13 @@ target_compile_options(mlx
 target_compile_options(
   mlx PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>")
 
-# Required for generating optimized CUTLASS code.
+# Ignore warnings from CUTLASS.
+target_compile_options(
+  mlx
+  PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcudafe="--diag_suppress=186,2908,2361">)
+
 if(NOT MSVC)
+  # Required for generating optimized CUTLASS code.
   target_compile_options(
     mlx PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fno-strict-aliasing>")
 endif()
@@ -159,13 +172,6 @@ endif()
 message(STATUS "CUDA architectures: ${MLX_CUDA_ARCHITECTURES}")
 set_target_properties(mlx PROPERTIES CUDA_ARCHITECTURES
                                      "${MLX_CUDA_ARCHITECTURES}")
-
-# Skip Hopper-only kernels when not building for sm90a.
-if(NOT DEFINED ENV{MLX_DISABLE_SM90A_KERNELS}
-   AND (("90a" IN_LIST MLX_CUDA_ARCHITECTURES) OR ("90a-real" IN_LIST
-                                                   MLX_CUDA_ARCHITECTURES)))
-  target_compile_definitions(mlx PRIVATE MLX_CUDA_SM90A_ENABLED)
-endif()
 
 # Search CUDA libs from installed python packages.
 if(WIN32)
@@ -247,6 +253,9 @@ target_include_directories(mlx PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 # Use cublasLt.
 target_link_libraries(mlx PRIVATE CUDA::cublasLt)
 
+# Use cuFFT.
+target_link_libraries(mlx PRIVATE CUDA::cufft)
+
 # Use NVRTC and driver APIs.
 target_link_libraries(mlx PRIVATE CUDA::nvrtc CUDA::cuda_driver)
 
@@ -270,9 +279,15 @@ target_link_libraries(mlx PRIVATE CUDNN::cudnn_all)
 FetchContent_Declare(
   cutlass
   GIT_REPOSITORY https://github.com/NVIDIA/cutlass.git
-  GIT_TAG v4.3.5
+  GIT_TAG v4.4.2
   GIT_SHALLOW TRUE
   SOURCE_SUBDIR include EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(cutlass)
 target_include_directories(
   mlx SYSTEM PRIVATE $<BUILD_INTERFACE:${cutlass_SOURCE_DIR}/include>)
+
+# Install CUTLASS headers for JIT.
+install(DIRECTORY ${cutlass_SOURCE_DIR}/include/cute
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY ${cutlass_SOURCE_DIR}/include/cutlass
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

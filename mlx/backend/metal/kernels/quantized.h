@@ -2372,11 +2372,15 @@ template <
     device uint4* descriptors [[buffer(1)]],
     device uint* count [[buffer(2)]],
     const constant int& M [[buffer(3)]],
-    uint lid [[thread_index_in_threadgroup]]) {
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
   constexpr uint expert_count = 128;
   constexpr uint BM = 32;
+  constexpr uint simdgroup_count = expert_count / 32;
   threadgroup uint segment_starts[expert_count + 1];
   threadgroup uint inclusive_tile_offsets[expert_count];
+  threadgroup uint violation_votes[simdgroup_count];
 
   // One thread finds each expert's first sorted row. Thread 127 also supplies
   // the sentinel, so all 129 boundaries are ready after one barrier.
@@ -2394,7 +2398,39 @@ template <
   if (lid == expert_count - 1) {
     segment_starts[expert_count] = uint(M);
   }
+
+  // The binary search is only sound when `indices` is non-decreasing across
+  // the whole array; a mis-sorted input would silently mis-attribute rows to
+  // experts. Each thread verifies its own segment boundary against the
+  // generalized invariant `indices[start - 1] < lid <= indices[start]`
+  // (edge threads have only one neighbor to check), the simdgroups vote with
+  // simd_or, and the votes fold threadgroup-wide through shared memory. On
+  // any violation the kernel retracts the descriptor count below so the tile
+  // kernel early-returns and the host re-routes to the order-agnostic legacy
+  // path.
+  bool boundary_ok = true;
+  if (lower > 0) {
+    boundary_ok = boundary_ok && indices[lower - 1] < lid;
+  }
+  if (lower < M) {
+    boundary_ok = boundary_ok && indices[lower] >= lid;
+  }
+  const uint violation_vote = simd_or(boundary_ok ? 0u : 1u);
+  if (simd_lid == 0) {
+    violation_votes[simd_gid] = violation_vote;
+  }
   threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Every thread folds the per-simdgroup votes uniformly.
+  bool sorted_violation = false;
+  for (uint group = 0; group < simdgroup_count; ++group) {
+    sorted_violation = sorted_violation || violation_votes[group] != 0u;
+  }
+  // count[1] is the violation observability slot; count[0] is the descriptor
+  // count.
+  if (lid == 0) {
+    count[1] = sorted_violation ? 1u : 0u;
+  }
 
   const uint segment_rows = segment_starts[lid + 1] - segment_starts[lid];
   inclusive_tile_offsets[lid] = (segment_rows + BM - 1) / BM;
@@ -2416,7 +2452,11 @@ template <
   const uint descriptor_count =
       inclusive_tile_offsets[expert_count - 1];
   if (lid == expert_count - 1) {
-    count[0] = descriptor_count;
+    // A retracted count keeps the tile kernel's capacity check memory-safe
+    // (every threadgroup early-returns) and unambiguously signals the host:
+    // the assignment-count route gate guarantees M is 4096/8192/16384, so a
+    // valid build always emits at least one tile.
+    count[0] = sorted_violation ? 0u : descriptor_count;
   }
 
   // Every thread emits a strided share of the bounded descriptor array.

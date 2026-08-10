@@ -176,13 +176,13 @@ struct Gemma4ExpertQMMCounterSnapshot {
 class Gemma4ExpertQMMCounters {
  public:
   bool armed() const {
-    return armed_;
+    return armed_.load(std::memory_order_relaxed);
   }
 
-  // Recording is called only after the caller's plain armed branch. Keeping
-  // the branch at that boundary makes the unarmed inference path free of
-  // atomic operations while the engine-idle arm/disarm contract makes access
-  // to armed_ well-defined.
+  // Recording is called only after the caller's relaxed-atomic armed branch.
+  // Keeping the branch at that boundary makes the unarmed inference path free
+  // of counter atomic operations while the engine-idle arm/disarm contract
+  // makes access to armed_ well-defined.
   void record(Gemma4ExpertQMMRoute route) {
     std::atomic<uint64_t>* counter = nullptr;
     switch (route) {
@@ -226,13 +226,13 @@ class Gemma4ExpertQMMCounters {
         fallback_assignment_count_.load(std::memory_order_relaxed),
         fallback_geometry_.load(std::memory_order_relaxed),
         fallback_metallib_unavailable_.load(std::memory_order_relaxed),
-        armed_,
+        armed_.load(std::memory_order_relaxed),
     };
   }
 
   Gemma4ExpertQMMCounterSnapshot snapshot_and_disarm() {
-    const bool was_armed = armed_;
-    armed_ = false;
+    const bool was_armed = armed_.load(std::memory_order_relaxed);
+    armed_.store(false, std::memory_order_relaxed);
     auto result = snapshot();
     result.armed = was_armed;
     return result;
@@ -251,11 +251,11 @@ class Gemma4ExpertQMMCounters {
 
   void clear_and_arm() {
     reset();
-    armed_ = true;
+    armed_.store(true, std::memory_order_relaxed);
   }
 
  private:
-  bool armed_{false};
+  std::atomic<bool> armed_{false};
   std::atomic<uint64_t> hits_{0};
   std::atomic<uint64_t> fallback_nax_{0};
   std::atomic<uint64_t> fallback_outer_route_{0};

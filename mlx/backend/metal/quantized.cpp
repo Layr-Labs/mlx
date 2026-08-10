@@ -1254,7 +1254,9 @@ bool try_gemma4_expert_qmm(
 
   array descriptors({max_tile_count, 4}, uint32, nullptr, {});
   descriptors.set_data(allocator::malloc(descriptors.nbytes()));
-  array tile_count({1}, uint32, nullptr, {});
+  // count[0] is the descriptor count; count[1] is the builder's sortedness
+  // violation observability slot.
+  array tile_count({2}, uint32, nullptr, {});
   tile_count.set_data(allocator::malloc(tile_count.nbytes()));
 
   auto& compute_encoder = metal::get_command_encoder(s);
@@ -1267,6 +1269,17 @@ bool try_gemma4_expert_qmm(
   compute_encoder.set_bytes(M, 3);
   compute_encoder.dispatch_threads(
       MTL::Size(expert_count, 1, 1), MTL::Size(expert_count, 1, 1));
+
+  // The descriptor builder fail-safes to count[0] == 0 when the purportedly
+  // sorted indices violate the non-decreasing invariant its binary search
+  // relies on. A zero count is unambiguous here: the selector's assignment
+  // gate guarantees M is one of 4096/8192/16384, so a valid build always
+  // emits at least one tile. Drain the stream and re-route retracted calls
+  // to the order-agnostic legacy path rather than running the tile kernel.
+  compute_encoder.synchronize();
+  if (tile_count.data<uint32_t>()[0] == 0) {
+    return false;
+  }
 
   compute_encoder.set_compute_pipeline_state(tile_kernel);
   int c = 0;
@@ -1358,13 +1371,6 @@ void gather_qmm_rhs(
   array scales = ensure_row_contiguous(scales_, d, s);
 
   if (d.gemma4_expert_qmm_requested()) {
-    std::optional<array> expert_biases;
-    if (biases_) {
-      // Bias normalization remains private to the candidate path. The legacy
-      // block below retains its original normalization point and ordering.
-      expert_biases.emplace(ensure_row_contiguous(*biases_, d, s));
-    }
-
     auto shape_dim = [](const array& value, int axis) {
       return value.ndim() > axis ? value.shape(axis) : 0;
     };
@@ -1375,7 +1381,7 @@ void gather_qmm_rhs(
     route_input.outer_route = true;
     route_input.affine = mode == "affine";
     route_input.transpose = transpose;
-    route_input.has_bias = expert_biases.has_value();
+    route_input.has_bias = biases_.has_value();
     route_input.indices_uint32 = indices.dtype() == uint32;
     route_input.indices_contiguous = indices.flags().row_contiguous;
     route_input.x_bfloat16 = x.dtype() == bfloat16;
@@ -1384,10 +1390,11 @@ void gather_qmm_rhs(
     route_input.w_contiguous = w.flags().row_contiguous;
     route_input.scales_bfloat16 = scales.dtype() == bfloat16;
     route_input.scales_contiguous = scales.flags().row_contiguous;
-    route_input.biases_bfloat16 =
-        expert_biases && expert_biases->dtype() == bfloat16;
-    route_input.biases_contiguous =
-        expert_biases && expert_biases->flags().row_contiguous;
+    // Classification reads the raw bias tensor; normalization is spent only
+    // in the winning-route branch below. The legacy block at the end of this
+    // function retains its original normalization point and ordering.
+    route_input.biases_bfloat16 = biases_ && biases_->dtype() == bfloat16;
+    route_input.biases_contiguous = biases_ && biases_->flags().row_contiguous;
     route_input.group_size = group_size;
     route_input.bits = bits;
     route_input.expert_count =
@@ -1408,20 +1415,22 @@ void gather_qmm_rhs(
     route_input.scales_dim0 = shape_dim(scales, 0);
     route_input.scales_dim1 = shape_dim(scales, 1);
     route_input.scales_dim2 = shape_dim(scales, 2);
-    if (expert_biases) {
-      route_input.biases_rank = expert_biases->ndim();
-      route_input.biases_dim0 = shape_dim(*expert_biases, 0);
-      route_input.biases_dim1 = shape_dim(*expert_biases, 1);
-      route_input.biases_dim2 = shape_dim(*expert_biases, 2);
+    if (biases_) {
+      route_input.biases_rank = biases_->ndim();
+      route_input.biases_dim0 = shape_dim(*biases_, 0);
+      route_input.biases_dim1 = shape_dim(*biases_, 1);
+      route_input.biases_dim2 = shape_dim(*biases_, 2);
     }
 
     auto route = classify_gemma4_expert_qmm(route_input);
     if (route == Gemma4ExpertQMMRoute::hit) {
+      // A hit requires has_bias, so dereferencing biases_ is safe.
+      array expert_biases = ensure_row_contiguous(*biases_, d, s);
       if (try_gemma4_expert_qmm(
               x,
               w,
               scales,
-              *expert_biases,
+              expert_biases,
               indices,
               out,
               M,
@@ -1434,6 +1443,9 @@ void gather_qmm_rhs(
         }
         return;
       }
+      // Missing AOT kernels and the sortedness fail-safe both land in this
+      // counter bucket; in both cases the legacy route below produces the
+      // correct result.
       route = Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
     }
     if (d.gemma4_expert_qmm_diagnostics_armed()) {
@@ -1624,6 +1636,18 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   return;
 }
 
+// Single source for the sorted-RHS expert route gate. Both the diagnostics
+// record below and the dispatch decision evaluate this one predicate so a
+// future tuning change cannot desynchronize them.
+// TODO: Tune 16 and 4 here a bit better.
+static constexpr bool takes_sorted_rhs_route(
+    int M,
+    int B,
+    int E,
+    bool right_sorted) {
+  return M == 1 && B >= 16 && right_sorted && B / E >= 4;
+}
+
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& d = metal::device(s.device);
@@ -1650,7 +1674,7 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   if (d.gemma4_expert_qmm_diagnostics_armed() &&
       d.gemma4_expert_qmm_requested() &&
-      !(M == 1 && B >= 16 && right_sorted_ == true && B / E >= 4)) {
+      !takes_sorted_rhs_route(M, B, E, right_sorted_)) {
     Gemma4ExpertQMMRouteInput route_input;
     route_input.requested = true;
     route_input.outer_route = false;
@@ -1660,9 +1684,7 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
 
   // We are walking x in order and w is also in order so we can batch up the
   // matmuls and reuse reading x and w.
-  //
-  // TODO: Tune 16 and 4 here a bit better.
-  if (M == 1 && B >= 16 && right_sorted_ == true && B / E >= 4) {
+  if (takes_sorted_rhs_route(M, B, E, right_sorted_)) {
     gather_qmm_rhs(
         x,
         w,

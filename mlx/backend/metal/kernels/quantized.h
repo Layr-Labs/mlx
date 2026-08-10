@@ -2401,10 +2401,19 @@ template <
 
   // The binary search is only sound when `indices` is non-decreasing across
   // the whole array; a mis-sorted input would silently mis-attribute rows to
-  // experts. Each thread verifies its own segment boundary against the
-  // generalized invariant `indices[start - 1] < lid <= indices[start]`
-  // (edge threads have only one neighbor to check), the simdgroups vote with
-  // simd_or, and the votes fold threadgroup-wide through shared memory. On
+  // experts. The check is twofold. Each thread verifies its own segment
+  // boundary against the generalized invariant
+  // `indices[start - 1] < lid <= indices[start]` (edge threads have only one
+  // neighbor to check). Independently of that search, a strided adjacent-pair
+  // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
+  // thread `lid` covers i = lid + 1, lid + 129, ..., so the 128 threads
+  // between them inspect every adjacent pair exactly once (for the reachable
+  // M in {4096, 8192, 16384} that is between 1 and 128 iterations each).
+  // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
+  // complete proof that the array is globally non-decreasing; no
+  // intra-segment inversion can escape it. The simdgroups vote with simd_or
+  // over the conjunction, and the votes fold threadgroup-wide through shared
+  // memory; the barrier below orders both loops' results before the fold. On
   // any violation the kernel retracts the descriptor count below so the tile
   // kernel early-returns and the host re-routes to the order-agnostic legacy
   // path.
@@ -2415,7 +2424,12 @@ template <
   if (lower < M) {
     boundary_ok = boundary_ok && indices[lower] >= lid;
   }
-  const uint violation_vote = simd_or(boundary_ok ? 0u : 1u);
+  bool adjacent_ok = true;
+  for (int i = int(lid) + 1; i < M; i += int(expert_count)) {
+    adjacent_ok = adjacent_ok && indices[i - 1] <= indices[i];
+  }
+  const uint violation_vote =
+      simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
   if (simd_lid == 0) {
     violation_votes[simd_gid] = violation_vote;
   }

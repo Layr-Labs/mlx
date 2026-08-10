@@ -1000,6 +1000,8 @@ void gemma4_expert_qmm_diagnostics_snapshot(
     diagnostics->fallback_geometry = counters.fallback_geometry;
     diagnostics->fallback_metallib_unavailable =
         counters.fallback_metallib_unavailable;
+    diagnostics->fallback_sortedness_retracted =
+        counters.fallback_sortedness_retracted;
   } catch (...) {
     // Diagnostics are optional. A missing Metal device must remain observable
     // as an all-zero snapshot rather than escaping an exception through C ABI.

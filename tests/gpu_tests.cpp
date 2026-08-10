@@ -887,6 +887,7 @@ TEST_CASE("test Gemma 4 expert QMM counter invariant") {
   counters.record(Route::fallback_assignment_count);
   counters.record(Route::fallback_geometry);
   counters.record(Route::fallback_metallib_unavailable);
+  counters.record(Route::fallback_sortedness_retracted);
 
   auto snapshot = counters.snapshot();
   CHECK(snapshot.hits == 1);
@@ -897,7 +898,8 @@ TEST_CASE("test Gemma 4 expert QMM counter invariant") {
   CHECK(snapshot.fallback_assignment_count == 1);
   CHECK(snapshot.fallback_geometry == 1);
   CHECK(snapshot.fallback_metallib_unavailable == 1);
-  CHECK(snapshot.attempts() == 8);
+  CHECK(snapshot.fallback_sortedness_retracted == 1);
+  CHECK(snapshot.attempts() == 9);
 
   counters.reset();
   snapshot = counters.snapshot();
@@ -906,5 +908,54 @@ TEST_CASE("test Gemma 4 expert QMM counter invariant") {
           snapshot.fallback_outer_route + snapshot.fallback_quantization +
           snapshot.fallback_topology +
           snapshot.fallback_assignment_count + snapshot.fallback_geometry +
-          snapshot.fallback_metallib_unavailable);
+          snapshot.fallback_metallib_unavailable +
+          snapshot.fallback_sortedness_retracted);
+}
+
+TEST_CASE("test Gemma 4 expert QMM arm disarm cycle") {
+  metal::Gemma4ExpertQMMCounters counters;
+  using Route = metal::Gemma4ExpertQMMRoute;
+
+  // Counters start disarmed with an empty interval.
+  CHECK(!counters.armed());
+
+  // Arm: the interval opens with zeroed counters.
+  counters.clear_and_arm();
+  CHECK(counters.armed());
+  CHECK(counters.snapshot().attempts() == 0);
+
+  // Record across the measured interval, including the retract class the
+  // sortedness fail-safe attributes mis-sorted indices to.
+  counters.record(Route::hit);
+  counters.record(Route::fallback_sortedness_retracted);
+  counters.record(Route::fallback_metallib_unavailable);
+
+  // Disarm snapshots the interval and reports the previous armed state.
+  auto interval = counters.snapshot_and_disarm();
+  CHECK(interval.armed);
+  CHECK(!counters.armed());
+
+  // The attempts == hits + sum(fallback classes) invariant holds across the
+  // cycle, with the sortedness-retract class included in the sum.
+  CHECK(interval.attempts() == 3);
+  CHECK(interval.hits == 1);
+  CHECK(interval.fallback_sortedness_retracted == 1);
+  CHECK(interval.fallback_metallib_unavailable == 1);
+  CHECK(interval.attempts() == interval.hits + interval.fallback_nax +
+          interval.fallback_outer_route + interval.fallback_quantization +
+          interval.fallback_topology + interval.fallback_assignment_count +
+          interval.fallback_geometry + interval.fallback_metallib_unavailable +
+          interval.fallback_sortedness_retracted);
+
+  // The snapshot stays readable while disarmed.
+  CHECK(!counters.snapshot().armed);
+  CHECK(counters.snapshot().attempts() == 3);
+
+  // Re-arming clears the interval again, and disarming it reports armed.
+  counters.clear_and_arm();
+  CHECK(counters.armed());
+  auto reopened = counters.snapshot_and_disarm();
+  CHECK(reopened.armed);
+  CHECK(reopened.attempts() == 0);
+  CHECK(!counters.armed());
 }

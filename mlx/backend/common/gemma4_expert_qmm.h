@@ -25,6 +25,7 @@ typedef struct mlx_metal_gemma4_expert_qmm_diagnostics {
   uint64_t fallback_assignment_count;
   uint64_t fallback_geometry;
   uint64_t fallback_metallib_unavailable;
+  uint64_t fallback_sortedness_retracted;
 } mlx_metal_gemma4_expert_qmm_diagnostics;
 
 MLX_API void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot(
@@ -55,6 +56,7 @@ enum class Gemma4ExpertQMMRoute : uint8_t {
   fallback_assignment_count,
   fallback_geometry,
   fallback_metallib_unavailable,
+  fallback_sortedness_retracted,
 };
 
 struct Gemma4ExpertQMMRouteInput {
@@ -163,13 +165,14 @@ struct Gemma4ExpertQMMCounterSnapshot {
   uint64_t fallback_assignment_count{0};
   uint64_t fallback_geometry{0};
   uint64_t fallback_metallib_unavailable{0};
+  uint64_t fallback_sortedness_retracted{0};
   bool armed{false};
 
   uint64_t attempts() const {
     return hits + fallback_nax + fallback_outer_route +
         fallback_quantization + fallback_topology +
         fallback_assignment_count + fallback_geometry +
-        fallback_metallib_unavailable;
+        fallback_metallib_unavailable + fallback_sortedness_retracted;
   }
 };
 
@@ -212,6 +215,9 @@ class Gemma4ExpertQMMCounters {
       case Gemma4ExpertQMMRoute::fallback_metallib_unavailable:
         counter = &fallback_metallib_unavailable_;
         break;
+      case Gemma4ExpertQMMRoute::fallback_sortedness_retracted:
+        counter = &fallback_sortedness_retracted_;
+        break;
     }
     counter->fetch_add(1, std::memory_order_relaxed);
   }
@@ -226,6 +232,7 @@ class Gemma4ExpertQMMCounters {
         fallback_assignment_count_.load(std::memory_order_relaxed),
         fallback_geometry_.load(std::memory_order_relaxed),
         fallback_metallib_unavailable_.load(std::memory_order_relaxed),
+        fallback_sortedness_retracted_.load(std::memory_order_relaxed),
         armed_.load(std::memory_order_relaxed),
     };
   }
@@ -247,6 +254,7 @@ class Gemma4ExpertQMMCounters {
     fallback_assignment_count_.store(0, std::memory_order_relaxed);
     fallback_geometry_.store(0, std::memory_order_relaxed);
     fallback_metallib_unavailable_.store(0, std::memory_order_relaxed);
+    fallback_sortedness_retracted_.store(0, std::memory_order_relaxed);
   }
 
   void clear_and_arm() {
@@ -264,6 +272,7 @@ class Gemma4ExpertQMMCounters {
   std::atomic<uint64_t> fallback_assignment_count_{0};
   std::atomic<uint64_t> fallback_geometry_{0};
   std::atomic<uint64_t> fallback_metallib_unavailable_{0};
+  std::atomic<uint64_t> fallback_sortedness_retracted_{0};
 };
 
 } // namespace mlx::core::metal

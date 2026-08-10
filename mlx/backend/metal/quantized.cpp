@@ -1218,7 +1218,7 @@ void gather_qmm_rhs_nax(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
-bool try_gemma4_expert_qmm(
+Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
     const array& x,
     const array& w,
     const array& scales,
@@ -1242,7 +1242,7 @@ bool try_gemma4_expert_qmm(
     descriptor_kernel = d.get_kernel(descriptor_kernel_name);
     tile_kernel = d.get_kernel(tile_kernel_name);
   } catch (...) {
-    return false;
+    return Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
   }
 
   constexpr int bm = 32;
@@ -1277,8 +1277,13 @@ bool try_gemma4_expert_qmm(
   // emits at least one tile. Drain the stream and re-route retracted calls
   // to the order-agnostic legacy path rather than running the tile kernel.
   compute_encoder.synchronize();
-  if (tile_count.data<uint32_t>()[0] == 0) {
-    return false;
+  const uint32_t* counts = tile_count.data<uint32_t>();
+  if (counts[0] == 0) {
+    // count[1] flags a detected sortedness violation; attribute the retract
+    // to its own bucket. Any other unusable build keeps the metallib bucket.
+    return counts[1] == 1u
+        ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
+        : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
   }
 
   compute_encoder.set_compute_pipeline_state(tile_kernel);
@@ -1296,7 +1301,7 @@ bool try_gemma4_expert_qmm(
   compute_encoder.dispatch_threadgroups(
       MTL::Size((N + bn - 1) / bn, max_tile_count, 1),
       MTL::Size(32, wn, wm));
-  return true;
+  return Gemma4ExpertQMMRoute::hit;
 }
 
 void gather_qmm_rhs(
@@ -1426,27 +1431,18 @@ void gather_qmm_rhs(
     if (route == Gemma4ExpertQMMRoute::hit) {
       // A hit requires has_bias, so dereferencing biases_ is safe.
       array expert_biases = ensure_row_contiguous(*biases_, d, s);
-      if (try_gemma4_expert_qmm(
-              x,
-              w,
-              scales,
-              expert_biases,
-              indices,
-              out,
-              M,
-              N,
-              K,
-              d,
-              s)) {
+      route = try_gemma4_expert_qmm(
+          x, w, scales, expert_biases, indices, out, M, N, K, d, s);
+      if (route == Gemma4ExpertQMMRoute::hit) {
         if (d.gemma4_expert_qmm_diagnostics_armed()) {
           d.record_armed_gemma4_expert_qmm(route);
         }
         return;
       }
-      // Missing AOT kernels and the sortedness fail-safe both land in this
-      // counter bucket; in both cases the legacy route below produces the
+      // A retracted build attributes to its own counter bucket
+      // (fallback_sortedness_retracted); missing AOT kernels keep the
+      // metallib bucket. In both cases the legacy route below produces the
       // correct result.
-      route = Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
     }
     if (d.gemma4_expert_qmm_diagnostics_armed()) {
       d.record_armed_gemma4_expert_qmm(route);

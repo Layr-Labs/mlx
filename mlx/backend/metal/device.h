@@ -11,6 +11,7 @@
 #include <unordered_set>
 
 #include "mlx/array.h"
+#include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/metal/resident.h"
 #include "mlx/device.h"
 
@@ -185,6 +186,38 @@ class MLX_API Device {
       const MTLFCList& func_consts = {},
       const std::vector<MTL::Function*>& linked_functions = {});
 
+  bool gemma4_expert_qmm_requested() const {
+    return gemma4_expert_qmm_requested_;
+  }
+
+  bool gemma4_expert_qmm_aot_available() const {
+    return gemma4_expert_qmm_aot_available_;
+  }
+  bool gemma4_expert_qmm_diagnostics_armed() const {
+    return gemma4_expert_qmm_counters_.armed();
+  }
+
+  // Call only inside a route boundary guarded by
+  // gemma4_expert_qmm_diagnostics_armed().
+  void record_armed_gemma4_expert_qmm(Gemma4ExpertQMMRoute route) {
+    gemma4_expert_qmm_counters_.record(route);
+  }
+
+  Gemma4ExpertQMMCounterSnapshot gemma4_expert_qmm_counter_snapshot() const {
+    return gemma4_expert_qmm_counters_.snapshot();
+  }
+  Gemma4ExpertQMMCounterSnapshot
+  gemma4_expert_qmm_counter_snapshot_and_disarm() {
+    return gemma4_expert_qmm_counters_.snapshot_and_disarm();
+  }
+
+  void reset_gemma4_expert_qmm_counters() {
+    gemma4_expert_qmm_counters_.reset();
+  }
+  void clear_and_arm_gemma4_expert_qmm_counters() {
+    gemma4_expert_qmm_counters_.clear_and_arm();
+  }
+
   ResidencySet& residency_set() {
     return residency_set_;
   }
@@ -226,6 +259,9 @@ class MLX_API Device {
   std::shared_mutex library_mtx_;
   std::unordered_map<std::string, NS::SharedPtr<MTL::Library>> library_map_;
   NS::SharedPtr<MTL::Library> default_library_;
+  bool gemma4_expert_qmm_requested_{false};
+  bool gemma4_expert_qmm_aot_available_{false};
+  Gemma4ExpertQMMCounters gemma4_expert_qmm_counters_;
   std::unordered_map<
       MTL::Library*,
       std::unordered_map<std::string, NS::SharedPtr<MTL::ComputePipelineState>>>

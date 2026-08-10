@@ -155,4 +155,17 @@
   instantiate_quantized_groups(6) \
   instantiate_quantized_groups(8)
 
-instantiate_quantized_all() // clang-format on
+instantiate_quantized_all()
+
+instantiate_kernel(
+    "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32",
+    affine_gather_qmm_gemma4_expert_tiles,
+    bfloat16_t,
+    64,
+    4,
+    true,
+    32,
+    32,
+    32)
+
+    // clang-format on

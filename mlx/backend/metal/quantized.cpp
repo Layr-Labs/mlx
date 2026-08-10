@@ -14,6 +14,10 @@
 
 namespace mlx::core {
 
+using metal::Gemma4ExpertQMMRoute;
+using metal::Gemma4ExpertQMMRouteInput;
+using metal::classify_gemma4_expert_qmm;
+
 namespace {
 
 template <typename... Args>
@@ -1214,6 +1218,92 @@ void gather_qmm_rhs_nax(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
+Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const array& biases,
+    const array& indices,
+    array& out,
+    int M,
+    int N,
+    int K,
+    metal::Device& d,
+    const Stream& s) {
+  constexpr const char* descriptor_kernel_name =
+      "build_gemma4_sorted_expert_tiles_bm32";
+  constexpr const char* tile_kernel_name =
+      "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+      "alN_true_bm_32_bn_32_bk_32";
+
+  MTL::ComputePipelineState* descriptor_kernel = nullptr;
+  MTL::ComputePipelineState* tile_kernel = nullptr;
+  try {
+    descriptor_kernel = d.get_kernel(descriptor_kernel_name);
+    tile_kernel = d.get_kernel(tile_kernel_name);
+  } catch (...) {
+    return Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+  }
+
+  constexpr int bm = 32;
+  constexpr int bn = 32;
+  constexpr int wm = 2;
+  constexpr int wn = 2;
+  constexpr int expert_count = 128;
+  const int max_tile_count = (M + bm - 1) / bm + expert_count - 1;
+
+  array descriptors({max_tile_count, 4}, uint32, nullptr, {});
+  descriptors.set_data(allocator::malloc(descriptors.nbytes()));
+  // count[0] is the descriptor count; count[1] is the builder's sortedness
+  // violation observability slot.
+  array tile_count({2}, uint32, nullptr, {});
+  tile_count.set_data(allocator::malloc(tile_count.nbytes()));
+
+  auto& compute_encoder = metal::get_command_encoder(s);
+  compute_encoder.add_temporary(descriptors);
+  compute_encoder.add_temporary(tile_count);
+  compute_encoder.set_compute_pipeline_state(descriptor_kernel);
+  compute_encoder.set_input_array(indices, 0);
+  compute_encoder.set_output_array(descriptors, 1);
+  compute_encoder.set_output_array(tile_count, 2);
+  compute_encoder.set_bytes(M, 3);
+  compute_encoder.dispatch_threads(
+      MTL::Size(expert_count, 1, 1), MTL::Size(expert_count, 1, 1));
+
+  // The descriptor builder fail-safes to count[0] == 0 when the purportedly
+  // sorted indices violate the non-decreasing invariant its binary search
+  // relies on. A zero count is unambiguous here: the selector's assignment
+  // gate guarantees M is one of 4096/8192/16384, so a valid build always
+  // emits at least one tile. Drain the stream and re-route retracted calls
+  // to the order-agnostic legacy path rather than running the tile kernel.
+  compute_encoder.synchronize();
+  const uint32_t* counts = tile_count.data<uint32_t>();
+  if (counts[0] == 0) {
+    // count[1] flags a detected sortedness violation; attribute the retract
+    // to its own bucket. Any other unusable build keeps the metallib bucket.
+    return counts[1] == 1u
+        ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
+        : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+  }
+
+  compute_encoder.set_compute_pipeline_state(tile_kernel);
+  int c = 0;
+  compute_encoder.set_input_array(x, c++);
+  compute_encoder.set_input_array(w, c++);
+  compute_encoder.set_input_array(scales, c++);
+  compute_encoder.set_input_array(biases, c++);
+  compute_encoder.set_input_array(descriptors, c++);
+  compute_encoder.set_input_array(tile_count, c++);
+  compute_encoder.set_output_array(out, c++);
+  compute_encoder.set_bytes(K, c++);
+  compute_encoder.set_bytes(N, c++);
+
+  compute_encoder.dispatch_threadgroups(
+      MTL::Size((N + bn - 1) / bn, max_tile_count, 1),
+      MTL::Size(32, wn, wm));
+  return Gemma4ExpertQMMRoute::hit;
+}
+
 void gather_qmm_rhs(
     const array& x_,
     const array& w_,
@@ -1230,8 +1320,18 @@ void gather_qmm_rhs(
     metal::Device& d,
     const Stream& s,
     const std::string mode) {
-  if (metal::is_nax_available() && transpose &&
-      (env::enable_tf32() || x_.dtype() != float32)) {
+  const bool nax_takes_call = metal::is_nax_available() && transpose &&
+      (env::enable_tf32() || x_.dtype() != float32);
+  if (nax_takes_call) {
+    if (d.gemma4_expert_qmm_diagnostics_armed() &&
+        d.gemma4_expert_qmm_requested()) {
+      Gemma4ExpertQMMRouteInput route_input;
+      route_input.requested = true;
+      route_input.outer_route = true;
+      route_input.nax_available = true;
+      d.record_armed_gemma4_expert_qmm(
+          classify_gemma4_expert_qmm(route_input));
+    }
     return gather_qmm_rhs_nax(
         /* const array& x_ = */ x_,
         /* const array& w_ = */ w_,
@@ -1274,6 +1374,83 @@ void gather_qmm_rhs(
   array x = broadcast_with_indices(x_);
   array w = ensure_row_contiguous(w_, d, s);
   array scales = ensure_row_contiguous(scales_, d, s);
+
+  if (d.gemma4_expert_qmm_requested()) {
+    auto shape_dim = [](const array& value, int axis) {
+      return value.ndim() > axis ? value.shape(axis) : 0;
+    };
+    Gemma4ExpertQMMRouteInput route_input;
+    route_input.requested = true;
+    route_input.aot_available = d.gemma4_expert_qmm_aot_available();
+    route_input.nax_available = false;
+    route_input.outer_route = true;
+    route_input.affine = mode == "affine";
+    route_input.transpose = transpose;
+    route_input.has_bias = biases_.has_value();
+    route_input.indices_uint32 = indices.dtype() == uint32;
+    route_input.indices_contiguous = indices.flags().row_contiguous;
+    route_input.x_bfloat16 = x.dtype() == bfloat16;
+    route_input.x_contiguous = x.flags().row_contiguous;
+    route_input.w_uint32 = w.dtype() == uint32;
+    route_input.w_contiguous = w.flags().row_contiguous;
+    route_input.scales_bfloat16 = scales.dtype() == bfloat16;
+    route_input.scales_contiguous = scales.flags().row_contiguous;
+    // Classification reads the raw bias tensor; normalization is spent only
+    // in the winning-route branch below. The legacy block at the end of this
+    // function retains its original normalization point and ordering.
+    route_input.biases_bfloat16 = biases_ && biases_->dtype() == bfloat16;
+    route_input.biases_contiguous = biases_ && biases_->flags().row_contiguous;
+    route_input.group_size = group_size;
+    route_input.bits = bits;
+    route_input.expert_count =
+        w.size() / w.shape(-1) / w.shape(-2);
+    route_input.assignments = M;
+    route_input.index_count = indices.size();
+    route_input.k = K;
+    route_input.n = N;
+    route_input.x_rank = x.ndim();
+    route_input.x_dim0 = shape_dim(x, 0);
+    route_input.x_dim1 = shape_dim(x, 1);
+    route_input.x_dim2 = shape_dim(x, 2);
+    route_input.w_rank = w.ndim();
+    route_input.w_dim0 = shape_dim(w, 0);
+    route_input.w_dim1 = shape_dim(w, 1);
+    route_input.w_dim2 = shape_dim(w, 2);
+    route_input.scales_rank = scales.ndim();
+    route_input.scales_dim0 = shape_dim(scales, 0);
+    route_input.scales_dim1 = shape_dim(scales, 1);
+    route_input.scales_dim2 = shape_dim(scales, 2);
+    if (biases_) {
+      route_input.biases_rank = biases_->ndim();
+      route_input.biases_dim0 = shape_dim(*biases_, 0);
+      route_input.biases_dim1 = shape_dim(*biases_, 1);
+      route_input.biases_dim2 = shape_dim(*biases_, 2);
+    }
+
+    auto route = classify_gemma4_expert_qmm(route_input);
+    if (route == Gemma4ExpertQMMRoute::hit) {
+      // A hit requires has_bias, so dereferencing biases_ is safe.
+      array expert_biases = ensure_row_contiguous(*biases_, d, s);
+      route = try_gemma4_expert_qmm(
+          x, w, scales, expert_biases, indices, out, M, N, K, d, s);
+      if (route == Gemma4ExpertQMMRoute::hit) {
+        if (d.gemma4_expert_qmm_diagnostics_armed()) {
+          d.record_armed_gemma4_expert_qmm(route);
+        }
+        return;
+      }
+      // A retracted build attributes to its own counter bucket
+      // (fallback_sortedness_retracted); missing AOT kernels keep the
+      // metallib bucket. In both cases the legacy route below produces the
+      // correct result.
+    }
+    if (d.gemma4_expert_qmm_diagnostics_armed()) {
+      d.record_armed_gemma4_expert_qmm(route);
+    }
+  }
+
+  // Legacy gather path. Its normalization and dispatch order intentionally
+  // remain the global behavior for every non-exact call.
 
   // TODO: Tune the block sizes
   int bm = 16, bn = 32, bk = 32;
@@ -1455,6 +1632,18 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   return;
 }
 
+// Single source for the sorted-RHS expert route gate. Both the diagnostics
+// record below and the dispatch decision evaluate this one predicate so a
+// future tuning change cannot desynchronize them.
+// TODO: Tune 16 and 4 here a bit better.
+static constexpr bool takes_sorted_rhs_route(
+    int M,
+    int B,
+    int E,
+    bool right_sorted) {
+  return M == 1 && B >= 16 && right_sorted && B / E >= 4;
+}
+
 void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   auto& s = stream();
   auto& d = metal::device(s.device);
@@ -1479,11 +1668,19 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   int vector_limit = transpose_ ? get_qmv_batch_limit(K, N, d) : 4;
   auto mode = quantization_mode_to_string(mode_);
 
+  if (d.gemma4_expert_qmm_diagnostics_armed() &&
+      d.gemma4_expert_qmm_requested() &&
+      !takes_sorted_rhs_route(M, B, E, right_sorted_)) {
+    Gemma4ExpertQMMRouteInput route_input;
+    route_input.requested = true;
+    route_input.outer_route = false;
+    d.record_armed_gemma4_expert_qmm(
+        classify_gemma4_expert_qmm(route_input));
+  }
+
   // We are walking x in order and w is also in order so we can batch up the
   // matmuls and reuse reading x and w.
-  //
-  // TODO: Tune 16 and 4 here a bit better.
-  if (M == 1 && B >= 16 && right_sorted_ == true && B / E >= 4) {
+  if (takes_sorted_rhs_route(M, B, E, right_sorted_)) {
     gather_qmm_rhs(
         x,
         w,

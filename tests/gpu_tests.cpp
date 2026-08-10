@@ -6,6 +6,7 @@
 #include <future>
 
 #include "doctest/doctest.h"
+#include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/mlx.h"
 
 using namespace mlx::core;
@@ -685,4 +686,276 @@ TEST_CASE("test layer norm vjp bias grad race") {
     }
   }
   CHECK(worst <= 1e-5);
+}
+
+
+TEST_CASE("test Gemma 4 expert QMM pure route table") {
+  using metal::Gemma4ExpertQMMRoute;
+  using metal::Gemma4ExpertQMMRouteInput;
+  using metal::classify_gemma4_expert_qmm;
+
+  auto gate_up = [](int assignments) {
+    Gemma4ExpertQMMRouteInput input;
+    input.requested = true;
+    input.aot_available = true;
+    input.outer_route = true;
+    input.affine = true;
+    input.transpose = true;
+    input.has_bias = true;
+    input.indices_uint32 = true;
+    input.indices_contiguous = true;
+    input.x_bfloat16 = true;
+    input.x_contiguous = true;
+    input.w_uint32 = true;
+    input.w_contiguous = true;
+    input.scales_bfloat16 = true;
+    input.scales_contiguous = true;
+    input.biases_bfloat16 = true;
+    input.biases_contiguous = true;
+    input.group_size = 64;
+    input.bits = 4;
+    input.expert_count = 128;
+    input.assignments = assignments;
+    input.index_count = assignments;
+    input.k = 2816;
+    input.n = 1408;
+    input.x_rank = 3;
+    input.x_dim0 = assignments;
+    input.x_dim1 = 1;
+    input.x_dim2 = 2816;
+    input.w_rank = 3;
+    input.w_dim0 = 128;
+    input.w_dim1 = 1408;
+    input.w_dim2 = 352;
+    input.scales_rank = 3;
+    input.scales_dim0 = 128;
+    input.scales_dim1 = 1408;
+    input.scales_dim2 = 44;
+    input.biases_rank = 3;
+    input.biases_dim0 = 128;
+    input.biases_dim1 = 1408;
+    input.biases_dim2 = 44;
+    return input;
+  };
+  auto down = [&gate_up](int assignments) {
+    auto input = gate_up(assignments);
+    input.k = 704;
+    input.n = 2816;
+    input.x_dim2 = 704;
+    input.w_dim1 = 2816;
+    input.w_dim2 = 88;
+    input.scales_dim1 = 2816;
+    input.scales_dim2 = 11;
+    input.biases_dim1 = 2816;
+    input.biases_dim2 = 11;
+    return input;
+  };
+
+  for (int assignments : {4096, 8192, 16384}) {
+    CHECK(
+        classify_gemma4_expert_qmm(gate_up(assignments)) ==
+        Gemma4ExpertQMMRoute::hit);
+    CHECK(
+        classify_gemma4_expert_qmm(down(assignments)) ==
+        Gemma4ExpertQMMRoute::hit);
+  }
+
+  auto exact = gate_up(4096);
+  auto check_miss = [&exact](
+                        auto mutate, Gemma4ExpertQMMRoute expected) {
+    auto input = exact;
+    mutate(input);
+    CHECK(classify_gemma4_expert_qmm(input) == expected);
+  };
+  check_miss(
+      [](auto& x) { x.requested = false; },
+      Gemma4ExpertQMMRoute::not_requested);
+  check_miss(
+      [](auto& x) { x.nax_available = true; },
+      Gemma4ExpertQMMRoute::fallback_nax);
+  check_miss(
+      [](auto& x) { x.outer_route = false; },
+      Gemma4ExpertQMMRoute::fallback_outer_route);
+  check_miss(
+      [](auto& x) { x.affine = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.transpose = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.has_bias = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.group_size = 32; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.bits = 8; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.indices_uint32 = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.indices_contiguous = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.x_bfloat16 = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.x_contiguous = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.w_uint32 = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.w_contiguous = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.scales_bfloat16 = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.scales_contiguous = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.biases_bfloat16 = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.biases_contiguous = false; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.expert_count = 127; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  check_miss(
+      [](auto& x) { x.x_rank = 4; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  check_miss(
+      [](auto& x) { x.w_rank = 2; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  check_miss(
+      [](auto& x) { x.scales_rank = 2; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  check_miss(
+      [](auto& x) { x.biases_rank = 2; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  check_miss(
+      [](auto& x) { x.index_count -= 1; },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  for (int assignments : {8, 16, 32, 4095, 4097}) {
+    check_miss(
+        [assignments](auto& x) {
+          x.assignments = assignments;
+          x.index_count = assignments;
+          x.x_dim0 = assignments;
+        },
+        Gemma4ExpertQMMRoute::fallback_assignment_count);
+  }
+  check_miss(
+      [](auto& x) { x.w_dim2 = 176; },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) { x.w_dim1 += 1; },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) {
+        x.k += 32;
+        x.x_dim2 = x.k;
+      },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) { x.n -= 32; },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) { x.aot_available = false; },
+      Gemma4ExpertQMMRoute::fallback_metallib_unavailable);
+
+  auto nax_without_aot = exact;
+  nax_without_aot.nax_available = true;
+  nax_without_aot.aot_available = false;
+  CHECK(
+      classify_gemma4_expert_qmm(nax_without_aot) ==
+      Gemma4ExpertQMMRoute::fallback_nax);
+}
+
+TEST_CASE("test Gemma 4 expert QMM counter invariant") {
+  metal::Gemma4ExpertQMMCounters counters;
+  using Route = metal::Gemma4ExpertQMMRoute;
+  counters.record(Route::not_requested);
+  counters.record(Route::hit);
+  counters.record(Route::fallback_nax);
+  counters.record(Route::fallback_outer_route);
+  counters.record(Route::fallback_quantization);
+  counters.record(Route::fallback_topology);
+  counters.record(Route::fallback_assignment_count);
+  counters.record(Route::fallback_geometry);
+  counters.record(Route::fallback_metallib_unavailable);
+  counters.record(Route::fallback_sortedness_retracted);
+
+  auto snapshot = counters.snapshot();
+  CHECK(snapshot.hits == 1);
+  CHECK(snapshot.fallback_nax == 1);
+  CHECK(snapshot.fallback_outer_route == 1);
+  CHECK(snapshot.fallback_quantization == 1);
+  CHECK(snapshot.fallback_topology == 1);
+  CHECK(snapshot.fallback_assignment_count == 1);
+  CHECK(snapshot.fallback_geometry == 1);
+  CHECK(snapshot.fallback_metallib_unavailable == 1);
+  CHECK(snapshot.fallback_sortedness_retracted == 1);
+  CHECK(snapshot.attempts() == 9);
+
+  counters.reset();
+  snapshot = counters.snapshot();
+  CHECK(snapshot.attempts() == 0);
+  CHECK(snapshot.attempts() == snapshot.hits + snapshot.fallback_nax +
+          snapshot.fallback_outer_route + snapshot.fallback_quantization +
+          snapshot.fallback_topology +
+          snapshot.fallback_assignment_count + snapshot.fallback_geometry +
+          snapshot.fallback_metallib_unavailable +
+          snapshot.fallback_sortedness_retracted);
+}
+
+TEST_CASE("test Gemma 4 expert QMM arm disarm cycle") {
+  metal::Gemma4ExpertQMMCounters counters;
+  using Route = metal::Gemma4ExpertQMMRoute;
+
+  // Counters start disarmed with an empty interval.
+  CHECK(!counters.armed());
+
+  // Arm: the interval opens with zeroed counters.
+  counters.clear_and_arm();
+  CHECK(counters.armed());
+  CHECK(counters.snapshot().attempts() == 0);
+
+  // Record across the measured interval, including the retract class the
+  // sortedness fail-safe attributes mis-sorted indices to.
+  counters.record(Route::hit);
+  counters.record(Route::fallback_sortedness_retracted);
+  counters.record(Route::fallback_metallib_unavailable);
+
+  // Disarm snapshots the interval and reports the previous armed state.
+  auto interval = counters.snapshot_and_disarm();
+  CHECK(interval.armed);
+  CHECK(!counters.armed());
+
+  // The attempts == hits + sum(fallback classes) invariant holds across the
+  // cycle, with the sortedness-retract class included in the sum.
+  CHECK(interval.attempts() == 3);
+  CHECK(interval.hits == 1);
+  CHECK(interval.fallback_sortedness_retracted == 1);
+  CHECK(interval.fallback_metallib_unavailable == 1);
+  CHECK(interval.attempts() == interval.hits + interval.fallback_nax +
+          interval.fallback_outer_route + interval.fallback_quantization +
+          interval.fallback_topology + interval.fallback_assignment_count +
+          interval.fallback_geometry + interval.fallback_metallib_unavailable +
+          interval.fallback_sortedness_retracted);
+
+  // The snapshot stays readable while disarmed.
+  CHECK(!counters.snapshot().armed);
+  CHECK(counters.snapshot().attempts() == 3);
+
+  // Re-arming clears the interval again, and disarming it reports armed.
+  counters.clear_and_arm();
+  CHECK(counters.armed());
+  auto reopened = counters.snapshot_and_disarm();
+  CHECK(reopened.armed);
+  CHECK(reopened.attempts() == 0);
+  CHECK(!counters.armed());
 }

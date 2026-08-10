@@ -1092,6 +1092,134 @@ template <
     const int BM = 32,
     const int BK = 32,
     const int BN = 32>
+METAL_FUNC void qmm_t_expert_impl(
+    const device uint32_t* w,
+    const device T* scales,
+    const device T* biases,
+    const device T* x,
+    device T* y,
+    threadgroup T* Xs,
+    threadgroup T* Ws,
+    const constant int& K,
+    const constant int& N,
+    const int M,
+    const constant int& K_eff,
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  static_assert(BK >= SIMD_SIZE, "BK should be larger than SIMD_SIZE");
+  static_assert(BK % SIMD_SIZE == 0, "BK should be divisible by SIMD_SIZE");
+
+  (void)lid;
+
+  constexpr int WM = 2;
+  constexpr int WN = 2;
+  constexpr int pack_factor = get_pack_factor<bits, 8>();
+  constexpr int bytes_per_pack = get_bytes_per_pack<bits>();
+
+  constexpr int BK_padded = (BK + 16 / sizeof(T));
+
+  // Instantiate the appropriate BlockMMA and Loader
+  using mma_t = mlx::steel::
+      BlockMMA<T, T, BM, BN, BK, WM, WN, false, true, BK_padded, BK_padded>;
+  using loader_x_t =
+      mlx::steel::BlockLoader<T, BM, BK, BK_padded, 1, WM * WN * SIMD_SIZE>;
+  using loader_w_t = QuantizedBlockLoader<
+      T,
+      BN,
+      BK,
+      BK_padded,
+      1,
+      WM * WN * SIMD_SIZE,
+      group_size,
+      bits>;
+
+  // Set the block
+  const int K_w = K * bytes_per_pack / pack_factor;
+  const int K_g = K / group_size;
+  const int y_row = tid.y * BM;
+  const int y_col = tid.x * BN;
+
+  auto wl = (const device uint8_t*)w;
+
+  x += y_row * static_cast<int64_t>(K);
+  wl += y_col * K_w;
+  scales += y_col * K_g;
+  biases += y_col * K_g;
+  y += y_row * static_cast<int64_t>(N) + y_col;
+
+  // Make the x loader and mma operation
+  const short num_els = min(BM, M - y_row);
+  const short num_outs = min(BN, N - y_col);
+  loader_x_t loader_x(x, K, Xs, simd_gid, simd_lid);
+  loader_w_t loader_w(wl, scales, biases, K, Ws, simd_gid, simd_lid);
+  mma_t mma_op(simd_gid, simd_lid);
+
+  if (num_els < BM) {
+    if (!aligned_N && num_outs < BN) {
+      for (int k = 0; k < K_eff; k += BK) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        loader_x.load_safe(short2(BK, num_els));
+        loader_w.load_safe(short2(BK, num_outs));
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        mma_op.mma(Xs, Ws);
+        loader_x.next();
+        loader_w.next();
+      }
+    } else {
+      for (int k = 0; k < K_eff; k += BK) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        loader_x.load_safe(short2(BK, num_els));
+        loader_w.load_unsafe();
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        mma_op.mma(Xs, Ws);
+        loader_x.next();
+        loader_w.next();
+      }
+    }
+  } else {
+    if (!aligned_N && num_outs < BN) {
+      for (int k = 0; k < K_eff; k += BK) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        loader_x.load_unsafe();
+        loader_w.load_safe(short2(BK, num_outs));
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        mma_op.mma(Xs, Ws);
+        loader_x.next();
+        loader_w.next();
+      }
+    } else {
+      for (int k = 0; k < K_eff; k += BK) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        loader_x.load_unsafe();
+        loader_w.load_unsafe();
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        mma_op.mma(Xs, Ws);
+        loader_x.next();
+        loader_w.next();
+      }
+    }
+  }
+
+  // Store results to device memory
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (num_els < BM || num_outs < BN) {
+    mma_op.store_result_safe(y, N, short2(num_outs, num_els));
+  } else {
+    mma_op.store_result(y, N);
+  }
+}
+
+template <
+    typename T,
+    const int group_size,
+    const int bits,
+    const bool aligned_N,
+    const int BM = 32,
+    const int BK = 32,
+    const int BN = 32>
 METAL_FUNC void qmm_t_impl(
     const device uint32_t* w,
     const device T* scales,
@@ -2237,6 +2365,232 @@ template <
       tid);
   qmm_n_impl<T, group_size, bits, BM, BK, BN>(
       w, scales, biases, x, y, Xs, Ws, K, N, M, tid, lid, simd_gid, simd_lid);
+}
+
+[[kernel]] void build_gemma4_sorted_expert_tiles_bm32(
+    const device uint32_t* indices [[buffer(0)]],
+    device uint4* descriptors [[buffer(1)]],
+    device uint* count [[buffer(2)]],
+    const constant int& M [[buffer(3)]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  constexpr uint expert_count = 128;
+  constexpr uint BM = 32;
+  constexpr uint simdgroup_count = expert_count / 32;
+  threadgroup uint segment_starts[expert_count + 1];
+  threadgroup uint inclusive_tile_offsets[expert_count];
+  threadgroup uint violation_votes[simdgroup_count];
+
+  // One thread finds each expert's first sorted row. Thread 127 also supplies
+  // the sentinel, so all 129 boundaries are ready after one barrier.
+  int lower = 0;
+  int upper = M;
+  while (lower < upper) {
+    const int midpoint = lower + (upper - lower) / 2;
+    if (indices[midpoint] < lid) {
+      lower = midpoint + 1;
+    } else {
+      upper = midpoint;
+    }
+  }
+  segment_starts[lid] = uint(lower);
+  if (lid == expert_count - 1) {
+    segment_starts[expert_count] = uint(M);
+  }
+
+  // The binary search is only sound when `indices` is non-decreasing across
+  // the whole array; a mis-sorted input would silently mis-attribute rows to
+  // experts. The check is twofold. Each thread verifies its own segment
+  // boundary against the generalized invariant
+  // `indices[start - 1] < lid <= indices[start]` (edge threads have only one
+  // neighbor to check). Independently of that search, a strided adjacent-pair
+  // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
+  // thread `lid` covers i = lid + 1, lid + 129, ..., so the 128 threads
+  // between them inspect every adjacent pair exactly once (for the reachable
+  // M in {4096, 8192, 16384} that is between 1 and 128 iterations each).
+  // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
+  // complete proof that the array is globally non-decreasing; no
+  // intra-segment inversion can escape it. The simdgroups vote with simd_or
+  // over the conjunction, and the votes fold threadgroup-wide through shared
+  // memory; the barrier below orders both loops' results before the fold. On
+  // any violation the kernel retracts the descriptor count below so the tile
+  // kernel early-returns and the host re-routes to the order-agnostic legacy
+  // path.
+  bool boundary_ok = true;
+  if (lower > 0) {
+    boundary_ok = boundary_ok && indices[lower - 1] < lid;
+  }
+  if (lower < M) {
+    boundary_ok = boundary_ok && indices[lower] >= lid;
+  }
+  bool adjacent_ok = true;
+  for (int i = int(lid) + 1; i < M; i += int(expert_count)) {
+    adjacent_ok = adjacent_ok && indices[i - 1] <= indices[i];
+  }
+  const uint violation_vote =
+      simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
+  if (simd_lid == 0) {
+    violation_votes[simd_gid] = violation_vote;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Every thread folds the per-simdgroup votes uniformly.
+  bool sorted_violation = false;
+  for (uint group = 0; group < simdgroup_count; ++group) {
+    sorted_violation = sorted_violation || violation_votes[group] != 0u;
+  }
+  // count[1] is the violation observability slot; count[0] is the descriptor
+  // count.
+  if (lid == 0) {
+    count[1] = sorted_violation ? 1u : 0u;
+  }
+
+  const uint segment_rows = segment_starts[lid + 1] - segment_starts[lid];
+  inclusive_tile_offsets[lid] = (segment_rows + BM - 1) / BM;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  // Seven uniform Hillis-Steele strides form an inclusive scan for 128
+  // experts. The read barrier precedes each in-place update and the write
+  // barrier makes that stride visible to the next one.
+  for (uint stride = 1; stride < expert_count; stride <<= 1) {
+    const uint addend =
+        lid >= stride ? inclusive_tile_offsets[lid - stride] : 0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid >= stride) {
+      inclusive_tile_offsets[lid] += addend;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  const uint descriptor_count =
+      inclusive_tile_offsets[expert_count - 1];
+  if (lid == expert_count - 1) {
+    // A retracted count keeps the tile kernel's capacity check memory-safe
+    // (every threadgroup early-returns) and unambiguously signals the host:
+    // the assignment-count route gate guarantees M is 4096/8192/16384, so a
+    // valid build always emits at least one tile.
+    count[0] = sorted_violation ? 0u : descriptor_count;
+  }
+
+  // Every thread emits a strided share of the bounded descriptor array.
+  // upper_bound over the inclusive offsets maps each slot back to its expert.
+  for (uint slot = lid; slot < descriptor_count; slot += expert_count) {
+    uint expert_lower = 0;
+    uint expert_upper = expert_count;
+    while (expert_lower < expert_upper) {
+      const uint midpoint =
+          expert_lower + (expert_upper - expert_lower) / 2;
+      if (inclusive_tile_offsets[midpoint] <= slot) {
+        expert_lower = midpoint + 1;
+      } else {
+        expert_upper = midpoint;
+      }
+    }
+    const uint expert = expert_lower;
+    const uint expert_tile_begin =
+        expert == 0 ? 0 : inclusive_tile_offsets[expert - 1];
+    const uint row =
+        segment_starts[expert] + (slot - expert_tile_begin) * BM;
+    const uint row_count =
+        min(BM, segment_starts[expert + 1] - row);
+    descriptors[slot] = uint4(row, row_count, expert, 0);
+  }
+}
+
+template <
+    typename T,
+    const int group_size,
+    const int bits,
+    const bool aligned_N,
+    const int BM = 32,
+    const int BK = 32,
+    const int BN = 32>
+[[kernel]] void affine_gather_qmm_gemma4_expert_tiles(
+    const device T* x [[buffer(0)]],
+    const device uint32_t* w [[buffer(1)]],
+    const device T* scales [[buffer(2)]],
+    const device T* biases [[buffer(3)]],
+    const device uint4* descriptors [[buffer(4)]],
+    const device uint* count [[buffer(5)]],
+    device T* y [[buffer(6)]],
+    const constant int& K [[buffer(7)]],
+    const constant int& N [[buffer(8)]],
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  static_assert(BM == 32, "Gemma 4 expert tiles require BM=32");
+  static_assert(BK == 32, "Gemma 4 expert tiles require BK=32");
+  static_assert(BN == 32, "Gemma 4 expert tiles require BN=32");
+
+  // tid.y is uniform across the threadgroup. Empty capacity slots return
+  // before any threadgroup allocation is consumed by a microkernel barrier.
+  const uint descriptor_count = count[0];
+  if (tid.y >= descriptor_count) {
+    return;
+  }
+
+  constexpr int pack_factor = get_pack_factor<bits, 8>();
+  constexpr int bytes_per_pack = get_bytes_per_pack<bits>();
+  constexpr int BK_padded = BK + 16 / sizeof(T);
+  threadgroup T Xs[BM * BK_padded];
+  threadgroup T Ws[BN * BK_padded];
+
+  const uint4 descriptor = descriptors[tid.y];
+  const size_t row_start = size_t(descriptor.x);
+  const int row_count = int(descriptor.y);
+  const size_t expert = size_t(descriptor.z);
+
+  const int K_w = K * bytes_per_pack / pack_factor;
+  const int K_g = K / group_size;
+  const size_t expert_w_stride = size_t(N) * size_t(K_w);
+  const size_t expert_sb_stride = size_t(N) * size_t(K_g);
+
+  x += row_start * size_t(K);
+  y += row_start * size_t(N);
+  const device uint8_t* expert_w =
+      reinterpret_cast<const device uint8_t*>(w) +
+      expert * expert_w_stride;
+  scales += expert * expert_sb_stride;
+  biases += expert * expert_sb_stride;
+
+  const uint3 local_tid = uint3(tid.x, 0, 0);
+  if (row_count <= 16) {
+    qmm_t_expert_impl<T, group_size, bits, aligned_N, 16, BK, BN>(
+        reinterpret_cast<const device uint32_t*>(expert_w),
+        scales,
+        biases,
+        x,
+        y,
+        Xs,
+        Ws,
+        K,
+        N,
+        row_count,
+        K,
+        local_tid,
+        lid,
+        simd_gid,
+        simd_lid);
+  } else {
+    qmm_t_expert_impl<T, group_size, bits, aligned_N, BM, BK, BN>(
+        reinterpret_cast<const device uint32_t*>(expert_w),
+        scales,
+        biases,
+        x,
+        y,
+        Xs,
+        Ws,
+        K,
+        N,
+        row_count,
+        K,
+        local_tid,
+        lid,
+        simd_gid,
+        simd_lid);
+  }
 }
 
 template <

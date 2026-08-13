@@ -190,6 +190,14 @@ class MLX_API Device {
     return gemma4_expert_qmm_requested_;
   }
 
+  // MLX_GATHER_QMM_EXPERT_SLICES=trust: skip the descriptor-retract
+  // readback in the expert-tile route (no mid-eval stream drain). The
+  // caller asserts sorted indices are machine-guaranteed; a violation
+  // yields undefined tile output instead of the legacy fallback.
+  bool gemma4_expert_qmm_trust_sorted() const {
+    return gemma4_expert_qmm_trust_sorted_;
+  }
+
   bool gemma4_expert_qmm_aot_available() const {
     return gemma4_expert_qmm_aot_available_;
   }
@@ -260,6 +268,7 @@ class MLX_API Device {
   std::unordered_map<std::string, NS::SharedPtr<MTL::Library>> library_map_;
   NS::SharedPtr<MTL::Library> default_library_;
   bool gemma4_expert_qmm_requested_{false};
+  bool gemma4_expert_qmm_trust_sorted_{false};
   bool gemma4_expert_qmm_aot_available_{false};
   Gemma4ExpertQMMCounters gemma4_expert_qmm_counters_;
   std::unordered_map<

@@ -1230,8 +1230,14 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
     int K,
     metal::Device& d,
     const Stream& s) {
-  constexpr const char* descriptor_kernel_name =
-      "build_gemma4_sorted_expert_tiles_bm32";
+  // The classifier admits exactly E=128 (Gemma 4) and E=256 (Qwen 3.5/3.6
+  // MoE); w is rank-3 [E, N_w, K_w] by the same gate. The tile kernel is
+  // expert-count agnostic — only the descriptor builder (one thread per
+  // expert) is instantiated per expert count.
+  const int expert_count = w.shape(0);
+  const char* descriptor_kernel_name = expert_count == 256
+      ? "build_sorted_expert_tiles_bm32_e256"
+      : "build_gemma4_sorted_expert_tiles_bm32";
   constexpr const char* tile_kernel_name =
       "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
       "alN_true_bm_32_bn_32_bk_32";
@@ -1249,7 +1255,9 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   constexpr int bn = 32;
   constexpr int wm = 2;
   constexpr int wn = 2;
-  constexpr int expert_count = 128;
+  // Upper bound on descriptors: sum over experts of ceil(rows_e / bm) with
+  // sum(rows_e) == M. With k experts carrying a nonzero remainder the total
+  // is at most (M - k) / bm + k <= M / bm + E - 1 for the reachable M/E.
   const int max_tile_count = (M + bm - 1) / bm + expert_count - 1;
 
   array descriptors({max_tile_count, 4}, uint32, nullptr, {});
@@ -1276,14 +1284,29 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   // gate guarantees M is one of 4096/8192/16384, so a valid build always
   // emits at least one tile. Drain the stream and re-route retracted calls
   // to the order-agnostic legacy path rather than running the tile kernel.
-  compute_encoder.synchronize();
-  const uint32_t* counts = tile_count.data<uint32_t>();
-  if (counts[0] == 0) {
-    // count[1] flags a detected sortedness violation; attribute the retract
-    // to its own bucket. Any other unusable build keeps the metallib bucket.
-    return counts[1] == 1u
-        ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
-        : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+  //
+  // MLX_GATHER_QMM_EXPERT_SLICES=trust skips this drain entirely: the tile
+  // grid below is already over-dispatched (max_tile_count threadgroups;
+  // the kernel early-returns slots >= count[0]), so the readback exists
+  // ONLY to observe a retracted build. Under trust the caller asserts the
+  // sorted contract is machine-guaranteed (the Swift SwitchGLU prefill
+  // path sorts on-device just before this call); a genuine violation then
+  // yields undefined output for this matmul instead of the legacy result.
+  // Measured cost of the drain: ~120 stream drains per 512-token prefill
+  // chunk (3 gathers x 40 MoE layers) — it cancels the tile kernel's
+  // 12-23%/unit win end-to-end. A device-side legacy fallback (dispatch-
+  // diet item 1.3) would make trust the only behavior.
+  if (!d.gemma4_expert_qmm_trust_sorted()) {
+    compute_encoder.synchronize();
+    const uint32_t* counts = tile_count.data<uint32_t>();
+    if (counts[0] == 0) {
+      // count[1] flags a detected sortedness violation; attribute the
+      // retract to its own bucket. Any other unusable build keeps the
+      // metallib bucket.
+      return counts[1] == 1u
+          ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
+          : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+    }
   }
 
   compute_encoder.set_compute_pipeline_state(tile_kernel);

@@ -569,7 +569,13 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   gemma4_expert_qmm_requested_ = expert_qmm_env == "1" ||
       expert_qmm_env == "true" || expert_qmm_env == "on" ||
-      expert_qmm_env == "yes";
+      expert_qmm_env == "yes" || expert_qmm_env == "trust";
+  // "trust" additionally skips the descriptor-retract readback: the caller
+  // asserts its sorted-indices contract is machine-guaranteed (the Swift
+  // SwitchGLU path sorts on-device), so the host never drains the stream to
+  // observe a retracted build. Under trust, a genuinely mis-sorted input
+  // produces undefined tile output instead of the legacy fallback.
+  gemma4_expert_qmm_trust_sorted_ = expert_qmm_env == "trust";
 
   constexpr const char* descriptor_kernel =
       "build_gemma4_sorted_expert_tiles_bm32";

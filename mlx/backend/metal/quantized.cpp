@@ -1285,24 +1285,28 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   // emits at least one tile. Drain the stream and re-route retracted calls
   // to the order-agnostic legacy path rather than running the tile kernel.
   //
-  // TODO(perf, both routes): this synchronize() is NOT needed to size the
-  // grid — the tile dispatch below already over-dispatches max_tile_count
-  // threadgroups and the kernel early-returns slots >= count[0]. It exists
-  // solely so the host can observe a retracted build (count[0] == 0) and
-  // re-route to the legacy kernel. Removing it requires a device-side
-  // fallback for the retract case (the tile kernel cannot reproduce the
-  // order-agnostic legacy semantics), so it is not a trivial over-dispatch
-  // fix; it is the expert-tile share of the dispatch-diet work (proposals
-  // item 1.3). Cost evidence: one full stream drain per routed gather —
-  // 3 gathers/MoE layer x 40 layers = 120 drains per 512-token chunk.
-  compute_encoder.synchronize();
-  const uint32_t* counts = tile_count.data<uint32_t>();
-  if (counts[0] == 0) {
-    // count[1] flags a detected sortedness violation; attribute the retract
-    // to its own bucket. Any other unusable build keeps the metallib bucket.
-    return counts[1] == 1u
-        ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
-        : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+  // MLX_GATHER_QMM_EXPERT_SLICES=trust skips this drain entirely: the tile
+  // grid below is already over-dispatched (max_tile_count threadgroups;
+  // the kernel early-returns slots >= count[0]), so the readback exists
+  // ONLY to observe a retracted build. Under trust the caller asserts the
+  // sorted contract is machine-guaranteed (the Swift SwitchGLU prefill
+  // path sorts on-device just before this call); a genuine violation then
+  // yields undefined output for this matmul instead of the legacy result.
+  // Measured cost of the drain: ~120 stream drains per 512-token prefill
+  // chunk (3 gathers x 40 MoE layers) — it cancels the tile kernel's
+  // 12-23%/unit win end-to-end. A device-side legacy fallback (dispatch-
+  // diet item 1.3) would make trust the only behavior.
+  if (!d.gemma4_expert_qmm_trust_sorted()) {
+    compute_encoder.synchronize();
+    const uint32_t* counts = tile_count.data<uint32_t>();
+    if (counts[0] == 0) {
+      // count[1] flags a detected sortedness violation; attribute the
+      // retract to its own bucket. Any other unusable build keeps the
+      // metallib bucket.
+      return counts[1] == 1u
+          ? Gemma4ExpertQMMRoute::fallback_sortedness_retracted
+          : Gemma4ExpertQMMRoute::fallback_metallib_unavailable;
+    }
   }
 
   compute_encoder.set_compute_pipeline_state(tile_kernel);

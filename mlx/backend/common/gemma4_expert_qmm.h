@@ -126,11 +126,14 @@ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
       !input.biases_contiguous || input.group_size != 64 || input.bits != 4) {
     return Gemma4ExpertQMMRoute::fallback_quantization;
   }
-  if (input.expert_count != 128 || input.x_rank != 3 ||
+  const bool gemma4 = input.expert_count == 128;
+  const bool qwen36 = input.expert_count == 256;
+  if ((!gemma4 && !qwen36) || input.x_rank != 3 ||
       input.x_dim0 != input.assignments || input.x_dim1 != 1 ||
-      input.x_dim2 != input.k || input.w_rank != 3 || input.w_dim0 != 128 ||
-      input.scales_rank != 3 || input.scales_dim0 != 128 ||
-      input.biases_rank != 3 || input.biases_dim0 != 128 ||
+      input.x_dim2 != input.k || input.w_rank != 3 ||
+      input.w_dim0 != input.expert_count || input.scales_rank != 3 ||
+      input.scales_dim0 != input.expert_count || input.biases_rank != 3 ||
+      input.biases_dim0 != input.expert_count ||
       input.index_count != input.assignments) {
     return Gemma4ExpertQMMRoute::fallback_topology;
   }
@@ -139,15 +142,26 @@ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
     return Gemma4ExpertQMMRoute::fallback_assignment_count;
   }
 
-  const bool gate_up = input.k == 2816 && input.n == 1408 &&
-      input.w_dim1 == 1408 && input.w_dim2 == 352 &&
-      input.scales_dim1 == 1408 && input.scales_dim2 == 44 &&
-      input.biases_dim1 == 1408 && input.biases_dim2 == 44;
-  const bool down = input.k == 704 && input.n == 2816 &&
-      input.w_dim1 == 2816 && input.w_dim2 == 88 &&
-      input.scales_dim1 == 2816 && input.scales_dim2 == 11 &&
-      input.biases_dim1 == 2816 && input.biases_dim2 == 11;
-  if (!gate_up && !down) {
+  // Whole-projection geometry for one expert matrix [E, n, k] at W4/g64:
+  // packed weight columns k/8 (eight 4-bit values per uint32) and one
+  // scale/bias per 64-wide group, k/64 columns. The quantization gate above
+  // guarantees bits==4 and group_size==64, so the divisions are exact.
+  auto projection = [&input](int k, int n) {
+    return input.k == k && input.n == n && input.w_dim1 == n &&
+        input.w_dim2 == k / 8 && input.scales_dim1 == n &&
+        input.scales_dim2 == k / 64 && input.biases_dim1 == n &&
+        input.biases_dim2 == k / 64;
+  };
+  // Gemma 4 26B-A4B (E=128): gate/up [128,1408,2816] and down [128,2816,704].
+  // Qwen 3.5/3.6 35B-A3B (E=256): fused gate_up [256,1024,2048], split
+  // gate/up [256,512,2048], and down [256,2048,512]. The tile kernel itself
+  // is expert-count agnostic; only the descriptor builder instantiation
+  // differs (one thread per expert).
+  const bool hit_geometry = gemma4
+      ? (projection(2816, 1408) || projection(704, 2816))
+      : (projection(2048, 1024) || projection(2048, 512) ||
+         projection(512, 2048));
+  if (!hit_geometry) {
     return Gemma4ExpertQMMRoute::fallback_geometry;
   }
   if (!input.aot_available) {

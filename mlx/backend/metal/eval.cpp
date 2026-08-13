@@ -30,7 +30,6 @@ void eval(array& arr) {
   auto pool = metal::new_scoped_memory_pool();
   auto s = arr.primitive().stream();
   auto& encoder = metal::get_command_encoder(s);
-  auto* command_buffer = encoder.get_command_buffer();
 
   auto outputs = arr.outputs();
   {
@@ -41,7 +40,8 @@ void eval(array& arr) {
       inputs = arr.inputs();
     }
 
-    debug_set_primitive_buffer_label(command_buffer, arr.primitive());
+    debug_set_primitive_buffer_label(
+        encoder.get_command_buffer(), arr.primitive());
     arr.primitive().eval_gpu(arr.inputs(), outputs);
   }
   std::unordered_set<std::shared_ptr<array::Data>> buffers;
@@ -63,7 +63,13 @@ void eval(array& arr) {
       scheduler::notify_task_completion(s);
     });
   } else {
-    command_buffer->addCompletedHandler(
+    // Fetch the command buffer AFTER eval_gpu: primitives that synchronize
+    // mid-eval (e.g. the expert-tile route's descriptor retract check)
+    // commit and REPLACE the encoder's buffer, so a pointer captured before
+    // eval_gpu would be stale here — attaching the buffer-liveness handler
+    // to it is a use-after-free. The current buffer holds the tail of this
+    // primitive's work, which is exactly what the inputs must outlive.
+    encoder.get_command_buffer()->addCompletedHandler(
         [buffers = std::move(buffers)](MTL::CommandBuffer* cbuf) {});
   }
 }

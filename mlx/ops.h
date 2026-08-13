@@ -47,11 +47,7 @@ MLX_API array linspace(
     StreamOrDevice s = {});
 
 /** Convert an array to the given data type. */
-MLX_API array
-astype(array a, Dtype dtype, std::optional<bool> copy, StreamOrDevice s = {});
-inline array astype(array a, Dtype dtype, StreamOrDevice s = {}) {
-  return astype(std::move(a), dtype, std::nullopt, s);
-}
+MLX_API array astype(array a, Dtype dtype, StreamOrDevice s = {});
 
 /** Create a view of an array with the given shape and strides. */
 MLX_API array as_strided(
@@ -93,14 +89,18 @@ MLX_API array zeros(const Shape& shape, Dtype dtype, StreamOrDevice s = {});
 inline array zeros(const Shape& shape, StreamOrDevice s = {}) {
   return zeros(shape, float32, s);
 }
+/** Create an array of zeros with the shape of `a`. */
 MLX_API array zeros_like(const array& a, StreamOrDevice s = {});
+MLX_API array zeros_like(const array& a, Dtype dtype, StreamOrDevice s = {});
 
 /** Fill an array of the given shape with ones. */
 MLX_API array ones(const Shape& shape, Dtype dtype, StreamOrDevice s = {});
 inline array ones(const Shape& shape, StreamOrDevice s = {}) {
   return ones(shape, float32, s);
 }
+/** Create an array of ones with the shape of `a`. */
 MLX_API array ones_like(const array& a, StreamOrDevice s = {});
+MLX_API array ones_like(const array& a, Dtype dtype, StreamOrDevice s = {});
 
 /** Fill an array of the given shape (n,m) with ones in the specified diagonal
  * k, and zeros everywhere else. */
@@ -622,6 +622,20 @@ sum(const array& a,
 MLX_API array
 sum(const array& a, int axis, bool keepdims = false, StreamOrDevice s = {});
 
+/** Count the number of non-zero elements in an array. */
+MLX_API array
+count_nonzero(const array& a, bool keepdims = false, StreamOrDevice s = {});
+MLX_API array count_nonzero(
+    const array& a,
+    int axis,
+    bool keepdims = false,
+    StreamOrDevice s = {});
+MLX_API array count_nonzero(
+    const array& a,
+    const std::vector<int>& axes,
+    bool keepdims = false,
+    StreamOrDevice s = {});
+
 /** Computes the mean of the elements of an array. */
 MLX_API array mean(const array& a, bool keepdims, StreamOrDevice s = {});
 inline array mean(const array& a, StreamOrDevice s = {}) {
@@ -839,6 +853,13 @@ MLX_API array argpartition(const array& a, int kth, StreamOrDevice s = {});
 MLX_API array
 argpartition(const array& a, int kth, int axis, StreamOrDevice s = {});
 
+/** Find the indices of `values` in `sorted_sequence`. */
+MLX_API array searchsorted(
+    const array& sorted_sequence,
+    const array& values,
+    const std::string& side = "left",
+    StreamOrDevice s = {});
+
 /** Returns topk elements of the flattened array. */
 MLX_API array topk(const array& a, int k, StreamOrDevice s = {});
 
@@ -883,6 +904,9 @@ MLX_API array logsumexp(
 /** Absolute value of elements in an array. */
 MLX_API array abs(const array& a, StreamOrDevice s = {});
 
+/** Unary plus — return a copy of the array unchanged. */
+MLX_API array positive(const array& a, StreamOrDevice s = {});
+
 /** Negate an array. */
 MLX_API array negative(const array& a, StreamOrDevice s = {});
 MLX_API array operator-(const array& a);
@@ -901,6 +925,10 @@ MLX_API array operator&&(const array& a, const array& b);
 /** Logical or of two arrays */
 MLX_API array logical_or(const array& a, const array& b, StreamOrDevice s = {});
 MLX_API array operator||(const array& a, const array& b);
+
+/** Logical exclusive or of two arrays */
+MLX_API array
+logical_xor(const array& a, const array& b, StreamOrDevice s = {});
 
 /** The reciprocal (1/x) of the elements in an array. */
 MLX_API array reciprocal(const array& a, StreamOrDevice s = {});
@@ -978,6 +1006,9 @@ MLX_API array floor(const array& a, StreamOrDevice s = {});
 
 /** Ceil the element of an array. **/
 MLX_API array ceil(const array& a, StreamOrDevice s = {});
+
+/** Truncate the elements of an array towards zero. **/
+MLX_API array trunc(const array& a, StreamOrDevice s = {});
 
 /** Square the elements of an array. */
 MLX_API array square(const array& a, StreamOrDevice s = {});
@@ -1333,7 +1364,12 @@ MLX_API array cumsum(
     const array& a,
     bool reverse = false,
     bool inclusive = true,
+    std::optional<Dtype> dtype = std::nullopt,
     StreamOrDevice s = {});
+inline array
+cumsum(const array& a, bool reverse, bool inclusive, StreamOrDevice s) {
+  return cumsum(a, reverse, inclusive, std::nullopt, s);
+}
 
 /** Cumulative sum of an array along the given axis. */
 MLX_API array cumsum(
@@ -1341,14 +1377,28 @@ MLX_API array cumsum(
     int axis,
     bool reverse = false,
     bool inclusive = true,
+    std::optional<Dtype> dtype = std::nullopt,
     StreamOrDevice s = {});
+inline array cumsum(
+    const array& a,
+    int axis,
+    bool reverse,
+    bool inclusive,
+    StreamOrDevice s) {
+  return cumsum(a, axis, reverse, inclusive, std::nullopt, s);
+}
 
 /** Cumulative product of an array. */
 MLX_API array cumprod(
     const array& a,
     bool reverse = false,
     bool inclusive = true,
+    std::optional<Dtype> dtype = std::nullopt,
     StreamOrDevice s = {});
+inline array
+cumprod(const array& a, bool reverse, bool inclusive, StreamOrDevice s) {
+  return cumprod(a, reverse, inclusive, std::nullopt, s);
+}
 
 /** Cumulative product of an array along the given axis. */
 MLX_API array cumprod(
@@ -1356,7 +1406,16 @@ MLX_API array cumprod(
     int axis,
     bool reverse = false,
     bool inclusive = true,
+    std::optional<Dtype> dtype = std::nullopt,
     StreamOrDevice s = {});
+inline array cumprod(
+    const array& a,
+    int axis,
+    bool reverse,
+    bool inclusive,
+    StreamOrDevice s) {
+  return cumprod(a, axis, reverse, inclusive, std::nullopt, s);
+}
 
 /** Cumulative max of an array. */
 MLX_API array cummax(
@@ -1387,6 +1446,10 @@ MLX_API array cummin(
     bool reverse = false,
     bool inclusive = true,
     StreamOrDevice s = {});
+
+/** The n-th discrete difference along the given axis. */
+MLX_API array
+diff(const array& a, int n = 1, int axis = -1, StreamOrDevice s = {});
 
 /** General convolution with a filter */
 MLX_API array conv_general(
@@ -1490,10 +1553,10 @@ MLX_API array conv_transpose3d(
 
 /** Quantized matmul multiplies x with a quantized matrix w*/
 MLX_API array quantized_matmul(
-    array x,
-    array w,
-    array scales,
-    std::optional<array> biases = std::nullopt,
+    const array& x,
+    const array& w,
+    const array& scales,
+    const std::optional<array>& biases = std::nullopt,
     bool transpose = true,
     std::optional<int> group_size = std::nullopt,
     std::optional<int> bits = std::nullopt,
@@ -1522,15 +1585,15 @@ MLX_API array dequantize(
     StreamOrDevice s = {});
 
 MLX_API array qqmm(
-    array x, // input activations
-    array w, // maybe quantized weights
-    const std::optional<array> w_scales = std::nullopt, // optional scales if w
-                                                        // is quantized
+    const array& x, // input activations
+    const array& w, // maybe quantized weights
+    const std::optional<array>& w_scales = std::nullopt, // optional scales if w
+                                                         // is quantized
     std::optional<int> group_size = std::nullopt,
     std::optional<int> bits = std::nullopt,
     const std::string& mode = "nvfp4",
-    const std::optional<array> global_scale_x = std::nullopt,
-    const std::optional<array> global_scale_w = std::nullopt,
+    const std::optional<array>& global_scale_x = std::nullopt,
+    const std::optional<array>& global_scale_w = std::nullopt,
     StreamOrDevice s = {});
 
 /** Convert an E4M3 float8 to the given floating point dtype. */
@@ -1554,6 +1617,20 @@ MLX_API array gather_qmm(
     bool sorted_indices = false,
     StreamOrDevice s = {});
 
+MLX_API array gather_qqmm(
+    const array& x,
+    const array& w,
+    const std::optional<array>& scales_w = std::nullopt,
+    const std::optional<array>& lhs_indices = std::nullopt,
+    const std::optional<array>& rhs_indices = std::nullopt,
+    std::optional<int> group_size = std::nullopt,
+    std::optional<int> bits = std::nullopt,
+    const std::string& mode = "nvfp4",
+    const std::optional<array>& global_scale_x = std::nullopt,
+    const std::optional<array>& global_scale_w = std::nullopt,
+    bool sorted_indices = false,
+    StreamOrDevice s = {});
+
 /** Returns a contraction of a and b over multiple dimensions. */
 MLX_API array tensordot(
     const array& a,
@@ -1573,6 +1650,10 @@ MLX_API array outer(const array& a, const array& b, StreamOrDevice s = {});
 
 /** Compute the inner product of two vectors. */
 MLX_API array inner(const array& a, const array& b, StreamOrDevice s = {});
+
+/** Compute a vector dot product along an axis. */
+MLX_API array
+vecdot(const array& a, const array& b, int axis = -1, StreamOrDevice s = {});
 
 /** Compute D = beta * C + alpha * (A @ B) */
 MLX_API array addmm(

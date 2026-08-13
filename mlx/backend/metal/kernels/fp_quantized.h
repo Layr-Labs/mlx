@@ -1,4 +1,4 @@
-// Copyright © 2025 Apple Inc.
+// Copyright © 2025-2026 Apple Inc.
 
 #include <metal_simdgroup>
 #include <metal_stdlib>
@@ -39,7 +39,7 @@ static inline T dequantize_scale(uint8_t s) {
 
 template <int bits>
 struct Quantize {
-  uint8_t operator()(float x) {
+  uint8_t operator()(float x) thread {
     if (bits == 8) {
       return fp8_e4m3(x).bits;
     } else {
@@ -50,7 +50,7 @@ struct Quantize {
 
 template <int bits, typename U = float>
 struct Dequantize {
-  U operator()(uint8_t x) {
+  U operator()(uint8_t x) thread {
     if constexpr (bits == 8) {
       return U(*(thread fp8_e4m3*)(&x));
     } else {
@@ -186,15 +186,15 @@ struct QuantizedBlockLoader {
       const int src_ld_,
       threadgroup T* dst_,
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]])
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread
       : src_ld(src_ld_),
         tile_stride(
-            reduction_dim ? BCOLS_PACKED * bytes_per_pack
+            reduction_dim ? BCOLS_PACKED* bytes_per_pack
                           : BROWS * src_ld * bytes_per_pack / pack_factor),
         group_step_cnt(0),
-        group_stride(BROWS * src_ld / group_size),
+        group_stride(BROWS* src_ld / group_size),
         thread_idx(simd_group_id * 32 + simd_lane_id),
-        bi(n_reads * thread_idx / BCOLS_PACKED),
+        bi(n_reads* thread_idx / BCOLS_PACKED),
         bj((n_reads * thread_idx) % BCOLS_PACKED),
         dst(dst_ + bi * dst_ld + bj * pack_factor),
         src(src_ + bi * src_ld * bytes_per_pack / pack_factor +
@@ -203,7 +203,7 @@ struct QuantizedBlockLoader {
             scales_ + bi * src_ld / group_size +
             (bj * pack_factor) / group_size) {}
 
-  void load_unsafe() const {
+  void load_unsafe() const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -215,7 +215,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void load_safe(short2 src_tile_dim) const {
+  void load_safe(short2 src_tile_dim) const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -241,7 +241,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void next() {
+  void next() thread {
     src += tile_stride;
     if (reduction_dim == 1) {
       if (group_steps > 1) {
@@ -321,10 +321,16 @@ METAL_FUNC void fp_qmv_quad_impl(
   }
 }
 
-template <typename T, int group_size, int bits>
+template <
+    typename T,
+    int group_size,
+    int bits,
+    bool has_global_scale = false,
+    int results_per_simdgroup = 4>
 METAL_FUNC void fp_qmv_fast_impl(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     device T* y,
     const constant int& in_vec_size,
@@ -334,7 +340,6 @@ METAL_FUNC void fp_qmv_fast_impl(
     uint simd_lid [[thread_index_in_simdgroup]]) {
   constexpr int packs_per_thread = 2;
   constexpr int num_simdgroups = 2;
-  constexpr int results_per_simdgroup = 4;
   constexpr int pack_factor = get_pack_factor<32, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack<32>();
   constexpr int values_per_thread = pack_factor * packs_per_thread;
@@ -374,18 +379,28 @@ METAL_FUNC void fp_qmv_fast_impl(
     x += block_size;
   }
 
+  float inv_scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    inv_scale_enc = *global_scale / (F8E4M3_MAX * F4E2M1_MAX);
+  }
+
   for (int row = 0; row < results_per_simdgroup; row++) {
     result[row] = simd_sum(result[row]);
     if (simd_lid == 0) {
-      y[row] = static_cast<T>(result[row]);
+      if constexpr (has_global_scale) {
+        y[row] = static_cast<T>(result[row] * inv_scale_enc);
+      } else {
+        y[row] = static_cast<T>(result[row]);
+      }
     }
   }
 }
 
-template <typename T, int group_size, int bits>
+template <typename T, int group_size, int bits, bool has_global_scale = false>
 METAL_FUNC void fp_qmv_impl(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     device T* y,
     const constant int& in_vec_size,
@@ -421,6 +436,11 @@ METAL_FUNC void fp_qmv_impl(
     return;
   }
 
+  float inv_scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    inv_scale_enc = *global_scale / (F8E4M3_MAX * F4E2M1_MAX);
+  }
+
   // In this case we need to properly guard all our reads because there isn't
   // even 1 tile in the matrix
   if (out_vec_size < (num_simdgroups * results_per_simdgroup)) {
@@ -440,7 +460,7 @@ METAL_FUNC void fp_qmv_impl(
         auto wl = (const device uint8_t*)(ws + row * in_vec_size_w);
         const device auto* sl = scales + row * in_vec_size_g;
 
-        uint8_t s = sl[0];
+        U s = dequantize_scale<U, group_size>(sl[0]);
         result[row] += qdot<U, values_per_thread, bits>(wl, x_thread, s);
       }
 
@@ -471,7 +491,11 @@ METAL_FUNC void fp_qmv_impl(
          row++) {
       result[row] = simd_sum(result[row]);
       if (simd_lid == 0) {
-        y[row] = static_cast<T>(result[row]);
+        if constexpr (has_global_scale) {
+          y[row] = static_cast<T>(result[row] * inv_scale_enc);
+        } else {
+          y[row] = static_cast<T>(result[row]);
+        }
       }
     }
   }
@@ -519,16 +543,140 @@ METAL_FUNC void fp_qmv_impl(
     for (int row = 0; row < results_per_simdgroup; row++) {
       result[row] = simd_sum(result[row]);
       if (simd_lid == 0) {
-        y[row] = static_cast<T>(result[row]);
+        if constexpr (has_global_scale) {
+          y[row] = static_cast<T>(result[row] * inv_scale_enc);
+        } else {
+          y[row] = static_cast<T>(result[row]);
+        }
       }
     }
   }
 }
 
-template <typename T, const int group_size, int bits>
+// Quantized matrix-vector for a small batch of input vectors, the M in
+// [2, vector_limit) band between qmv (M==1) and qmm. Each thread owns one
+// output row that k_lanes lanes reduce over K; the vecs_per_tg vectors are
+// streamed so each weight group is dequantized once and reused across them.
+template <typename T, int group_size, int bits, int vecs_per_tg, int k_lanes>
+METAL_FUNC void fp_qmv_wide_impl(
+    const device uint32_t* w,
+    const device uint8_t* scales,
+    const device T* x,
+    device T* y,
+    const constant int& in_vec_size,
+    const constant int& out_vec_size,
+    const constant int& M,
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  constexpr int num_simdgroups = 2;
+  constexpr int results_per_simdgroup = SIMD_SIZE / k_lanes;
+  constexpr int pack_factor = get_pack_factor<32, bits>();
+  constexpr int bytes_per_pack = get_bytes_per_pack<32>();
+  constexpr int nf4 = group_size / 4; // float4 lanes per quant group
+
+  typedef float U;
+
+  const short k_lane =
+      simd_lid % k_lanes; // this lane's slot in the K reduction
+  const short sg_row = simd_lid / k_lanes; // which output row of the simdgroup
+
+  const int out_row = tid.y * (results_per_simdgroup * num_simdgroups) +
+      results_per_simdgroup * simd_gid + sg_row;
+  const int vec0 = tid.x * vecs_per_tg; // first input vector handled here
+
+  const int row = min(out_row, out_vec_size - 1);
+
+  const int in_vec_size_w = in_vec_size * bytes_per_pack / pack_factor;
+  const int in_vec_size_g = in_vec_size / group_size;
+  const device uint8_t* wrow = (const device uint8_t*)w + row * in_vec_size_w;
+  const device uint8_t* srow = scales + row * in_vec_size_g;
+
+  // One device pointer per streamed vector; the clamp keeps an out-of-range
+  // tail slot reading a valid row (it is never written below).
+  const device T* xv[vecs_per_tg];
+  for (int v = 0; v < vecs_per_tg; v++) {
+    xv[v] = x + min(vec0 + v, M - 1) * in_vec_size;
+  }
+
+  U result[vecs_per_tg] = {0};
+
+  // Each lane reduces a strided subset of the row's quant groups: one group is
+  // dequantized to float4 lanes and dot()'d against each streamed vector. One
+  // group per iteration keeps weight-register pressure low for occupancy.
+  for (int g = k_lane; g < in_vec_size_g; g += k_lanes) {
+    const int k0 = g * group_size;
+    U s = dequantize_scale<U, group_size>(srow[g]);
+    const device uint8_t* wg = wrow + k0 * bytes_per_pack / pack_factor;
+
+    float4 w4[nf4];
+    if constexpr (bits == 4) {
+      const device uint16_t* wq = (const device uint16_t*)wg;
+#pragma unroll
+      for (int i = 0; i < nf4; i++) {
+        w4[i] = float4(
+            Dequantize<4>{}(wq[i]),
+            Dequantize<4>{}(wq[i] >> 4),
+            Dequantize<4>{}(wq[i] >> 8),
+            Dequantize<4>{}(wq[i] >> 12));
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < nf4; i++) {
+        w4[i] = float4(
+            Dequantize<8>{}(wg[4 * i]),
+            Dequantize<8>{}(wg[4 * i + 1]),
+            Dequantize<8>{}(wg[4 * i + 2]),
+            Dequantize<8>{}(wg[4 * i + 3]));
+      }
+    }
+
+#pragma unroll
+    for (int v = 0; v < vecs_per_tg; v++) {
+      const device vec<T, 4>* xv4 = (const device vec<T, 4>*)(xv[v] + k0);
+      float acc = 0;
+#pragma unroll
+      for (int j = 0; j < nf4; j++) {
+        acc += dot(w4[j], float4(xv4[j]));
+      }
+      result[v] += s * acc;
+    }
+  }
+
+  // Reduce each vector's partial over its k_lanes with a shuffle ladder:
+  // simd_sum would mix the results_per_simdgroup rows a simdgroup spans.
+  for (int v = 0; v < vecs_per_tg; v++) {
+    if constexpr (k_lanes >= 32) {
+      result[v] += simd_shuffle_down(result[v], 16);
+    }
+    if constexpr (k_lanes >= 16) {
+      result[v] += simd_shuffle_down(result[v], 8);
+    }
+    if constexpr (k_lanes >= 8) {
+      result[v] += simd_shuffle_down(result[v], 4);
+    }
+    if constexpr (k_lanes >= 4) {
+      result[v] += simd_shuffle_down(result[v], 2);
+    }
+    if constexpr (k_lanes >= 2) {
+      result[v] += simd_shuffle_down(result[v], 1);
+    }
+  }
+
+  if (k_lane == 0 && out_row < out_vec_size) {
+    for (int v = 0; v < vecs_per_tg; v++) {
+      if (vec0 + v < M) {
+        y[(vec0 + v) * out_vec_size + out_row] = static_cast<T>(result[v]);
+      }
+    }
+  }
+}
+
+template <typename T, int group_size, int bits, bool has_global_scale = false>
 METAL_FUNC void fp_qvm_impl(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     device T* y,
     const int in_vec_size,
@@ -569,6 +717,11 @@ METAL_FUNC void fp_qvm_impl(
 
   if (out_col >= out_vec_size) {
     return;
+  }
+
+  float inv_scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    inv_scale_enc = *global_scale / (F8E4M3_MAX * F4E2M1_MAX);
   }
 
   // Loop over in_vec in blocks of block_size
@@ -620,7 +773,11 @@ METAL_FUNC void fp_qvm_impl(
   if (simd_lid == 0) {
 #pragma clang loop unroll(full)
     for (int k = 0; k < tn * pack_factor; k++) {
-      y[k] = static_cast<T>(result[k]);
+      if constexpr (has_global_scale) {
+        y[k] = static_cast<T>(result[k] * inv_scale_enc);
+      } else {
+        y[k] = static_cast<T>(result[k]);
+      }
     }
   }
 }
@@ -753,11 +910,11 @@ METAL_FUNC void fp_qmm_t_impl(
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 METAL_FUNC void fp_qmm_n_impl(
     const device uint32_t* w,
     const device uint8_t* scales,
@@ -1009,10 +1166,17 @@ template <typename T, int group_size, int bits, int D, bool batched>
       w, scales, x, y, in_vec_size, out_vec_size, tid, quad_gid, quad_lid);
 }
 
-template <typename T, int group_size, int bits, bool batched>
+template <
+    typename T,
+    int group_size,
+    int bits,
+    bool batched,
+    bool has_global_scale = false,
+    int results_per_simdgroup = 4>
 [[kernel]] void fp_qmv_fast(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     device T* y,
     const constant int& in_vec_size,
@@ -1044,14 +1208,34 @@ template <typename T, int group_size, int bits, bool batched>
         s_strides,
         tid);
   }
-  fp_qmv_fast_impl<T, group_size, bits>(
-      w, scales, x, y, in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+  fp_qmv_fast_impl<
+      T,
+      group_size,
+      bits,
+      has_global_scale,
+      results_per_simdgroup>(
+      w,
+      scales,
+      global_scale,
+      x,
+      y,
+      in_vec_size,
+      out_vec_size,
+      tid,
+      simd_gid,
+      simd_lid);
 }
 
-template <typename T, const int group_size, int bits, bool batched>
+template <
+    typename T,
+    int group_size,
+    int bits,
+    bool batched,
+    bool has_global_scale = false>
 [[kernel]] void fp_qmv(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     device T* y,
     const constant int& in_vec_size,
@@ -1083,18 +1267,78 @@ template <typename T, const int group_size, int bits, bool batched>
         s_strides,
         tid);
   }
-  fp_qmv_impl<T, group_size, bits>(
-      w, scales, x, y, in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+  fp_qmv_impl<T, group_size, bits, has_global_scale>(
+      w,
+      scales,
+      global_scale,
+      x,
+      y,
+      in_vec_size,
+      out_vec_size,
+      tid,
+      simd_gid,
+      simd_lid);
 }
 
-template <typename T, const int group_size, int bits, bool batched>
-[[kernel]] void fp_qvm(
+template <
+    typename T,
+    int group_size,
+    int bits,
+    int vecs_per_tg,
+    int k_lanes,
+    bool batched>
+[[kernel]] void fp_qmv_wide(
     const device uint32_t* w,
     const device uint8_t* scales,
     const device T* x,
     device T* y,
     const constant int& in_vec_size,
     const constant int& out_vec_size,
+    const constant int& M,
+    const constant int& x_batch_ndims,
+    const constant int* x_shape,
+    const constant int64_t* x_strides,
+    const constant int& w_batch_ndims,
+    const constant int* w_shape,
+    const constant int64_t* w_strides,
+    const constant int64_t* s_strides,
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  if (batched) {
+    adjust_matrix_offsets(
+        x,
+        w,
+        scales,
+        y,
+        out_vec_size * M,
+        x_batch_ndims,
+        x_shape,
+        x_strides,
+        w_batch_ndims,
+        w_shape,
+        w_strides,
+        s_strides,
+        tid);
+  }
+  fp_qmv_wide_impl<T, group_size, bits, vecs_per_tg, k_lanes>(
+      w, scales, x, y, in_vec_size, out_vec_size, M, tid, simd_gid, simd_lid);
+}
+
+template <
+    typename T,
+    int group_size,
+    int bits,
+    bool batched,
+    bool has_global_scale = false>
+[[kernel]] void fp_qvm(
+    const device uint32_t* w,
+    const device uint8_t* scales,
+    const device float* global_scale,
+    const device T* x,
+    device T* y,
+    const constant int& in_vec_size,
+    const constant int& out_vec_size,
     const constant int& x_batch_ndims,
     const constant int* x_shape,
     const constant int64_t* x_strides,
@@ -1122,9 +1366,10 @@ template <typename T, const int group_size, int bits, bool batched>
         s_strides,
         tid);
   }
-  fp_qvm_impl<T, group_size, bits>(
+  fp_qvm_impl<T, group_size, bits, has_global_scale>(
       w,
       scales,
+      global_scale,
       x,
       y,
       in_vec_size,
@@ -1177,9 +1422,10 @@ template <typename T, const int group_size, int bits, int split_k = 32>
   // The in_vec_stride is the full K dimension, not the partition size
   int in_vec_stride = (split_k - 1) * in_vec_size + final_block_size;
 
-  fp_qvm_impl<T, group_size, bits>(
+  fp_qvm_impl<T, group_size, bits, false>(
       w,
       scales,
+      nullptr,
       x,
       y,
       in_vec_size_adj,
@@ -1247,12 +1493,13 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool batched,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    bool batched,
+    bool has_global_scale = false,
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 [[kernel]] void fp_qmm_n(
     const device uint32_t* w,
     const device uint8_t* scales,
@@ -1301,10 +1548,11 @@ template <
       w, scales, x, y, Xs, Ws, K, N, M, tid, lid, simd_gid, simd_lid);
 }
 
-template <typename T, int group_size, int bits>
+template <typename T, int group_size, int bits, bool has_global_scale = false>
 [[kernel]] void fp_gather_qmv_fast(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     const device uint32_t* lhs_indices,
     const device uint32_t* rhs_indices,
@@ -1346,14 +1594,24 @@ template <typename T, int group_size, int bits>
       w_strides,
       s_strides,
       tid);
-  fp_qmv_fast_impl<T, group_size, bits>(
-      w, scales, x, y, in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+  fp_qmv_fast_impl<T, group_size, bits, has_global_scale>(
+      w,
+      scales,
+      global_scale,
+      x,
+      y,
+      in_vec_size,
+      out_vec_size,
+      tid,
+      simd_gid,
+      simd_lid);
 }
 
-template <typename T, int group_size, int bits>
+template <typename T, int group_size, int bits, bool has_global_scale = false>
 [[kernel]] void fp_gather_qmv(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     const device uint32_t* lhs_indices,
     const device uint32_t* rhs_indices,
@@ -1395,14 +1653,24 @@ template <typename T, int group_size, int bits>
       w_strides,
       s_strides,
       tid);
-  fp_qmv_impl<T, group_size, bits>(
-      w, scales, x, y, in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+  fp_qmv_impl<T, group_size, bits, has_global_scale>(
+      w,
+      scales,
+      global_scale,
+      x,
+      y,
+      in_vec_size,
+      out_vec_size,
+      tid,
+      simd_gid,
+      simd_lid);
 }
 
-template <typename T, int group_size, int bits>
+template <typename T, int group_size, int bits, bool has_global_scale = false>
 [[kernel]] void fp_gather_qvm(
     const device uint32_t* w,
     const device uint8_t* scales,
+    const device float* global_scale,
     const device T* x,
     const device uint32_t* lhs_indices,
     const device uint32_t* rhs_indices,
@@ -1444,9 +1712,10 @@ template <typename T, int group_size, int bits>
       w_strides,
       s_strides,
       tid);
-  fp_qvm_impl<T, group_size, bits>(
+  fp_qvm_impl<T, group_size, bits, has_global_scale>(
       w,
       scales,
+      global_scale,
       x,
       y,
       in_vec_size,
@@ -1577,11 +1846,12 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    bool has_global_scale = false,
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 [[kernel]] void fp_gather_qmm_n(
     const device uint32_t* w,
     const device uint8_t* scales,
@@ -1832,38 +2102,48 @@ template <
   }
 }
 
-template <typename T, const int group_size, const int bits>
+template <typename T, int group_size, int bits, bool has_global_scale>
 [[kernel]] void fp_quantize(
     const device T* w [[buffer(0)]],
     device uint8_t* out [[buffer(1)]],
     device uint8_t* scales [[buffer(2)]],
+    const device float* global_scale [[buffer(3)]],
     uint2 tidx [[thread_position_in_grid]],
-    uint2 grid_dim [[threads_per_grid]]) {
+    uint2 grid_dim [[threads_per_grid]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
   constexpr bool use_mx_scale = group_size == 32;
   size_t index = tidx.x + grid_dim.x * size_t(tidx.y);
 
-  float scale;
+  float scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    scale_enc = (F8E4M3_MAX * F4E2M1_MAX) / *global_scale;
+  }
+
+  float scale_dec_b;
   float w_thread = w[index];
   if (use_mx_scale) {
-    scale = simd_max(abs(w_thread));
+    scale_dec_b = simd_max(abs(w_thread));
   } else {
-    float w_max_l = simd_max(tidx.x < 16 ? abs(w_thread) : 0.0);
-    float w_max_r = simd_max(tidx.x >= 16 ? abs(w_thread) : 0.0);
-    scale = tidx.x < 16 ? w_max_l : w_max_r;
+    float w_max_l = simd_max(simd_lid < 16 ? abs(w_thread) : 0.0);
+    float w_max_r = simd_max(simd_lid >= 16 ? abs(w_thread) : 0.0);
+    scale_dec_b = simd_lid < 16 ? w_max_l : w_max_r;
   }
-  scale /= bits == 4 ? 6.0f : 448.0f;
+  scale_dec_b /= bits == 4 ? F4E2M1_MAX : F8E4M3_MAX;
+  if constexpr (has_global_scale) {
+    scale_dec_b *= scale_enc;
+  }
 
   using ScaleType = metal::conditional_t<use_mx_scale, fp8_e8m0, fp8_e4m3>;
-  auto s = ScaleType(scale);
+  auto s = ScaleType(scale_dec_b);
   uint8_t q_scale = s.bits;
-  scale = float(s);
-
   size_t gindex = index / group_size;
   if (index % group_size == 0) {
     scales[gindex] = q_scale;
   }
 
-  uint8_t output = Quantize<bits>{}(scale == 0 ? 0.0f : w_thread / scale);
+  float scale_enc_b = float(s);
+  scale_enc_b = (scale_enc_b == 0) ? 0.0f : (scale_enc / scale_enc_b);
+  uint8_t output = Quantize<bits>{}(w_thread * scale_enc_b);
   if (bits == 4) {
     uint8_t sval = simd_shuffle_down(output, 1);
     output |= sval << bits;
@@ -1874,10 +2154,11 @@ template <typename T, const int group_size, const int bits>
   }
 }
 
-template <typename T, const int group_size, const int bits>
+template <typename T, int group_size, int bits, bool has_global_scale>
 [[kernel]] void fp_dequantize(
     const device uint8_t* w [[buffer(0)]],
     const device uint8_t* scales [[buffer(1)]],
+    const device float* global_scale [[buffer(2)]],
     device T* out [[buffer(3)]],
     uint2 index [[thread_position_in_grid]],
     uint2 grid_dim [[threads_per_grid]]) {
@@ -1889,9 +2170,17 @@ template <typename T, const int group_size, const int bits>
 
   out += oindex;
 
+  float inv_scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    inv_scale_enc = *global_scale / (F8E4M3_MAX * F4E2M1_MAX);
+  }
+
   using ScaleType = metal::conditional_t<use_mx_scale, fp8_e8m0, fp8_e4m3>;
   auto q_scale = ((device ScaleType*)(scales))[gindex];
   auto scale = float(q_scale);
+  if constexpr (has_global_scale) {
+    scale *= inv_scale_enc;
+  }
 
   uint val = w[offset];
 #pragma clang loop unroll(full)
@@ -1906,31 +2195,41 @@ template <typename T, const int group_size, const int bits>
   }
 }
 
-template <typename T, const int group_size, const int bits>
+template <typename T, int group_size, int bits, bool has_global_scale>
 [[kernel]] void fp_quantize_dequantize(
     const device T* w [[buffer(0)]],
-    device T* out [[buffer(1)]],
+    const device float* global_scale [[buffer(1)]],
+    device T* out [[buffer(2)]],
     uint2 tidx [[thread_position_in_grid]],
-    uint2 grid_dim [[threads_per_grid]]) {
+    uint2 grid_dim [[threads_per_grid]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
   constexpr bool use_mx_scale = group_size == 32;
   size_t index = tidx.x + grid_dim.x * size_t(tidx.y);
 
-  float scale;
+  float scale_enc = 1.0f;
+  if constexpr (has_global_scale) {
+    scale_enc = (F8E4M3_MAX * F4E2M1_MAX) / *global_scale;
+  }
+
+  float scale_dec_b;
   float w_thread = w[index];
   if (use_mx_scale) {
-    scale = simd_max(abs(w_thread));
+    scale_dec_b = simd_max(abs(w_thread));
   } else {
-    float w_max_l = simd_max(tidx.x < 16 ? abs(w_thread) : 0.0);
-    float w_max_r = simd_max(tidx.x >= 16 ? abs(w_thread) : 0.0);
-    scale = tidx.x < 16 ? w_max_l : w_max_r;
+    float w_max_l = simd_max(simd_lid < 16 ? abs(w_thread) : 0.0);
+    float w_max_r = simd_max(simd_lid >= 16 ? abs(w_thread) : 0.0);
+    scale_dec_b = simd_lid < 16 ? w_max_l : w_max_r;
   }
-  scale /= bits == 4 ? 6.0f : 448.0f;
+  scale_dec_b /= bits == 4 ? F4E2M1_MAX : F8E4M3_MAX;
+  if constexpr (has_global_scale) {
+    scale_dec_b *= scale_enc;
+  }
 
   using ScaleType = metal::conditional_t<use_mx_scale, fp8_e8m0, fp8_e4m3>;
-  auto s = ScaleType(scale);
-  scale = float(s);
+  auto scale = float(ScaleType(scale_dec_b));
 
-  uint8_t output = Quantize<bits>{}(scale == 0 ? 0.0f : w_thread / scale);
+  float scale_enc_b = (scale == 0) ? 0.0f : (scale_enc / scale);
+  uint8_t output = Quantize<bits>{}(w_thread * scale_enc_b);
 
-  out[index] = static_cast<T>(scale * Dequantize<bits>{}(output));
+  out[index] = static_cast<T>((scale / scale_enc) * Dequantize<bits>{}(output));
 }

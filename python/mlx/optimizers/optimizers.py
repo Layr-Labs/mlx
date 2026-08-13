@@ -39,7 +39,7 @@ class Optimizer:
         :meth:`Optimizer.update`.
 
         Args:
-            model (dict): A Python tree of parameters.
+            parameters (dict): A Python tree of parameters.
 
         Example:
             >>> optimizer = optim.SGD(learning_rate=1e-1, momentum=0.9)
@@ -77,7 +77,7 @@ class Optimizer:
         state initialization.
 
         Args:
-            parameter (mx.array): A single parameter that will be optimized.
+            parameter (array): A single parameter that will be optimized.
             state (dict): The optimizer's state.
         """
         raise NotImplementedError()
@@ -112,8 +112,8 @@ class Optimizer:
         """To be extended by derived classes to implement the optimizer's update.
 
         Args:
-            gradient (mx.array): The ``parameter`` gradient.
-            parameter (mx.array): The ``parameter`` to update.
+            gradient (array): The ``parameter`` gradient.
+            parameter (array): The ``parameter`` to update.
             state (dict): The optimizer's state.
         """
         raise NotImplementedError()
@@ -165,7 +165,7 @@ class MultiOptimizer(Optimizer):
 
     Args:
         optimizers (list[Optimizer]): A list of optimizers to delegate to
-        filters (list[Callable[[str, array], bool]): A list of predicates that
+        filters (list[Callable[[str, array], bool]]): A list of predicates that
             should be one less than the provided optimizers.
     """
 
@@ -606,8 +606,9 @@ class Adamax(Adam):
     Args:
         learning_rate (float or callable): The learning rate :math:`\lambda`.
         betas (Tuple[float, float], optional): The coefficients
-          :math:`(\beta_1, \beta_2)` used for computing running averages of the
-          gradient and its square. Default: ``(0.9, 0.999)``
+          :math:`(\beta_1, \beta_2)` used for computing the running average of
+          the gradient and the exponentially weighted infinity norm.
+          Default: ``(0.9, 0.999)``
         eps (float, optional): The term :math:`\epsilon` added to the
           denominator to improve numerical stability. Default: ``1e-8``
     """
@@ -967,6 +968,9 @@ def clip_grad_norm(grads, max_norm):
         (dict, float): The possibly rescaled gradients and the original
         gradient norm.
     """
+    if max_norm < 0:
+        raise ValueError(f"max_norm should be >=0, {max_norm} was provided instead")
+
     norm_squared = tree_reduce(lambda acc, g: acc + g.square().sum(), grads, 0.0)
     total_norm = mx.sqrt(norm_squared)
     normalizer = mx.minimum(max_norm / (total_norm + 1e-6), 1.0)

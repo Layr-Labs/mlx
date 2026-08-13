@@ -21,9 +21,9 @@ constant bool has_sinks [[function_constant(302)]];
 template <typename T>
 struct TransformScale {
   T scale;
-  METAL_FUNC TransformScale(T scale_) : scale(scale_) {}
+  METAL_FUNC TransformScale(T scale_) thread : scale(scale_) {}
 
-  METAL_FUNC T apply(T x) const {
+  METAL_FUNC T apply(T x) const thread {
     return scale * x;
   }
 };
@@ -207,7 +207,11 @@ template <
     for (short iq = 0; iq < TQ; iq++) {
       STEEL_PRAGMA_UNROLL
       for (short ik = 0; ik < TK; ik += 2) {
-        STEEL_PRAGMA_UNROLL
+        // Unrolling the head-dim loop by 4, rather than fully, potentially
+        // lets the compiler interleave the next K-tile loads with the running
+        // mma chain instead of hoisting all TD loads up front and is faster
+        // for head dim 128.
+#pragma clang loop unroll_count(4)
         for (short id = 0; id < TD; id++) {
           NAXTile<T, 1, 1> Qtile;
           NAXTile<T, 2, 1> Ktile;

@@ -117,6 +117,33 @@ def mlx_primitives_sdpa(q, k, v, scale, mask=None):
 
 
 class TestFastSDPA(mlx_tests.MLXTestCase):
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_head_dim_96(self):
+        B, D, qH, kH = (1, 96, 8, 2)
+        for qL, kL, dtype, mask_str in product(
+            (64, 65),
+            (128, 127),
+            (mx.float16, mx.bfloat16, mx.float32),
+            (None, "additive", "bool", "causal"),
+        ):
+            with self.subTest(qL=qL, kL=kL, dtype=dtype, mask=mask_str):
+                q, k, v, scale, mask = prepare_inputs(
+                    B, qL, kL, D, qH, kH, mask_str, False, dtype
+                )
+                ref = mlx_ref_attn(q, k, v, scale, mask)
+                out = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=scale, mask=mask
+                )
+
+                if dtype == mx.float32:
+                    atol = 1e-5
+                elif dtype == mx.bfloat16:
+                    atol = 5e-3
+                else:
+                    atol = 3e-4
+                diff = mx.abs(out - ref) - atol * mx.abs(ref)
+                self.assertLessEqual(mx.max(diff).item(), atol)
+
     def test_sdpa_vector_kv_transposed_head_seq(self):
         D = 64
         Nq = 4
@@ -359,6 +386,24 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
         out = mx.fast.scaled_dot_product_attention(q, k, v, mask=mask, scale=1.0)
         ref = mlx_ref_attn(q, k, v, mask=mask)
         self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_blocks_env_override(self):
+        # MLX_SDPA_BLOCKS used to be applied as-is, and values that are not
+        # a multiple of 32 silently corrupted the 2-pass vector output. The
+        # override is now rounded up to a multiple of 32.
+        D = 128
+        q = mx.random.normal(shape=(1, 32, 1, D), dtype=mx.float16)
+        k = mx.random.normal(shape=(1, 8, 8192, D), dtype=mx.float16)
+        v = mx.random.normal(shape=(1, 8, 8192, D), dtype=mx.float16)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5)
+        try:
+            for blocks in (16, 33, 48, 100):
+                os.environ["MLX_SDPA_BLOCKS"] = str(blocks)
+                out = mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5)
+                self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
+        finally:
+            del os.environ["MLX_SDPA_BLOCKS"]
 
     @unittest.skipIf(not mx.is_available(mx.gpu), "too slow on CPU")
     def test_sdpa(self):

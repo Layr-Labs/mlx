@@ -2367,7 +2367,11 @@ template <
       w, scales, biases, x, y, Xs, Ws, K, N, M, tid, lid, simd_gid, simd_lid);
 }
 
-[[kernel]] void build_gemma4_sorted_expert_tiles_bm32(
+// Descriptor builder for the sorted expert-tile route. One thread per expert
+// (threadgroup size == NE); instantiated for NE=128 (Gemma 4) and NE=256
+// (Qwen 3.5/3.6 MoE) in quantized.metal.
+template <int NE>
+[[kernel]] void build_sorted_expert_tiles_bm32(
     const device uint32_t* indices [[buffer(0)]],
     device uint4* descriptors [[buffer(1)]],
     device uint* count [[buffer(2)]],
@@ -2375,15 +2379,15 @@ template <
     uint lid [[thread_index_in_threadgroup]],
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
-  constexpr uint expert_count = 128;
+  constexpr uint expert_count = uint(NE);
   constexpr uint BM = 32;
   constexpr uint simdgroup_count = expert_count / 32;
   threadgroup uint segment_starts[expert_count + 1];
   threadgroup uint inclusive_tile_offsets[expert_count];
   threadgroup uint violation_votes[simdgroup_count];
 
-  // One thread finds each expert's first sorted row. Thread 127 also supplies
-  // the sentinel, so all 129 boundaries are ready after one barrier.
+  // One thread finds each expert's first sorted row. The last thread also
+  // supplies the sentinel, so all NE+1 boundaries are ready after one barrier.
   int lower = 0;
   int upper = M;
   while (lower < upper) {
@@ -2406,9 +2410,9 @@ template <
   // `indices[start - 1] < lid <= indices[start]` (edge threads have only one
   // neighbor to check). Independently of that search, a strided adjacent-pair
   // scan validates `indices[i - 1] <= indices[i]` for every i in [1, M):
-  // thread `lid` covers i = lid + 1, lid + 129, ..., so the 128 threads
+  // thread `lid` covers i = lid + 1, lid + NE + 1, ..., so the NE threads
   // between them inspect every adjacent pair exactly once (for the reachable
-  // M in {4096, 8192, 16384} that is between 1 and 128 iterations each).
+  // M in {4096, 8192, 16384} that is a bounded number of iterations each).
   // Adjacent-pair monotonicity is transitive, so a clean scan is a sound and
   // complete proof that the array is globally non-decreasing; no
   // intra-segment inversion can escape it. The simdgroups vote with simd_or
@@ -2450,7 +2454,7 @@ template <
   inclusive_tile_offsets[lid] = (segment_rows + BM - 1) / BM;
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  // Seven uniform Hillis-Steele strides form an inclusive scan for 128
+  // log2(NE) uniform Hillis-Steele strides form an inclusive scan over the
   // experts. The read barrier precedes each in-place update and the write
   // barrier makes that stride visible to the next one.
   for (uint stride = 1; stride < expert_count; stride <<= 1) {

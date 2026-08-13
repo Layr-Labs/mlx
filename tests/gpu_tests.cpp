@@ -875,6 +875,136 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
       Gemma4ExpertQMMRoute::fallback_nax);
 }
 
+TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
+  using metal::Gemma4ExpertQMMRoute;
+  using metal::Gemma4ExpertQMMRouteInput;
+  using metal::classify_gemma4_expert_qmm;
+
+  // Base input: Qwen 3.5/3.6 35B-A3B expert projection at W4/g64,
+  // parametrized by whole-projection [E=256, n, k].
+  auto qwen = [](int assignments, int k, int n) {
+    Gemma4ExpertQMMRouteInput input;
+    input.requested = true;
+    input.aot_available = true;
+    input.outer_route = true;
+    input.affine = true;
+    input.transpose = true;
+    input.has_bias = true;
+    input.indices_uint32 = true;
+    input.indices_contiguous = true;
+    input.x_bfloat16 = true;
+    input.x_contiguous = true;
+    input.w_uint32 = true;
+    input.w_contiguous = true;
+    input.scales_bfloat16 = true;
+    input.scales_contiguous = true;
+    input.biases_bfloat16 = true;
+    input.biases_contiguous = true;
+    input.group_size = 64;
+    input.bits = 4;
+    input.expert_count = 256;
+    input.assignments = assignments;
+    input.index_count = assignments;
+    input.k = k;
+    input.n = n;
+    input.x_rank = 3;
+    input.x_dim0 = assignments;
+    input.x_dim1 = 1;
+    input.x_dim2 = k;
+    input.w_rank = 3;
+    input.w_dim0 = 256;
+    input.w_dim1 = n;
+    input.w_dim2 = k / 8;
+    input.scales_rank = 3;
+    input.scales_dim0 = 256;
+    input.scales_dim1 = n;
+    input.scales_dim2 = k / 64;
+    input.biases_rank = 3;
+    input.biases_dim0 = 256;
+    input.biases_dim1 = n;
+    input.biases_dim2 = k / 64;
+    return input;
+  };
+
+  // Fused gate_up, split gate/up, and down projections hit at the chunked
+  // prefill assignment counts (T x top-8 for T in {512, 1024, 2048}).
+  for (int assignments : {4096, 8192, 16384}) {
+    CHECK(
+        classify_gemma4_expert_qmm(qwen(assignments, 2048, 1024)) ==
+        Gemma4ExpertQMMRoute::hit);
+    CHECK(
+        classify_gemma4_expert_qmm(qwen(assignments, 2048, 512)) ==
+        Gemma4ExpertQMMRoute::hit);
+    CHECK(
+        classify_gemma4_expert_qmm(qwen(assignments, 512, 2048)) ==
+        Gemma4ExpertQMMRoute::hit);
+  }
+
+  auto exact = qwen(4096, 2048, 1024);
+  auto check_miss = [&exact](
+                        auto mutate, Gemma4ExpertQMMRoute expected) {
+    auto input = exact;
+    mutate(input);
+    CHECK(classify_gemma4_expert_qmm(input) == expected);
+  };
+  // Expert counts other than the two instantiated builders miss on topology.
+  check_miss(
+      [](auto& x) {
+        x.expert_count = 255;
+        x.w_dim0 = 255;
+        x.scales_dim0 = 255;
+        x.biases_dim0 = 255;
+      },
+      Gemma4ExpertQMMRoute::fallback_topology);
+  // E=256 with Gemma geometry (and vice versa) must miss on geometry: the
+  // shape table is tied to the expert count, never mixed.
+  check_miss(
+      [](auto& x) {
+        x.k = 2816;
+        x.n = 1408;
+        x.x_dim2 = 2816;
+        x.w_dim1 = 1408;
+        x.w_dim2 = 352;
+        x.scales_dim1 = 1408;
+        x.scales_dim2 = 44;
+        x.biases_dim1 = 1408;
+        x.biases_dim2 = 44;
+      },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) { x.w_dim2 = 128; },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  check_miss(
+      [](auto& x) { x.n -= 32; },
+      Gemma4ExpertQMMRoute::fallback_geometry);
+  // T=128 chunks (1024 assignments) intentionally stay on the legacy path.
+  for (int assignments : {8, 1024, 4095, 4097}) {
+    check_miss(
+        [assignments](auto& x) {
+          x.assignments = assignments;
+          x.index_count = assignments;
+          x.x_dim0 = assignments;
+        },
+        Gemma4ExpertQMMRoute::fallback_assignment_count);
+  }
+  check_miss(
+      [](auto& x) { x.bits = 8; },
+      Gemma4ExpertQMMRoute::fallback_quantization);
+  check_miss(
+      [](auto& x) { x.aot_available = false; },
+      Gemma4ExpertQMMRoute::fallback_metallib_unavailable);
+
+  // The Gemma table must also reject Qwen geometry under E=128.
+  auto gemma_with_qwen_geometry = exact;
+  gemma_with_qwen_geometry.expert_count = 128;
+  gemma_with_qwen_geometry.w_dim0 = 128;
+  gemma_with_qwen_geometry.scales_dim0 = 128;
+  gemma_with_qwen_geometry.biases_dim0 = 128;
+  CHECK(
+      classify_gemma4_expert_qmm(gemma_with_qwen_geometry) ==
+      Gemma4ExpertQMMRoute::fallback_geometry);
+}
+
 TEST_CASE("test Gemma 4 expert QMM counter invariant") {
   metal::Gemma4ExpertQMMCounters counters;
   using Route = metal::Gemma4ExpertQMMRoute;

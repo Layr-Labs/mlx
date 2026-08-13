@@ -573,6 +573,8 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
 
   constexpr const char* descriptor_kernel =
       "build_gemma4_sorted_expert_tiles_bm32";
+  constexpr const char* descriptor_kernel_e256 =
+      "build_sorted_expert_tiles_bm32_e256";
   constexpr const char* tile_kernel =
       "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
       "alN_true_bm_32_bn_32_bk_32";
@@ -582,14 +584,20 @@ Device::Device() : device_(load_device()), residency_set_(device_.get()) {
         NS::TransferPtr(default_library_->newFunction(ns_name));
     return function.get() != nullptr;
   };
+  // All expert-tile symbols ship from one source-matched metallib
+  // (scripts/fetch-metallib.sh completeness contract), so availability is
+  // all-or-nothing: a metallib missing any of them predates this revision
+  // and must fail the whole route closed.
   gemma4_expert_qmm_aot_available_ =
       has_default_function(descriptor_kernel) &&
+      has_default_function(descriptor_kernel_e256) &&
       has_default_function(tile_kernel);
   if (gemma4_expert_qmm_requested_ && gemma4_expert_qmm_aot_available_) {
     try {
-      // Resolve both pipelines once so missing or incompatible packaged AOT
+      // Resolve the pipelines once so missing or incompatible packaged AOT
       // assets fail closed before an inference command encoder is touched.
       get_kernel(descriptor_kernel);
+      get_kernel(descriptor_kernel_e256);
       get_kernel(tile_kernel);
     } catch (...) {
       gemma4_expert_qmm_aot_available_ = false;

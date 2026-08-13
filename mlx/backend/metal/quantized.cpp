@@ -1230,8 +1230,14 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
     int K,
     metal::Device& d,
     const Stream& s) {
-  constexpr const char* descriptor_kernel_name =
-      "build_gemma4_sorted_expert_tiles_bm32";
+  // The classifier admits exactly E=128 (Gemma 4) and E=256 (Qwen 3.5/3.6
+  // MoE); w is rank-3 [E, N_w, K_w] by the same gate. The tile kernel is
+  // expert-count agnostic — only the descriptor builder (one thread per
+  // expert) is instantiated per expert count.
+  const int expert_count = w.shape(0);
+  const char* descriptor_kernel_name = expert_count == 256
+      ? "build_sorted_expert_tiles_bm32_e256"
+      : "build_gemma4_sorted_expert_tiles_bm32";
   constexpr const char* tile_kernel_name =
       "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
       "alN_true_bm_32_bn_32_bk_32";
@@ -1249,7 +1255,9 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   constexpr int bn = 32;
   constexpr int wm = 2;
   constexpr int wn = 2;
-  constexpr int expert_count = 128;
+  // Upper bound on descriptors: sum over experts of ceil(rows_e / bm) with
+  // sum(rows_e) == M. With k experts carrying a nonzero remainder the total
+  // is at most (M - k) / bm + k <= M / bm + E - 1 for the reachable M/E.
   const int max_tile_count = (M + bm - 1) / bm + expert_count - 1;
 
   array descriptors({max_tile_count, 4}, uint32, nullptr, {});
@@ -1276,6 +1284,17 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   // gate guarantees M is one of 4096/8192/16384, so a valid build always
   // emits at least one tile. Drain the stream and re-route retracted calls
   // to the order-agnostic legacy path rather than running the tile kernel.
+  //
+  // TODO(perf, both routes): this synchronize() is NOT needed to size the
+  // grid — the tile dispatch below already over-dispatches max_tile_count
+  // threadgroups and the kernel early-returns slots >= count[0]. It exists
+  // solely so the host can observe a retracted build (count[0] == 0) and
+  // re-route to the legacy kernel. Removing it requires a device-side
+  // fallback for the retract case (the tile kernel cannot reproduce the
+  // order-agnostic legacy semantics), so it is not a trivial over-dispatch
+  // fix; it is the expert-tile share of the dispatch-diet work (proposals
+  // item 1.3). Cost evidence: one full stream drain per routed gather —
+  // 3 gathers/MoE layer x 40 layers = 120 drains per 512-token chunk.
   compute_encoder.synchronize();
   const uint32_t* counts = tile_count.data<uint32_t>();
   if (counts[0] == 0) {

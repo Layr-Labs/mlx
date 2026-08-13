@@ -168,4 +168,18 @@ instantiate_kernel(
     32,
     32)
 
+// Sorted expert-tile descriptor builders. The E=128 instantiation keeps the
+// historical Gemma 4 host name; E=256 serves Qwen 3.5/3.6 MoE. The tile
+// kernel instantiation above is expert-count agnostic (K/N are runtime
+// arguments) and is shared by both routes.
+instantiate_kernel(
+    "build_gemma4_sorted_expert_tiles_bm32",
+    build_sorted_expert_tiles_bm32,
+    128)
+
+instantiate_kernel(
+    "build_sorted_expert_tiles_bm32_e256",
+    build_sorted_expert_tiles_bm32,
+    256)
+
     // clang-format on

@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import unittest
@@ -649,6 +650,82 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     q, k, v, scale=scale, mask=mask
                 ).sum()
                 test_grad(loss_slow, loss_fast, [q, k, v])
+
+    @unittest.skipIf(not mx.metal.is_available(), "Metal kernel path only")
+    def test_sdpa_force_fused_qwen_head_dim_256(self):
+        if mx.default_device() != mx.gpu:
+            self.skipTest("requires GPU")
+
+        B, qH, kH, D = 1, 16, 2, 256
+        shapes = [
+            (32, 64),  # aligned tiles
+            (37, 67),  # query and key tails
+            (9, 16385),  # full-attention path with a long K-tile loop
+        ]
+
+        for dtype, mask_str, (qL, kL) in product(
+            (mx.float16, mx.bfloat16),
+            (None, "causal", "bool", "additive"),
+            shapes,
+        ):
+            with self.subTest(dtype=dtype, mask=mask_str, qL=qL, kL=kL):
+                q, k, v, scale, mask = prepare_inputs(
+                    B, qL, kL, D, qH, kH, mask_str, False, dtype
+                )
+                ref = mlx_ref_attn(q, k, v, scale=scale, mask=mask)
+                default = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=scale, mask=mask
+                )
+                forced = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=scale, mask=mask, force_fused=True
+                )
+
+                tolerance = 1e-3 if dtype == mx.float16 else 1e-2
+                self.assertTrue(
+                    mx.allclose(ref, default, atol=tolerance, rtol=tolerance)
+                )
+                self.assertTrue(
+                    mx.allclose(ref, forced, atol=tolerance, rtol=tolerance)
+                )
+
+        q = mx.ones((B, qH, 9, D), mx.float16)
+        k = mx.ones((B, kH, 17, D), mx.float16)
+        v = mx.ones((B, kH, 17, D), mx.float16)
+        default = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0)
+        forced = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=1.0, force_fused=True
+        )
+        default_graph = io.StringIO()
+        forced_graph = io.StringIO()
+        mx.export_to_dot(default_graph, default)
+        mx.export_to_dot(forced_graph, forced)
+        self.assertNotIn("ScaledDotProductAttention", default_graph.getvalue())
+        self.assertIn("ScaledDotProductAttention", forced_graph.getvalue())
+
+    @unittest.skipIf(not mx.metal.is_available(), "Metal kernel path only")
+    def test_sdpa_force_fused_head_dim_256_float32_rejected(self):
+        if mx.default_device() != mx.gpu:
+            self.skipTest("requires GPU")
+
+        q = mx.random.normal((1, 16, 9, 256), mx.float32)
+        k = mx.random.normal((1, 2, 17, 256), mx.float32)
+        v = mx.random.normal((1, 2, 17, 256), mx.float32)
+
+        with self.assertRaisesRegex(ValueError, "53760 bytes.*32 KiB"):
+            mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=256**-0.5, force_fused=True
+            )
+
+    def test_sdpa_force_fused_requires_gpu(self):
+        with mx.stream(mx.cpu):
+            q = mx.ones((1, 1, 9, 64))
+            k = mx.ones((1, 1, 9, 64))
+            v = mx.ones((1, 1, 9, 64))
+
+            with self.assertRaisesRegex(ValueError, "require a GPU"):
+                mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=1.0, force_fused=True
+                )
 
     def test_sdpa_sliced(self):
         N = 8

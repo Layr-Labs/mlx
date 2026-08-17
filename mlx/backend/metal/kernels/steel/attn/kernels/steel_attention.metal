@@ -20,8 +20,15 @@
     instantiate_attn_shapes_helper(iname, itype, iname, itype) \
     instantiate_attn_shapes_helper(iname, itype, bool_, bool)
 
+// D256 float32 exceeds the 32 KiB threadgroup-memory limit for BQ32/BK16.
+#define instantiate_attn_256_helper(iname, itype) \
+    instantiate_attn(iname, itype, 32, 16, 256, 4, 1, iname, itype) \
+    instantiate_attn(iname, itype, 32, 16, 256, 4, 1, bool_, bool)
+
 instantiate_attn_mask_helper(float16, half);
 instantiate_attn_mask_helper(bfloat16, bfloat16_t);
+instantiate_attn_256_helper(float16, half);
+instantiate_attn_256_helper(bfloat16, bfloat16_t);
 
 instantiate_attn_mask_helper(float32, float);
 // clang-format on

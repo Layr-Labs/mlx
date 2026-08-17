@@ -727,6 +727,18 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     q, k, v, scale=1.0, force_fused=True
                 )
 
+    def test_sdpa_force_fused_vmap_rejected(self):
+        def attention(q, k, v):
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=64**-0.5, force_fused=True
+            )
+
+        q = mx.ones((2, 1, 4, 9, 64), mx.float16)
+        k = mx.ones((2, 1, 4, 9, 64), mx.float16)
+        v = mx.ones((2, 1, 4, 9, 64), mx.float16)
+        with self.assertRaisesRegex(ValueError, "force_fused=True.*vmap"):
+            mx.vmap(attention)(q, k, v)
+
     def test_sdpa_sliced(self):
         N = 8
         D = 64

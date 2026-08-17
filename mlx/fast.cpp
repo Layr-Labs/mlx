@@ -618,6 +618,27 @@ array scaled_dot_product_attention(
     const std::string& mask_mode /* = "" */,
     std::optional<array> mask_arr /* = {} */,
     const std::optional<array>& sinks /* = {} */,
+    StreamOrDevice s /* = {} */) {
+  return scaled_dot_product_attention(
+      queries,
+      keys,
+      values,
+      scale,
+      mask_mode,
+      std::move(mask_arr),
+      sinks,
+      false,
+      s);
+}
+
+array scaled_dot_product_attention(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode /* = "" */,
+    std::optional<array> mask_arr /* = {} */,
+    const std::optional<array>& sinks /* = {} */,
     bool force_fused /* = false */,
     StreamOrDevice s /* = {} */) {
   for (const auto& tensor : {queries, keys, values}) {
@@ -922,6 +943,17 @@ bool ScaledDotProductAttention::is_equivalent(const Primitive& other) const {
       has_sinks_ == a_other.has_sinks_ &&
       output_logsumexp_ == a_other.output_logsumexp_ &&
       force_fused_ == a_other.force_fused_;
+}
+
+std::pair<std::vector<array>, std::vector<int>> ScaledDotProductAttention::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  if (force_fused_) {
+    throw std::invalid_argument(
+        "[scaled_dot_product_attention] force_fused=True is not supported "
+        "under vmap; refusing to silently use the composed fallback.");
+  }
+  return Custom::vmap(inputs, axes);
 }
 
 bool ScaledDotProductAttentionVJP::is_equivalent(const Primitive& other) const {

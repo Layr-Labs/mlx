@@ -12,6 +12,18 @@
 
 using namespace mlx::core;
 
+TEST_CASE("test fast sdpa positional stream compatibility") {
+  auto q = zeros({1, 1, 1, 64}, float32);
+  auto k = zeros({1, 1, 1, 64}, float32);
+  auto v = zeros({1, 1, 1, 64}, float32);
+  auto s = default_stream(Device::cpu);
+
+  auto out = fast::scaled_dot_product_attention(
+      q, k, v, 1.0f, "", std::nullopt, std::nullopt, s);
+  CHECK_EQ(out.shape(), Shape{1, 1, 1, 64});
+  out.eval();
+}
+
 TEST_CASE("test copy") {
   array x(1.0);
   auto y = copy(x);

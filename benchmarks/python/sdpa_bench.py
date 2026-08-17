@@ -101,8 +101,14 @@ def mlx_ref_attn(q, k, v, scale=1.0, mask=None):
     return out
 
 
-def mlx_fused_attn(q, k, v, scale, mask):
+def mlx_default_attn(q, k, v, scale, mask):
     return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+
+def mlx_forced_attn(q, k, v, scale, mask):
+    return mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=scale, mask=mask, force_fused=True
+    )
 
 
 def do_attention(f, q, k, v, scale, mask=None, transpose=False):
@@ -133,26 +139,47 @@ def bench_shape(
         B, qsl, ksl, head_dim, n_q_heads, n_kv_heads, mask_in, transpose, dtype
     )
 
-    time_mlx_unfused = bench(
+    time_mlx_ref = bench(
         do_attention_bench, mlx_ref_attn, q_mx, k_mx, v_mx, scale, mask, transpose
     )
-    time_mlx_fused = bench(
-        do_attention_bench, mlx_fused_attn, q_mx, k_mx, v_mx, scale, mask, transpose
+    time_mlx_default = bench(
+        do_attention_bench,
+        mlx_default_attn,
+        q_mx,
+        k_mx,
+        v_mx,
+        scale,
+        mask,
+        transpose,
+    )
+    time_mlx_forced = bench(
+        do_attention_bench,
+        mlx_forced_attn,
+        q_mx,
+        k_mx,
+        v_mx,
+        scale,
+        mask,
+        transpose,
     )
 
-    o_mlx_fused = do_attention(mlx_ref_attn, q_mx, k_mx, v_mx, scale, mask, transpose)
-    o_mlx_unfused = do_attention(
-        mlx_fused_attn, q_mx, k_mx, v_mx, scale, mask, transpose
+    o_mlx_ref = do_attention(mlx_ref_attn, q_mx, k_mx, v_mx, scale, mask, transpose)
+    o_mlx_default = do_attention(
+        mlx_default_attn, q_mx, k_mx, v_mx, scale, mask, transpose
+    )
+    o_mlx_forced = do_attention(
+        mlx_forced_attn, q_mx, k_mx, v_mx, scale, mask, transpose
     )
 
     atol = 1e-5 if dtype == "float32" else 2e-4
 
-    if not mx.allclose(o_mlx_fused, o_mlx_unfused, atol=atol, rtol=atol):
-        print(
-            f"Failed at (B: {B}, qsl: {qsl}, ksl: {ksl}, head_dim: {head_dim}, n_qh: {n_q_heads}, n_kvh: {n_kv_heads}, mask: {mask_in}) [tpose = {transpose}] with max(|a - b|) = {mx.max(mx.abs(o_mlx_unfused - o_mlx_fused)):3.2e}"
-        )
+    for name, out in (("default", o_mlx_default), ("forced", o_mlx_forced)):
+        if not mx.allclose(o_mlx_ref, out, atol=atol, rtol=atol):
+            print(
+                f"Failed {name} at (B: {B}, qsl: {qsl}, ksl: {ksl}, head_dim: {head_dim}, n_qh: {n_q_heads}, n_kvh: {n_kv_heads}, mask: {mask_in}) [tpose = {transpose}] with max(|a - b|) = {mx.max(mx.abs(out - o_mlx_ref)):3.2e}"
+            )
 
-    return time_mlx_fused, time_mlx_unfused
+    return time_mlx_ref, time_mlx_default, time_mlx_forced
 
 
 def get_gflop_count(B, M, N, K):
@@ -160,7 +187,7 @@ def get_gflop_count(B, M, N, K):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run gemm benchmarks")
+    parser = argparse.ArgumentParser(description="Run SDPA benchmarks")
 
     dtypes = ("float16", "float32")[:1]
     transposes = (False,)
@@ -197,21 +224,29 @@ if __name__ == "__main__":
           (  1,  4096,  5000,      128,   32,     8),
           (  1,  2048,  32121,     128,   32,     8),
     )
+
+    shapes_256 = (
+        # Exact Qwen GQA head configuration used to compare default and forced.
+        # (  B,   qsl,   ksl, head_dim, n_qh, n_kvh)
+          (  1,   256,   256,      256,   16,     2),
+          (  1,   512,   512,      256,   16,     2),
+          (  1,   257,  1025,      256,   16,     2),
+    )
     # fmt: on
 
-    shapes = shapes_64 + shapes_80 + shapes_128
+    shapes = shapes_64 + shapes_80 + shapes_128 + shapes_256
 
     masks = [None, "bool", "causal"]
 
     print(
-        "  B,   qsl,   ksl, hdim, n_qh, n_kvh, t,   dtype,     mask, t_unfs, t_fuse, diff%"
+        "  B,   qsl,   ksl, hdim, n_qh, n_kvh, t,   dtype,     mask, t_ref, t_default, t_forced, force_vs_default%"
     )
 
     for dtype in dtypes:
         for transpose in transposes:
             for B, qsl, ksl, head_dim, n_q_heads, n_kv_heads in shapes:
                 for mask_in in masks:
-                    time_mlx_fused, time_mlx_unfused = bench_shape(
+                    time_mlx_ref, time_mlx_default, time_mlx_forced = bench_shape(
                         B,
                         qsl,
                         ksl,
@@ -222,8 +257,8 @@ if __name__ == "__main__":
                         transpose,
                         mask_in,
                     )
-                    diff = time_mlx_unfused / time_mlx_fused - 1.0
+                    diff = time_mlx_default / time_mlx_forced - 1.0
                     t_str = 1 if transpose else 0
                     print(
-                        f"{B:3d}, {qsl:5d}, {ksl:5d}, {head_dim:4d}, {n_q_heads:4d}, {n_kv_heads:5d}, {t_str:1d}, {dtype}, {str(mask_in):>8}, {time_mlx_unfused: 2.3f}, {time_mlx_fused: 2.3f}, {100. * diff:+5.2f}%"
+                        f"{B:3d}, {qsl:5d}, {ksl:5d}, {head_dim:4d}, {n_q_heads:4d}, {n_kv_heads:5d}, {t_str:1d}, {dtype}, {str(mask_in):>8}, {time_mlx_ref: 2.3f}, {time_mlx_default: 2.3f}, {time_mlx_forced: 2.3f}, {100. * diff:+5.2f}%"
                     )

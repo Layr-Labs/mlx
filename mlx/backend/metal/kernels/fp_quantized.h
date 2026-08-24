@@ -1327,45 +1327,6 @@ template <
       w, scales, x, y, in_vec_size, out_vec_size, M, tid, simd_gid, simd_lid);
 }
 
-template <typename T, const int group_size, int bits, bool batched>
-[[kernel]] void fp_qvm(
-    const device uint32_t* w,
-    const device uint8_t* scales,
-    const device T* x,
-    device T* y,
-    const constant int& in_vec_size,
-    const constant int& out_vec_size,
-    const constant int& M,
-    const constant int& x_batch_ndims,
-    const constant int* x_shape,
-    const constant int64_t* x_strides,
-    const constant int& w_batch_ndims,
-    const constant int* w_shape,
-    const constant int64_t* w_strides,
-    const constant int64_t* s_strides,
-    uint3 tid [[threadgroup_position_in_grid]],
-    uint simd_gid [[simdgroup_index_in_threadgroup]],
-    uint simd_lid [[thread_index_in_simdgroup]]) {
-  if (batched) {
-    adjust_matrix_offsets(
-        x,
-        w,
-        scales,
-        y,
-        out_vec_size * M,
-        x_batch_ndims,
-        x_shape,
-        x_strides,
-        w_batch_ndims,
-        w_shape,
-        w_strides,
-        s_strides,
-        tid);
-  }
-  fp_qmv_wide_impl<T, group_size, bits, vecs_per_tg, k_lanes>(
-      w, scales, x, y, in_vec_size, out_vec_size, M, tid, simd_gid, simd_lid);
-}
-
 template <
     typename T,
     int group_size,

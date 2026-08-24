@@ -428,7 +428,7 @@ class TestFast(mlx_tests.MLXTestCase):
 
         dtypes = [mx.float32, mx.float16, mx.bfloat16]
         epss = [1e-3, 1e-5]
-        dimss = [31, 32, 33]
+        dimss = [31, 32, 33, 256, 512]
         defaults = (mx.float32, 1e-5, 32)
 
         for dtype in dtypes:
@@ -483,23 +483,23 @@ class TestFast(mlx_tests.MLXTestCase):
             mx.fast.rms_norm(x, mx.ones((4,)), 1e-5)
 
     def test_rms_norm_grad(self):
-        D = 32
         eps = 1e-5
         f1 = lambda x, w, y: (rms_norm(x, w, eps) * y).sum()
         f2 = lambda x, w, y: (mx.fast.rms_norm(x, w, eps) * y).sum()
         f3 = lambda x, y: (rms_norm(x, mx.ones((x.shape[-1],)), eps) * y).sum()
         f4 = lambda x, y: (mx.fast.rms_norm(x, None, eps) * y).sum()
 
-        x = mx.random.uniform(shape=(8, 100, D))
-        w = mx.random.uniform(shape=(D,))
-        y = mx.random.uniform(shape=(8, 100, D))
-        gx1, gw1 = mx.grad(f1, argnums=(0, 1))(x, w, y)
-        gx2, gw2 = mx.grad(f2, argnums=(0, 1))(x, w, y)
-        self.assertLess(mx.abs(gx1 - gx2).max(), 1e-5)
-        self.assertLess(mx.abs(gw1 - gw2).max() / mx.abs(gw1).mean(), 1e-5)
-        gx1 = mx.grad(f3, argnums=(0,))(x, y)
-        gx2 = mx.grad(f4, argnums=(0,))(x, y)
-        self.assertLess(mx.abs(gx1 - gx2).max(), 1e-5)
+        for D in [32, 256]:
+            x = mx.random.uniform(shape=(8, 100, D))
+            w = mx.random.uniform(shape=(D,))
+            y = mx.random.uniform(shape=(8, 100, D))
+            gx1, gw1 = mx.grad(f1, argnums=(0, 1))(x, w, y)
+            gx2, gw2 = mx.grad(f2, argnums=(0, 1))(x, w, y)
+            self.assertLess(mx.abs(gx1 - gx2).max(), 1e-5)
+            self.assertLess(mx.abs(gw1 - gw2).max() / mx.abs(gw1).mean(), 1e-5)
+            gx1 = mx.grad(f3, argnums=(0,))(x, y)
+            gx2 = mx.grad(f4, argnums=(0,))(x, y)
+            self.assertLess(mx.abs(gx1 - gx2).max(), 1e-5)
 
         D = 8192
         x = mx.random.uniform(shape=(2, 2, D))
@@ -524,6 +524,67 @@ class TestFast(mlx_tests.MLXTestCase):
         gx2, gw2 = mx.grad(gf(f2), argnums=(0, 1))(x, w, y)
         self.assertLess(mx.abs(gx1 - gx2).max(), 1e-5)
         self.assertLess(mx.abs(gw1 - gw2).max() / mx.abs(gw1).mean(), 1e-5)
+
+    def test_cross_entropy(self):
+        def cross_entropy_ref(logits, targets):
+            score = mx.take_along_axis(logits, mx.expand_dims(targets, -1), -1).squeeze(
+                -1
+            )
+            return mx.logsumexp(logits.astype(mx.float32), axis=-1) - score.astype(
+                mx.float32
+            )
+
+        tolerances = {mx.float32: 1e-5, mx.float16: 3e-2, mx.bfloat16: 3e-1}
+
+        for V in [7, 32, 128, 255, 256, 1000, 4096, 8192]:
+            for dtype in [mx.float32, mx.float16, mx.bfloat16]:
+                logits = (mx.random.normal(shape=(4, 7, V), scale=3.0) * 2).astype(
+                    dtype
+                )
+                targets = mx.random.randint(0, V, shape=(4, 7))
+                expected = cross_entropy_ref(logits, targets)
+                out = mx.fast.cross_entropy(logits, targets)
+                self.assertEqual(out.dtype, mx.float32)
+                self.assertEqual(out.shape, targets.shape)
+                self.assertLess(mx.abs(out - expected).max().item(), tolerances[dtype])
+
+    def test_cross_entropy_shape_checks(self):
+        logits = mx.random.normal(shape=(4, 16))
+        with self.assertRaises(ValueError):
+            mx.fast.cross_entropy(logits, mx.zeros((5,), mx.int32))
+        with self.assertRaises(ValueError):
+            # Probability targets are not supported by the fused op.
+            mx.fast.cross_entropy(logits, mx.zeros((4, 16), mx.int32))
+        with self.assertRaises(ValueError):
+            mx.fast.cross_entropy(logits, mx.zeros((4,), mx.float32))
+
+    def test_cross_entropy_grad(self):
+        def ref(logits, targets):
+            score = mx.take_along_axis(logits, mx.expand_dims(targets, -1), -1).squeeze(
+                -1
+            )
+            return mx.logsumexp(logits, axis=-1) - score
+
+        f1 = lambda x, y: ref(x, y).mean()
+        f2 = lambda x, y: mx.fast.cross_entropy(x, y).mean()
+
+        for V in [7, 128, 1000, 4096]:
+            logits = mx.random.normal(shape=(4, 7, V), scale=2.0)
+            targets = mx.random.randint(0, V, shape=(4, 7))
+            g1 = mx.grad(f1, argnums=0)(logits, targets)
+            g2 = mx.grad(f2, argnums=0)(logits, targets)
+            self.assertEqual(g2.shape, logits.shape)
+            self.assertLess(mx.abs(g1 - g2).max().item(), 1e-6)
+
+        w = mx.random.uniform(shape=(4, 7))
+        f3 = lambda x, y: (ref(x, y) * w).sum()
+        f4 = lambda x, y: (mx.fast.cross_entropy(x, y) * w).sum()
+        logits = mx.random.normal(shape=(4, 7, 512), scale=2.0)
+        targets = mx.random.randint(0, 512, shape=(4, 7))
+        g1 = mx.grad(f3, argnums=0)(logits, targets)
+        g2 = mx.grad(f4, argnums=0)(logits, targets)
+        self.assertEqual(g2.shape, logits.shape)
+        self.assertLess(mx.abs(g1 - g2).max().item(), 1e-6)
 
     def test_layer_norm_dim_check(self):
         with self.assertRaises(ValueError):
@@ -1025,6 +1086,128 @@ class TestFast(mlx_tests.MLXTestCase):
         """
         out = call_kernel(a, source)
         self.assertTrue(mx.array_equal(out, mx.ones_like(out)))
+
+    @unittest.skipIf(not mx.metal.is_available(), "Metal is not available")
+    def test_custom_kernel_same_name_different_source_one_eval(self):
+        # Regression test for #3832: two kernels sharing a name but with
+        # different sources, dispatched in a SINGLE eval batch, must each run
+        # their own compiled code instead of silently reusing the first's.
+        def call_kernel(a, source):
+            kernel = mx.fast.metal_kernel(
+                name="dup_name",
+                input_names=["inp"],
+                output_names=["out"],
+                source=source,
+            )
+            return kernel(
+                inputs=[a],
+                grid=(a.size, 1, 1),
+                threadgroup=(a.size, 1, 1),
+                output_shapes=[a.shape],
+                output_dtypes=[a.dtype],
+                stream=mx.gpu,
+            )[0]
+
+        a = mx.arange(32, dtype=mx.float32)
+        out_a = call_kernel(
+            a, "uint e = thread_position_in_grid.x; out[e] = inp[e] * 2.0f;"
+        )
+        out_b = call_kernel(
+            a, "uint e = thread_position_in_grid.x; out[e] = inp[e] + 100.0f;"
+        )
+        mx.eval(out_a, out_b)  # one batch — the reported failure case
+        self.assertTrue(mx.array_equal(out_a, a * 2.0))
+        self.assertTrue(mx.array_equal(out_b, a + 100.0))
+
+    @unittest.skipIf(not mx.cuda.is_available(), "CUDA is not available")
+    def test_cuda_kernel_same_name_different_source(self):
+        # The CUDA module cache was keyed on the kernel name alone, so the
+        # second kernel here silently ran the first one's code. Metal had the
+        # same bug, fixed in #3833.
+        def call_kernel(a, source):
+            kernel = mx.fast.cuda_kernel(
+                name="dup_name",
+                input_names=["inp"],
+                output_names=["out"],
+                source=source,
+            )
+            return kernel(
+                inputs=[a],
+                grid=(a.size, 1, 1),
+                threadgroup=(a.size, 1, 1),
+                output_shapes=[a.shape],
+                output_dtypes=[a.dtype],
+                stream=mx.gpu,
+            )[0]
+
+        a = mx.arange(32, dtype=mx.float32)
+        elem = "auto e = cooperative_groups::this_grid().thread_rank();"
+        out_a = call_kernel(a, f"{elem} out[e] = inp[e] * 2.0f;")
+        out_b = call_kernel(a, f"{elem} out[e] = inp[e] + 100.0f;")
+        mx.eval(out_a, out_b)
+        self.assertTrue(mx.array_equal(out_a, a * 2.0))
+        self.assertTrue(mx.array_equal(out_b, a + 100.0))
+
+    @unittest.skipIf(not mx.metal.is_available(), "Metal is not available")
+    def test_custom_metal_kernel_math_mode(self):
+        with self.assertRaises(ValueError):
+            mx.fast.metal_kernel(
+                name="invalid_math_mode",
+                input_names=["inp"],
+                output_names=["out"],
+                source="out[0] = inp[0];",
+                compile_options={"math_mode": "precise"},
+            )
+
+        with self.assertRaises(ValueError):
+            mx.fast.metal_kernel(
+                name="invalid_compile_options",
+                input_names=["inp"],
+                output_names=["out"],
+                source="out[0] = inp[0];",
+                compile_options={"unknown": "value"},
+            )
+
+        # Numerical special cases such as exp(-inf) can agree between math
+        # modes, so they don't reliably detect whether the mode was applied.
+        # Branch on the compiler's __FAST_MATH__ macro instead: it is defined
+        # only when fast math is enabled, so the test fails if the selected
+        # math mode is not forwarded to the Metal compiler.
+        source = """
+            uint elem = thread_position_in_grid.x;
+            #if defined(__FAST_MATH__) && __FAST_MATH__
+            out[elem] = 1.0f;
+            #else
+            out[elem] = 0.0f;
+            #endif
+        """
+
+        a = mx.zeros((4,), dtype=mx.float32)
+        expected = {
+            "safe": mx.zeros_like(a),
+            "fast": mx.ones_like(a),
+        }
+
+        # Reuse the same kernel name across modes so the library cache is forced
+        # to rebuild when the math mode changes, guarding against a stale build
+        # being returned for a different mode.
+        for mode, expected_out in expected.items():
+            kernel = mx.fast.metal_kernel(
+                name="math_mode",
+                input_names=["inp"],
+                output_names=["out"],
+                source=source,
+                compile_options={"math_mode": mode},
+            )
+            out = kernel(
+                inputs=[a],
+                grid=(a.size, 1, 1),
+                threadgroup=(a.size, 1, 1),
+                output_shapes=[a.shape],
+                output_dtypes=[a.dtype],
+                stream=mx.gpu,
+            )[0]
+            self.assertTrue(mx.array_equal(out, expected_out))
 
     @unittest.skipIf(not mx.metal.is_available(), "Metal is not available")
     def test_custom_kernel_mixed_dtypes(self):

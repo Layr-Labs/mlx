@@ -19,6 +19,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/conv/gemm_conv.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/conv/gemm_grouped_conv.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/cublas_utils.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/cudnn_utils.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/device_info.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel.cpp
@@ -71,6 +72,11 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/qqmm_utils.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/quantized/convert_fp8.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/worker.cpp)
+
+# Put dynamic defines in the dirs.cpp file.
+add_library(mlx_dirs OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/dirs.cpp)
+target_include_directories(mlx_dirs PRIVATE "${PROJECT_SOURCE_DIR}")
+target_link_libraries(mlx PRIVATE $<BUILD_INTERFACE:mlx_dirs>)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/binary)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/unary)
@@ -173,8 +179,32 @@ message(STATUS "CUDA architectures: ${MLX_CUDA_ARCHITECTURES}")
 set_target_properties(mlx PROPERTIES CUDA_ARCHITECTURES
                                      "${MLX_CUDA_ARCHITECTURES}")
 
-# Search CUDA libs from installed python packages.
+# Configure Windows CUDA DLL loading.
 if(WIN32)
+  set(MLX_CUDA_BIN_DIR
+      ""
+      CACHE STRING "Directory containing CUDA DLLs for Windows delay-loading")
+  set(MLX_CUDNN_BIN_DIR
+      ""
+      CACHE STRING "Directory containing cuDNN DLLs for Windows delay-loading")
+
+  # With MLX_LOAD_CUDA_LIBS_FROM_PYTHON, unset dirs use the wheel layout.
+  # Relative dirs are resolved from the MLX binary.
+  if(NOT MLX_LOAD_CUDA_LIBS_FROM_PYTHON)
+    if("${MLX_CUDA_BIN_DIR}" STREQUAL "")
+      set(MLX_CUDA_BIN_DIR "${CUDAToolkit_BIN_DIR}/x64")
+    endif()
+    if("${MLX_CUDNN_BIN_DIR}" STREQUAL "")
+      set(MLX_CUDNN_BIN_DIR "${CUDNN_BIN_DIR}")
+    endif()
+  endif()
+
+  function(mlx_add_dir_definition name)
+    if(NOT "${${name}}" STREQUAL "")
+      target_compile_definitions(mlx_dirs PRIVATE ${name}="${${name}}")
+    endif()
+  endfunction()
+
   # Resolve paths of unfound DLL at runtime.
   if(BUILD_SHARED_LIBS)
     target_link_libraries(mlx PRIVATE "delayimp.lib")
@@ -195,11 +225,9 @@ if(WIN32)
     target_link_options(mlx PUBLIC "/DELAYLOAD:${CUDA_DLL}")
   endforeach()
   # Pass the locations where CUDA DLLs are placed.
-  if(NOT MLX_LOAD_CUDA_LIBS_FROM_PYTHON)
-    target_compile_definitions(
-      mlx PUBLIC MLX_CUDA_BIN_DIR="${CUDAToolkit_BIN_DIR}/x64"
-                 MLX_CUDNN_BIN_DIR="${CUDNN_BIN_DIR}")
-  endif()
+  foreach(dir_var MLX_CUDA_BIN_DIR MLX_CUDNN_BIN_DIR)
+    mlx_add_dir_definition(${dir_var})
+  endforeach()
 else()
   # For POSIX we rely on RPATH to search for CUDA libs.
   if(MLX_LOAD_CUDA_LIBS_FROM_PYTHON)
@@ -208,9 +236,11 @@ else()
       APPEND
       PROPERTY INSTALL_RPATH
                # The paths here should match the install_requires in setup.py.
+               "$ORIGIN/../../nvidia/cu13/lib"
                "$ORIGIN/../../nvidia/cublas/lib"
                "$ORIGIN/../../nvidia/cuda_nvrtc/lib"
                "$ORIGIN/../../nvidia/cudnn/lib"
+               "$ORIGIN/../../nvidia/cufft/lib"
                "$ORIGIN/../../nvidia/nccl/lib")
   endif()
 endif()
@@ -233,7 +263,7 @@ install(DIRECTORY ${cccl_SOURCE_DIR}/include/nv
 # The binary of C++ tests will not be installed so it can not find the CCCL
 # headers, and we have to hard-code the path.
 if(MLX_BUILD_TESTS)
-  target_compile_definitions(mlx
+  target_compile_definitions(mlx_dirs
                              PRIVATE MLX_CCCL_DIR="${cccl_SOURCE_DIR}/include")
 endif()
 
@@ -271,7 +301,7 @@ set(CUDNN_FRONTEND_BUILD_SAMPLES OFF)
 set(CUDNN_FRONTEND_BUILD_TESTS OFF)
 set(CUDNN_FRONTEND_BUILD_PYTHON_BINDINGS OFF)
 FetchContent_MakeAvailable(cudnn)
-target_link_libraries(mlx PRIVATE cudnn_frontend)
+target_link_libraries(mlx PRIVATE $<BUILD_INTERFACE:cudnn_frontend>)
 # Link with the actual cuDNN libraries.
 target_link_libraries(mlx PRIVATE CUDNN::cudnn_all)
 

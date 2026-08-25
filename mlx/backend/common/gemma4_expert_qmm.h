@@ -119,11 +119,11 @@ inline Gemma4ExpertQMMRoute classify_gemma4_expert_qmm(
     return Gemma4ExpertQMMRoute::fallback_nax;
   }
   if (!input.affine || !input.transpose || !input.has_bias ||
-      !input.indices_uint32 || !input.indices_contiguous ||
-      !input.x_bfloat16 || !input.x_contiguous || !input.w_uint32 ||
-      !input.w_contiguous || !input.scales_bfloat16 ||
-      !input.scales_contiguous || !input.biases_bfloat16 ||
-      !input.biases_contiguous || input.group_size != 64 || input.bits != 4) {
+      !input.indices_uint32 || !input.indices_contiguous || !input.x_bfloat16 ||
+      !input.x_contiguous || !input.w_uint32 || !input.w_contiguous ||
+      !input.scales_bfloat16 || !input.scales_contiguous ||
+      !input.biases_bfloat16 || !input.biases_contiguous ||
+      input.group_size != 64 || input.bits != 4) {
     return Gemma4ExpertQMMRoute::fallback_quantization;
   }
   const bool gemma4 = input.expert_count == 128;
@@ -183,9 +183,8 @@ struct Gemma4ExpertQMMCounterSnapshot {
   bool armed{false};
 
   uint64_t attempts() const {
-    return hits + fallback_nax + fallback_outer_route +
-        fallback_quantization + fallback_topology +
-        fallback_assignment_count + fallback_geometry +
+    return hits + fallback_nax + fallback_outer_route + fallback_quantization +
+        fallback_topology + fallback_assignment_count + fallback_geometry +
         fallback_metallib_unavailable + fallback_sortedness_retracted;
   }
 };

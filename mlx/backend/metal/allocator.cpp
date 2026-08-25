@@ -70,13 +70,13 @@ MetalAllocator::MetalAllocator(Device& d)
   // crash. The value may only LOWER the ceiling (it is clamped to the OS limit)
   // — raising it above what the hardware/OS reports would invite the very crash
   // this guards against. Strictly validated: a plain unsigned decimal that
-  // consumes the whole string, is non-zero, and does not overflow; anything else
-  // (empty, sign, junk, range error) is ignored and the OS limit stands.
+  // consumes the whole string, is non-zero, and does not overflow; anything
+  // else (empty, sign, junk, range error) is ignored and the OS limit stands.
   if (const char* rl = std::getenv("MLX_RESOURCE_LIMIT")) {
     while (*rl == ' ' || *rl == '\t') {
       ++rl;
     }
-    if (*rl >= '0' && *rl <= '9') {  // unsigned decimal only (reject sign/junk)
+    if (*rl >= '0' && *rl <= '9') { // unsigned decimal only (reject sign/junk)
       errno = 0;
       char* end = nullptr;
       unsigned long long v = std::strtoull(rl, &end, 10);
@@ -161,10 +161,10 @@ Buffer MetalAllocator::malloc(size_t size) {
     auto pool = metal::new_scoped_memory_pool();
 
     // If we have a lot of memory pressure try to reclaim memory from the cache.
-    // NOTE: release_cached_buffers takes a BYTES-to-free target; when the buffers
-    // are tiny this frees only a few entries even though the COUNT is the binding
-    // constraint, so the byte path alone cannot bound num_resources_ (see the
-    // count-aware reclaim below).
+    // NOTE: release_cached_buffers takes a BYTES-to-free target; when the
+    // buffers are tiny this frees only a few entries even though the COUNT is
+    // the binding constraint, so the byte path alone cannot bound
+    // num_resources_ (see the count-aware reclaim below).
     if (mem_required >= gc_limit_ || num_resources_ >= resource_limit_) {
       num_resources_ -=
           buffer_cache_.release_cached_buffers(mem_required - gc_limit_);
@@ -173,18 +173,18 @@ Buffer MetalAllocator::malloc(size_t size) {
     // Count-aware reclaim (Darkbloom): the Metal resource COUNT limit
     // (resource_limit_, ~iogpu.rsrc_limit/499000) is independent of byte usage.
     // Under churn with many distinct buffer shapes (varied prompt lengths,
-    // growing KV caches, multiple co-resident models) freed buffers are recycled
-    // into the size-keyed cache and never reused at that exact size, so the cache
-    // ENTRY COUNT creeps toward the limit while byte usage stays modest — the
-    // byte-driven trim above never fires (its threshold is ~physical RAM). Once
-    // the count crosses a high-water mark, proactively clear the cache (pure
-    // reuse pool — clearing only costs re-allocation, never correctness) so the
-    // count drops back to the live working set. This makes the count limit
-    // unreachable by any request mix / batching method, while the existing byte
-    // limits keep total memory below physical RAM.
+    // growing KV caches, multiple co-resident models) freed buffers are
+    // recycled into the size-keyed cache and never reused at that exact size,
+    // so the cache ENTRY COUNT creeps toward the limit while byte usage stays
+    // modest — the byte-driven trim above never fires (its threshold is
+    // ~physical RAM). Once the count crosses a high-water mark, proactively
+    // clear the cache (pure reuse pool — clearing only costs re-allocation,
+    // never correctness) so the count drops back to the live working set. This
+    // makes the count limit unreachable by any request mix / batching method,
+    // while the existing byte limits keep total memory below physical RAM.
     if (resource_limit_ > 0 &&
         num_resources_ >= (resource_limit_ * resource_high_water_num_) /
-                              resource_high_water_den_) {
+                resource_high_water_den_) {
       num_resources_ -= buffer_cache_.clear();
     }
 

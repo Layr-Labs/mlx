@@ -15,9 +15,9 @@
 
 namespace mlx::core {
 
+using metal::classify_gemma4_expert_qmm;
 using metal::Gemma4ExpertQMMRoute;
 using metal::Gemma4ExpertQMMRouteInput;
-using metal::classify_gemma4_expert_qmm;
 
 namespace {
 
@@ -1691,8 +1691,7 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   compute_encoder.set_bytes(N, c++);
 
   compute_encoder.dispatch_threadgroups(
-      MTL::Size((N + bn - 1) / bn, max_tile_count, 1),
-      MTL::Size(32, wn, wm));
+      MTL::Size((N + bn - 1) / bn, max_tile_count, 1), MTL::Size(32, wn, wm));
   return Gemma4ExpertQMMRoute::hit;
 }
 
@@ -1721,8 +1720,7 @@ void gather_qmm_rhs(
       route_input.requested = true;
       route_input.outer_route = true;
       route_input.nax_available = true;
-      d.record_armed_gemma4_expert_qmm(
-          classify_gemma4_expert_qmm(route_input));
+      d.record_armed_gemma4_expert_qmm(classify_gemma4_expert_qmm(route_input));
     }
     return gather_qmm_rhs_nax(
         /* const array& x_ = */ x_,
@@ -1798,8 +1796,7 @@ void gather_qmm_rhs(
     route_input.biases_contiguous = biases_ && biases_->flags().row_contiguous;
     route_input.group_size = group_size;
     route_input.bits = bits;
-    route_input.expert_count =
-        w.size() / w.shape(-1) / w.shape(-2);
+    route_input.expert_count = w.size() / w.shape(-1) / w.shape(-2);
     route_input.assignments = M;
     route_input.index_count = indices.size();
     route_input.k = K;
@@ -2078,11 +2075,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 // record below and the dispatch decision evaluate this one predicate so a
 // future tuning change cannot desynchronize them.
 // TODO: Tune 16 and 4 here a bit better.
-static constexpr bool takes_sorted_rhs_route(
-    int M,
-    int B,
-    int E,
-    bool right_sorted) {
+static constexpr bool
+takes_sorted_rhs_route(int M, int B, int E, bool right_sorted) {
   return M == 1 && B >= 16 && right_sorted && B / E >= 4;
 }
 
@@ -2116,8 +2110,7 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     Gemma4ExpertQMMRouteInput route_input;
     route_input.requested = true;
     route_input.outer_route = false;
-    d.record_armed_gemma4_expert_qmm(
-        classify_gemma4_expert_qmm(route_input));
+    d.record_armed_gemma4_expert_qmm(classify_gemma4_expert_qmm(route_input));
   }
 
   // We are walking x in order and w is also in order so we can batch up the

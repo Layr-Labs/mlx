@@ -2615,8 +2615,7 @@ template <int NE>
   for (int i = int(lid) + 1; i < M; i += int(expert_count)) {
     adjacent_ok = adjacent_ok && indices[i - 1] <= indices[i];
   }
-  const uint violation_vote =
-      simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
+  const uint violation_vote = simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
   if (simd_lid == 0) {
     violation_votes[simd_gid] = violation_vote;
   }
@@ -2650,8 +2649,7 @@ template <int NE>
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  const uint descriptor_count =
-      inclusive_tile_offsets[expert_count - 1];
+  const uint descriptor_count = inclusive_tile_offsets[expert_count - 1];
   if (lid == expert_count - 1) {
     // A retracted count keeps the tile kernel's capacity check memory-safe
     // (every threadgroup early-returns) and unambiguously signals the host:
@@ -2666,8 +2664,7 @@ template <int NE>
     uint expert_lower = 0;
     uint expert_upper = expert_count;
     while (expert_lower < expert_upper) {
-      const uint midpoint =
-          expert_lower + (expert_upper - expert_lower) / 2;
+      const uint midpoint = expert_lower + (expert_upper - expert_lower) / 2;
       if (inclusive_tile_offsets[midpoint] <= slot) {
         expert_lower = midpoint + 1;
       } else {
@@ -2677,10 +2674,8 @@ template <int NE>
     const uint expert = expert_lower;
     const uint expert_tile_begin =
         expert == 0 ? 0 : inclusive_tile_offsets[expert - 1];
-    const uint row =
-        segment_starts[expert] + (slot - expert_tile_begin) * BM;
-    const uint row_count =
-        min(BM, segment_starts[expert + 1] - row);
+    const uint row = segment_starts[expert] + (slot - expert_tile_begin) * BM;
+    const uint row_count = min(BM, segment_starts[expert + 1] - row);
     descriptors[slot] = uint4(row, row_count, expert, 0);
   }
 }
@@ -2737,8 +2732,7 @@ template <
   x += row_start * size_t(K);
   y += row_start * size_t(N);
   const device uint8_t* expert_w =
-      reinterpret_cast<const device uint8_t*>(w) +
-      expert * expert_w_stride;
+      reinterpret_cast<const device uint8_t*>(w) + expert * expert_w_stride;
   scales += expert * expert_sb_stride;
   biases += expert * expert_sb_stride;
 

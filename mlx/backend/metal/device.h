@@ -6,12 +6,12 @@
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
-#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "mlx/array.h"
 #include "mlx/backend/common/metal_kernel.h"
+#include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/metal/resident.h"
 #include "mlx/device.h"
 
@@ -21,7 +21,6 @@ using MTLFCList =
     std::vector<std::tuple<const void*, MTL::DataType, NS::UInteger>>;
 
 class Device;
-class EventImpl;
 
 class MLX_API CommandEncoder {
  public:
@@ -92,8 +91,8 @@ class MLX_API CommandEncoder {
 
   void barrier();
   void end_encoding();
-  void wait_event(std::shared_ptr<EventImpl> event, uint64_t value);
-  void signal_event(std::shared_ptr<EventImpl> event, uint64_t value);
+  void wait_event(Event event, uint64_t value);
+  void signal_event(Event event, uint64_t value);
   bool needs_commit() const;
   void commit(std::function<void()> completion = nullptr);
   void synchronize();
@@ -119,11 +118,11 @@ class MLX_API CommandEncoder {
   uint64_t sets_attached_{0};
 
   // The events hooked to current command buffer.
-  std::vector<std::shared_ptr<EventImpl>> wait_events_;
-  std::vector<std::tuple<std::shared_ptr<EventImpl>, uint64_t>> signal_events_;
+  std::vector<Event> wait_events_;
+  std::vector<std::tuple<Event, uint64_t>> signal_events_;
 
   // Error from previous commited command buffer.
-  std::shared_ptr<std::string> error_;
+  Error error_;
 
   // Encoder for issuing GPU commands.
   // The members are used within a single ComputeCommandEncoder and will be
@@ -201,6 +200,46 @@ class MLX_API Device {
     return residency_sets_;
   }
 
+  bool gemma4_expert_qmm_requested() const {
+    return gemma4_expert_qmm_requested_;
+  }
+
+  // MLX_GATHER_QMM_EXPERT_SLICES=trust: skip the descriptor-retract
+  // readback in the expert-tile route (no mid-eval stream drain). The
+  // caller asserts sorted indices are machine-guaranteed; a violation
+  // yields undefined tile output instead of the legacy fallback.
+  bool gemma4_expert_qmm_trust_sorted() const {
+    return gemma4_expert_qmm_trust_sorted_;
+  }
+
+  bool gemma4_expert_qmm_aot_available() const {
+    return gemma4_expert_qmm_aot_available_;
+  }
+  bool gemma4_expert_qmm_diagnostics_armed() const {
+    return gemma4_expert_qmm_counters_.armed();
+  }
+
+  // Call only inside a route boundary guarded by
+  // gemma4_expert_qmm_diagnostics_armed().
+  void record_armed_gemma4_expert_qmm(Gemma4ExpertQMMRoute route) {
+    gemma4_expert_qmm_counters_.record(route);
+  }
+
+  Gemma4ExpertQMMCounterSnapshot gemma4_expert_qmm_counter_snapshot() const {
+    return gemma4_expert_qmm_counters_.snapshot();
+  }
+  Gemma4ExpertQMMCounterSnapshot
+  gemma4_expert_qmm_counter_snapshot_and_disarm() {
+    return gemma4_expert_qmm_counters_.snapshot_and_disarm();
+  }
+
+  void reset_gemma4_expert_qmm_counters() {
+    gemma4_expert_qmm_counters_.reset();
+  }
+  void clear_and_arm_gemma4_expert_qmm_counters() {
+    gemma4_expert_qmm_counters_.clear_and_arm();
+  }
+
  private:
   NS::SharedPtr<MTL::Library> build_library_(
       const std::string& source_string,
@@ -240,6 +279,10 @@ class MLX_API Device {
   std::shared_mutex library_mtx_;
   std::unordered_map<std::string, NS::SharedPtr<MTL::Library>> library_map_;
   NS::SharedPtr<MTL::Library> default_library_;
+  bool gemma4_expert_qmm_requested_{false};
+  bool gemma4_expert_qmm_trust_sorted_{false};
+  bool gemma4_expert_qmm_aot_available_{false};
+  Gemma4ExpertQMMCounters gemma4_expert_qmm_counters_;
   std::unordered_map<
       MTL::Library*,
       std::unordered_map<std::string, NS::SharedPtr<MTL::ComputePipelineState>>>

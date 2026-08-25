@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <map>
+#include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -214,6 +215,27 @@ std::vector<Shape> Compiled::output_shapes(const std::vector<array>& inputs) {
 
 namespace detail {
 
+class CompileCache;
+
+class CompileCacheRegistry {
+ public:
+  void add(CompileCache* cache);
+  void remove(CompileCache* cache);
+  void erase(std::uintptr_t fun_id);
+  void clear();
+
+ private:
+  std::mutex mutex_;
+  std::unordered_set<CompileCache*> caches_;
+};
+
+CompileCacheRegistry& compile_cache_registry() {
+  // Intentionally process-lifetime: thread-local compile caches can be torn
+  // down after ordinary static destruction has started.
+  static auto* registry = new CompileCacheRegistry();
+  return *registry;
+}
+
 std::atomic<CompileMode>& compile_mode() {
   auto get_val = []() {
     if (std::getenv("MLX_DISABLE_COMPILE")) {
@@ -298,7 +320,7 @@ std::uintptr_t get_function_address(const std::function<T(U...)>& fun) {
   return reinterpret_cast<std::uintptr_t>(*fun_ptr);
 }
 
-class CompilerCache {
+class CompileCache {
  public:
   struct CacheEntry {
     CacheEntry(Stream stream, bool shapeless)
@@ -313,15 +335,43 @@ class CompilerCache {
     std::shared_ptr<void> extra;
   };
 
-  // Returns a reference to a CacheEntry which can be updated
-  // by the caller to avoid copying large tapes / inputs / outputs
-  CacheEntry& find(
+  CompileCache() {
+    // Make sure the allocator is fully initialized before the compiler cache.
+    allocator::allocator();
+    compile_cache_registry().add(this);
+  }
+
+  ~CompileCache() {
+    compile_cache_registry().remove(this);
+  }
+
+  // Returns a reference to a CacheEntry which can be updated by the caller to
+  // avoid copying large tapes / inputs / outputs, with the shared_ptr of
+  // entries to avoid getting erased during compilation.
+  std::tuple<CacheEntry&, std::shared_ptr<std::vector<CacheEntry>>> find(
       std::uintptr_t fun_id,
       const std::vector<array>& inputs,
       bool shapeless,
       const std::vector<uint64_t>& constants) {
-    // Find the cache entries for |fun_id|.
-    std::vector<CacheEntry>& entries = cache_[fun_id];
+    // Find the cache entries for |fun_id| in a thread-safe way.
+    auto entries_ptr = [&]() {
+      // Lookup with shared lock.
+      {
+        std::shared_lock lock(mutex_);
+        auto it = cache_.find(fun_id);
+        if (it != cache_.end()) {
+          return it->second;
+        }
+      }
+      // Insertion with exclusive lock.
+      std::unique_lock lock(mutex_);
+      auto& ptr = cache_[fun_id];
+      if (!ptr) {
+        ptr = std::make_shared<std::vector<CacheEntry>>();
+      }
+      return ptr;
+    }();
+    auto& entries = *entries_ptr;
 
     // Compare if 2 arrays have same shape and dtype.
     auto has_same_shape_and_dtype = [shapeless](
@@ -359,40 +409,61 @@ class CompilerCache {
       // Check the inputs match and return if so
       if (has_same_shape_and_dtype(inputs, entry.inputs) &&
           constants == entry.constants) {
-        return entry;
+        return {entry, std::move(entries_ptr)};
       }
     }
     // Otherwise append a new cache entry
     entries.push_back(CacheEntry{stream, shapeless});
-    return entries.back();
+    return {entries.back(), std::move(entries_ptr)};
   }
 
   void erase(std::uintptr_t fun_id) {
+    std::unique_lock lock(mutex_);
     cache_.erase(fun_id);
   }
 
   void clear() {
+    std::unique_lock lock(mutex_);
     cache_.clear();
   }
 
-  bool empty() {
-    return cache_.empty();
-  }
-
  private:
-  CompilerCache() {
-    // Make sure the allocator is fully
-    // initialized before the compiler cache
-    allocator::allocator();
-  }
-
-  friend CompilerCache& compiler_cache();
-  std::unordered_map<std::uintptr_t, std::vector<CacheEntry>> cache_;
+  // The cache may get its key erased from a separate thread, but its value is
+  // only added and modified in the thread of creation.
+  // Put value in a shared_ptr to avoid race condition when erasing happened
+  // during compilation for the same function.
+  std::unordered_map<std::uintptr_t, std::shared_ptr<std::vector<CacheEntry>>>
+      cache_;
+  std::shared_mutex mutex_;
 };
 
-CompilerCache& compiler_cache() {
-  static thread_local CompilerCache compiler_cache_;
-  return compiler_cache_;
+void CompileCacheRegistry::add(CompileCache* cache) {
+  std::unique_lock lock(mutex_);
+  caches_.insert(cache);
+}
+
+void CompileCacheRegistry::remove(CompileCache* cache) {
+  std::unique_lock lock(mutex_);
+  caches_.erase(cache);
+}
+
+void CompileCacheRegistry::erase(std::uintptr_t fun_id) {
+  std::unique_lock lock(mutex_);
+  for (auto* cache : caches_) {
+    cache->erase(fun_id);
+  }
+}
+
+void CompileCacheRegistry::clear() {
+  std::unique_lock lock(mutex_);
+  for (auto* cache : caches_) {
+    cache->clear();
+  }
+}
+
+std::shared_ptr<CompileCache>& compile_cache_unsafe() {
+  static thread_local auto cache = std::make_shared<CompileCache>();
+  return cache;
 }
 
 std::tuple<std::vector<array>, std::vector<array>, std::shared_ptr<void>>
@@ -1120,7 +1191,9 @@ ArrayFnWithExtra compile(
     }
 
     // Find a cache entry with the correct inputs
-    auto& entry = compiler_cache().find(fun_id, inputs, shapeless, constants);
+    auto [entry, entries_ptr] =
+        compile_cache_unsafe()->find(fun_id, inputs, shapeless, constants);
+    static_assert(std::is_reference_v<decltype(entry)>);
 
     // No matching cache entry existed, so compile
     if (entry.empty) {
@@ -1192,16 +1265,29 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
   };
 }
 
-void compile_erase(std::uintptr_t fun_id) {
-  detail::compiler_cache().erase(fun_id);
+CompileCacheWeakPtr compile_cache() {
+  return compile_cache_unsafe();
 }
+
+void compile_erase(const CompileCacheWeakPtr& cache, std::uintptr_t fun_id) {
+  if (auto p = cache.lock()) {
+    p->erase(fun_id);
+  }
+}
+
+void compile_erase(std::uintptr_t fun_id) {
+  compile_cache_registry().erase(fun_id);
+}
+
+void compile_clear_cache(const CompileCacheWeakPtr& cache) {
+  if (auto p = cache.lock()) {
+    p->clear();
+  }
+}
+
 
 void compile_clear_cache() {
-  detail::compiler_cache().clear();
-}
-
-bool compile_cache_empty() {
-  return detail::compiler_cache().empty();
+  compile_cache_registry().clear();
 }
 
 } // namespace detail
@@ -1221,8 +1307,8 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
     auto pfun = std::shared_ptr<
         std::function<std::vector<array>(const std::vector<array>&)>>(
         new std::function<std::vector<array>(const std::vector<array>&)>{fun},
-        [](auto* p) {
-          detail::compile_erase(reinterpret_cast<std::uintptr_t>(p));
+        [cache = detail::compile_cache()](auto* p) {
+          detail::compile_erase(cache, reinterpret_cast<std::uintptr_t>(p));
           delete p;
         });
     fun_id = reinterpret_cast<std::uintptr_t>(pfun.get());

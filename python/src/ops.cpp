@@ -1,5 +1,6 @@
 // Copyright © 2023-2024 Apple Inc.
 
+#include <limits>
 #include <numeric>
 #include <ostream>
 #include <variant>
@@ -24,11 +25,14 @@ namespace mx = mlx::core;
 namespace nb = nanobind;
 using namespace nb::literals;
 
-using Scalar = std::variant<bool, int, double>;
+using Scalar = std::variant<bool, int64_t, double>;
 
 mx::Dtype scalar_to_dtype(Scalar s) {
-  if (std::holds_alternative<int>(s)) {
-    return mx::int32;
+  if (auto pv = std::get_if<int64_t>(&s); pv) {
+    return (*pv > std::numeric_limits<int>::max() ||
+            *pv < std::numeric_limits<int>::min())
+        ? mx::int64
+        : mx::int32;
   } else if (std::holds_alternative<double>(s)) {
     return mx::float32;
   } else {
@@ -37,7 +41,7 @@ mx::Dtype scalar_to_dtype(Scalar s) {
 }
 
 double scalar_to_double(Scalar s) {
-  if (auto pv = std::get_if<int>(&s); pv) {
+  if (auto pv = std::get_if<int64_t>(&s); pv) {
     return static_cast<double>(*pv);
   } else if (auto pv = std::get_if<double>(&s); pv) {
     return *pv;
@@ -1513,7 +1517,7 @@ void init_ops(nb::module_& m) {
           start (float or int, optional): Starting value which defaults to ``0``.
           stop (float or int, optional): Stopping value.
           step (float or int, optional): Increment which defaults to ``1``.
-          dtype (Dtype, optional): Specifies the data type of the output. If unspecified will default to ``float32`` if any of ``start``, ``stop``, or ``step`` are ``float``. Otherwise will default to ``int32``.
+          dtype (Dtype, optional): Specifies the data type of the output. If unspecified will default to ``float32`` if any of ``start``, ``stop``, or ``step`` are ``float``. Otherwise will default to ``int32``, or ``int64`` if any of ``start``, ``stop``, or ``step`` does not fit in ``int32``.
 
       Returns:
           array: The range of values.
@@ -1644,22 +1648,25 @@ void init_ops(nb::module_& m) {
       [](Scalar start,
          Scalar stop,
          int num,
+         bool endpoint,
          std::optional<mx::Dtype> dtype,
          mx::StreamOrDevice s) {
         return mx::linspace(
             scalar_to_double(start),
             scalar_to_double(stop),
             num,
+            endpoint,
             dtype.value_or(mx::float32),
             s);
       },
       "start"_a,
       "stop"_a,
       "num"_a = 50,
+      "endpoint"_a = true,
       "dtype"_a.none() = mx::float32,
       "stream"_a = nb::none(),
       nb::sig(
-          "def linspace(start: scalar, stop: scalar, num: int | None = 50, dtype: Dtype | None = float32, stream: StreamOrDevice = None) -> array"),
+          "def linspace(start: scalar, stop: scalar, num: int | None = 50, endpoint: bool = True, dtype: Dtype | None = float32, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Generate ``num`` evenly spaced numbers over interval ``[start, stop]``.
 
@@ -1667,6 +1674,9 @@ void init_ops(nb::module_& m) {
             start (scalar): Starting value.
             stop (scalar): Stopping value.
             num (int, optional): Number of samples, defaults to ``50``.
+            endpoint (bool, optional): If ``True``, ``stop`` is the last
+              sample. Otherwise it is not included and the samples are spaced
+              over the half-open interval ``[start, stop)``. Default: ``True``.
             dtype (Dtype, optional): Specifies the data type of the output,
               default to ``float32``.
 
@@ -1758,7 +1768,7 @@ void init_ops(nb::module_& m) {
       },
       nb::arg(),
       "indices"_a,
-      "axis"_a.none(),
+      "axis"_a = nb::none(),
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
@@ -3386,14 +3396,14 @@ void init_ops(nb::module_& m) {
          mx::StreamOrDevice s) {
         std::vector<mx::array> arrays =
             nb::cast<std::vector<mx::array>>(arrays_);
-        return mx::meshgrid(arrays, sparse, indexing, s);
+        return nb::tuple(nb::cast(mx::meshgrid(arrays, sparse, indexing, s)));
       },
       "arrays"_a,
       "sparse"_a = false,
       "indexing"_a = "xy",
       "stream"_a = nb::none(),
       nb::sig(
-          "def meshgrid(*arrays: array, sparse: bool | None = False, indexing: str | None = 'xy', stream: StreamOrDevice = None) -> array"),
+          "def meshgrid(*arrays: array, sparse: bool | None = False, indexing: str | None = 'xy', stream: StreamOrDevice = None) -> tuple[array, ...]"),
       R"pbdoc(
         Generate multidimensional coordinate grids from 1-D coordinate arrays
 
@@ -3406,7 +3416,7 @@ void init_ops(nb::module_& m) {
               Defaults to ``'xy'``.
 
         Returns:
-            list(array): The output arrays.
+            tuple(array): The output arrays.
       )pbdoc");
   m.def(
       "repeat",

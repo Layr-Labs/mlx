@@ -422,6 +422,13 @@ size_t get_memory_limit() {
 size_t get_cache_memory() {
   return cu::allocator().get_cache_memory();
 }
+size_t get_num_resources() {
+  // CUDA allocator does not track a Metal-style resource count; report 0.
+  return 0;
+}
+size_t get_resource_limit() {
+  return 0;
+}
 size_t set_cache_limit(size_t limit) {
   return cu::allocator().set_cache_limit(limit);
 }

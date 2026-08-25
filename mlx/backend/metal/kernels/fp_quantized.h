@@ -137,11 +137,12 @@ inline void qouter(const thread uint8_t* w, U x, U scale, thread U* result) {
 
 template <typename U, int bits>
 inline void dequantize(uint8_t w, U scale, threadgroup U* w_local) {
+  const float s = float(scale);
   if constexpr (bits == 4) {
-    w_local[0] = scale * Dequantize<4, U>{}(w);
-    w_local[1] = scale * Dequantize<4, U>{}(w >> 4);
+    w_local[0] = static_cast<U>(s * Dequantize<4, float>{}(w));
+    w_local[1] = static_cast<U>(s * Dequantize<4, float>{}(w >> 4));
   } else {
-    w_local[0] = scale * Dequantize<8, U>{}(w);
+    w_local[0] = static_cast<U>(s * Dequantize<8, float>{}(w));
   }
 }
 
@@ -1231,7 +1232,8 @@ template <
     int group_size,
     int bits,
     bool batched,
-    bool has_global_scale = false>
+    bool has_global_scale = false,
+    int results_per_simdgroup = 4>
 [[kernel]] void fp_qmv(
     const device uint32_t* w,
     const device uint8_t* scales,
@@ -2121,7 +2123,7 @@ template <typename T, int group_size, int bits, bool has_global_scale>
 
   float scale_dec_b;
   float w_thread = w[index];
-  if (use_mx_scale) {
+  if constexpr (use_mx_scale) {
     scale_dec_b = simd_max(abs(w_thread));
   } else {
     float w_max_l = simd_max(simd_lid < 16 ? abs(w_thread) : 0.0);
@@ -2131,6 +2133,8 @@ template <typename T, int group_size, int bits, bool has_global_scale>
   scale_dec_b /= bits == 4 ? F4E2M1_MAX : F8E4M3_MAX;
   if constexpr (has_global_scale) {
     scale_dec_b *= scale_enc;
+  } else if constexpr (use_mx_scale) {
+    scale_dec_b = mx_scale_round_up(scale_dec_b);
   }
 
   using ScaleType = metal::conditional_t<use_mx_scale, fp8_e8m0, fp8_e4m3>;
@@ -2213,7 +2217,7 @@ template <typename T, int group_size, int bits, bool has_global_scale>
 
   float scale_dec_b;
   float w_thread = w[index];
-  if (use_mx_scale) {
+  if constexpr (use_mx_scale) {
     scale_dec_b = simd_max(abs(w_thread));
   } else {
     float w_max_l = simd_max(simd_lid < 16 ? abs(w_thread) : 0.0);
@@ -2223,6 +2227,8 @@ template <typename T, int group_size, int bits, bool has_global_scale>
   scale_dec_b /= bits == 4 ? F4E2M1_MAX : F8E4M3_MAX;
   if constexpr (has_global_scale) {
     scale_dec_b *= scale_enc;
+  } else if constexpr (use_mx_scale) {
+    scale_dec_b = mx_scale_round_up(scale_dec_b);
   }
 
   using ScaleType = metal::conditional_t<use_mx_scale, fp8_e8m0, fp8_e4m3>;

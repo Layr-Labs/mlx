@@ -1,5 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <sstream>
 
@@ -496,19 +498,15 @@ void CommandEncoder::end_encoding() {
   all_inputs_.clear();
 }
 
-void CommandEncoder::signal_event(
-    std::shared_ptr<EventImpl> event,
-    uint64_t value) {
+void CommandEncoder::signal_event(Event event, uint64_t value) {
   end_encoding();
-  buffer_->encodeSignalEvent(event->mtl_event(), value);
+  buffer_->encodeSignalEvent(event.cast<EventImpl>().mtl_event(), value);
   signal_events_.push_back({std::move(event), value});
 }
 
-void CommandEncoder::wait_event(
-    std::shared_ptr<EventImpl> event,
-    uint64_t value) {
+void CommandEncoder::wait_event(Event event, uint64_t value) {
   end_encoding();
-  buffer_->encodeWait(event->mtl_event(), value);
+  buffer_->encodeWait(event.cast<EventImpl>().mtl_event(), value);
   wait_events_.push_back(std::move(event));
 }
 
@@ -525,35 +523,37 @@ void CommandEncoder::commit(std::function<void()> completion) {
       [&error_ = error_,
        wait_events = std::move(wait_events_),
        signal_events = std::move(signal_events_),
-       completion = std::move(completion)](MTL::CommandBuffer* cbuf) {
+       completion = std::move(completion)](MTL::CommandBuffer* cbuf) mutable {
         if (completion) {
           completion();
         }
         // If any of the waited event has error in it, poison the encoder.
         for (auto& event : wait_events) {
-          if (event->error()) {
-            error_ = event->error();
+          if (error_.store_if_valid(event.load_error())) {
             break;
           }
         }
         // Set error only when no error happended before, to preserve the
         // earliest error.
-        if (!error_ && cbuf->status() == MTL::CommandBufferStatusError) {
-          error_ = std::make_shared<std::string>(fmt::format(
-              "[METAL] Command buffer execution failed: {}.",
-              cbuf->error()->localizedDescription()->utf8String()));
+        bool has_error = error_.valid();
+        if (!has_error && cbuf->status() == MTL::CommandBufferStatusError) {
+          error_.set_message(
+              std::make_shared<std::string>(fmt::format(
+                  "[METAL] Command buffer execution failed: {}.",
+                  cbuf->error()->localizedDescription()->utf8String())));
+          has_error = true;
         }
         // Poison all the signaled events when error happened.
-        if (error_) {
+        if (has_error) {
           for (auto& [event, value] : signal_events) {
-            event->set_error(error_);
+            event.set_error(error_);
           }
         }
         // Metal won't signal the events for us on error, manually signal them
         // to avoid infinite waiting.
         if (cbuf->status() == MTL::CommandBufferStatusError) {
           for (auto& [event, value] : signal_events) {
-            event->signal(value);
+            event.cast<EventImpl>().signal(value);
           }
         }
       });
@@ -570,20 +570,17 @@ void CommandEncoder::synchronize() {
   commit();
   cbuf->waitUntilCompleted();
 
-  if (error_ && !exiting_) {
-    auto error = std::move(error_);
-    throw std::runtime_error(*error);
+  if (!exiting_) {
+    error_.check();
   }
 }
 
 MTL::ComputeCommandEncoder* CommandEncoder::get_command_encoder() {
   if (!encoder_) {
+    error_.check();
     encoder_ = NS::RetainPtr(
         buffer_->computeCommandEncoder(MTL::DispatchTypeConcurrent));
     fence_ = NS::TransferPtr(device_.mtl_device()->newFence());
-    // Reset error when user starts to encode new commands, they are supposed to
-    // have handled the error in synchronize() or Event::wait().
-    error_.reset();
   }
   return encoder_.get();
 }
@@ -591,6 +588,56 @@ MTL::ComputeCommandEncoder* CommandEncoder::get_command_encoder() {
 Device::Device() : device_(load_device()), residency_sets_(device_.get()) {
   auto pool = new_scoped_memory_pool();
   default_library_ = NS::TransferPtr(load_default_library(device_.get()));
+
+  std::string expert_qmm_env =
+      env::get_var("MLX_GATHER_QMM_EXPERT_SLICES", "");
+  std::transform(
+      expert_qmm_env.begin(),
+      expert_qmm_env.end(),
+      expert_qmm_env.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  gemma4_expert_qmm_requested_ = expert_qmm_env == "1" ||
+      expert_qmm_env == "true" || expert_qmm_env == "on" ||
+      expert_qmm_env == "yes" || expert_qmm_env == "trust";
+  // "trust" additionally skips the descriptor-retract readback: the caller
+  // asserts its sorted-indices contract is machine-guaranteed (the Swift
+  // SwitchGLU path sorts on-device), so the host never drains the stream to
+  // observe a retracted build. Under trust, a genuinely mis-sorted input
+  // produces undefined tile output instead of the legacy fallback.
+  gemma4_expert_qmm_trust_sorted_ = expert_qmm_env == "trust";
+
+  constexpr const char* descriptor_kernel =
+      "build_gemma4_sorted_expert_tiles_bm32";
+  constexpr const char* descriptor_kernel_e256 =
+      "build_sorted_expert_tiles_bm32_e256";
+  constexpr const char* tile_kernel =
+      "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_"
+      "alN_true_bm_32_bn_32_bk_32";
+  auto has_default_function = [this](const char* name) {
+    auto ns_name = NS::String::string(name, NS::ASCIIStringEncoding);
+    auto function =
+        NS::TransferPtr(default_library_->newFunction(ns_name));
+    return function.get() != nullptr;
+  };
+  // All expert-tile symbols ship from one source-matched metallib
+  // (scripts/fetch-metallib.sh completeness contract), so availability is
+  // all-or-nothing: a metallib missing any of them predates this revision
+  // and must fail the whole route closed.
+  gemma4_expert_qmm_aot_available_ =
+      has_default_function(descriptor_kernel) &&
+      has_default_function(descriptor_kernel_e256) &&
+      has_default_function(tile_kernel);
+  if (gemma4_expert_qmm_requested_ && gemma4_expert_qmm_aot_available_) {
+    try {
+      // Resolve the pipelines once so missing or incompatible packaged AOT
+      // assets fail closed before an inference command encoder is touched.
+      get_kernel(descriptor_kernel);
+      get_kernel(descriptor_kernel_e256);
+      get_kernel(tile_kernel);
+    } catch (...) {
+      gemma4_expert_qmm_aot_available_ = false;
+    }
+  }
   arch_ = env::metal_gpu_arch();
   if (arch_.empty()) {
     arch_ = std::string(device_->architecture()->name()->utf8String());
@@ -971,3 +1018,71 @@ bool is_nax_available() {
 }
 
 } // namespace mlx::core::metal
+
+#if defined(__APPLE__)
+namespace {
+void gemma4_expert_qmm_diagnostics_snapshot(
+    mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics,
+    bool disarm) {
+  if (diagnostics == nullptr) {
+    return;
+  }
+  *diagnostics = {};
+  try {
+    auto& d = mlx::core::metal::device(mlx::core::Device::gpu);
+    const auto counters = disarm
+        ? d.gemma4_expert_qmm_counter_snapshot_and_disarm()
+        : d.gemma4_expert_qmm_counter_snapshot();
+    diagnostics->requested = d.gemma4_expert_qmm_requested();
+    diagnostics->aot_available = d.gemma4_expert_qmm_aot_available();
+    diagnostics->nax_available = mlx::core::metal::is_nax_available();
+    diagnostics->armed = counters.armed;
+    diagnostics->attempts = counters.attempts();
+    diagnostics->hits = counters.hits;
+    diagnostics->fallback_nax = counters.fallback_nax;
+    diagnostics->fallback_outer_route = counters.fallback_outer_route;
+    diagnostics->fallback_quantization = counters.fallback_quantization;
+    diagnostics->fallback_topology = counters.fallback_topology;
+    diagnostics->fallback_assignment_count =
+        counters.fallback_assignment_count;
+    diagnostics->fallback_geometry = counters.fallback_geometry;
+    diagnostics->fallback_metallib_unavailable =
+        counters.fallback_metallib_unavailable;
+    diagnostics->fallback_sortedness_retracted =
+        counters.fallback_sortedness_retracted;
+  } catch (...) {
+    // Diagnostics are optional. A missing Metal device must remain observable
+    // as an all-zero snapshot rather than escaping an exception through C ABI.
+  }
+}
+} // namespace
+
+extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot(
+    mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics) {
+  gemma4_expert_qmm_diagnostics_snapshot(diagnostics, false);
+}
+
+extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_reset(void) {
+  try {
+    mlx::core::metal::device(mlx::core::Device::gpu)
+        .reset_gemma4_expert_qmm_counters();
+  } catch (...) {
+    // Reset is best-effort on hosts without an accessible Metal device.
+  }
+}
+
+extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_clear_and_arm(void) {
+  try {
+    mlx::core::metal::device(mlx::core::Device::gpu)
+        .clear_and_arm_gemma4_expert_qmm_counters();
+  } catch (...) {
+    // Arming is best-effort on hosts without an accessible Metal device.
+  }
+}
+
+extern "C" void
+mlx_metal_gemma4_expert_qmm_diagnostics_snapshot_and_disarm(
+    mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics) {
+  gemma4_expert_qmm_diagnostics_snapshot(diagnostics, true);
+}
+#endif

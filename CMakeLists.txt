@@ -363,7 +363,7 @@ target_include_directories(
 if(MLX_BUILD_CPU
    AND ${CMAKE_SYSTEM_NAME} MATCHES "Darwin"
    AND DEFINED MACOS_SDK_VERSION
-   AND MACOS_SDK_VERSION GREATER_EQUAL 26.2)
+   AND MACOS_SDK_VERSION VERSION_GREATER_EQUAL 26.2)
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/mlx/distributed/jaccl/lib
                    ${CMAKE_BINARY_DIR}/jaccl)
 endif()
@@ -395,7 +395,7 @@ if(MLX_BUILD_PYTHON_BINDINGS)
   FetchContent_Declare(
     nanobind
     GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-    GIT_TAG v2.13.0
+    GIT_TAG v2.15.0
     GIT_SHALLOW TRUE
     EXCLUDE_FROM_ALL)
   FetchContent_MakeAvailable(nanobind)

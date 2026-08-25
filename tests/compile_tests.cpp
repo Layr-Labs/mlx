@@ -5,13 +5,24 @@
 
 #include "doctest/doctest.h"
 
+#include <atomic>
+#include <barrier>
 #include <cmath>
 #include <limits>
+#include <thread>
 
 #include "mlx/mlx.h"
+#include "mlx/compile_impl.h"
 #include "mlx/primitives.h"
 
 using namespace mlx::core;
+
+namespace mlx::core::detail {
+// Backward-compatible entrypoints required by the C/Swift binding. Unlike the
+// cache-specific overloads, these must affect every live thread-local cache.
+void compile_erase(std::uintptr_t fun_id);
+void compile_clear_cache();
+} // namespace mlx::core::detail
 
 std::vector<array> simple_fun(const std::vector<array>& inputs) {
   return std::vector<array>{inputs[0] + inputs[1]};
@@ -874,4 +885,39 @@ TEST_CASE("test compile throwing first trace does not poison cache") {
   auto out = cfun({});
   REQUIRE_EQ(out.size(), 1);
   CHECK_EQ(out[0].item<float>(), 3.0f);
+}
+
+TEST_CASE("test compatibility erase clears every live thread cache") {
+  std::atomic<int> trace_count{0};
+  constexpr std::uintptr_t fun_id = 0x0322;
+  std::barrier phase(3);
+
+  auto worker = [&]() {
+    auto compiled = detail::compile(
+        [&](const std::vector<array>& inputs) {
+          trace_count.fetch_add(1, std::memory_order_relaxed);
+          return std::vector<array>{inputs[0] + array(1)};
+        },
+        fun_id);
+
+    compiled({array(1)});
+    phase.arrive_and_wait();
+    phase.arrive_and_wait();
+    compiled({array(1)});
+    phase.arrive_and_wait();
+  };
+
+  std::thread first(worker);
+  std::thread second(worker);
+
+  phase.arrive_and_wait();
+  CHECK_EQ(trace_count.load(std::memory_order_relaxed), 2);
+
+  detail::compile_erase(fun_id);
+  phase.arrive_and_wait();
+  phase.arrive_and_wait();
+  CHECK_EQ(trace_count.load(std::memory_order_relaxed), 4);
+
+  first.join();
+  second.join();
 }

@@ -241,46 +241,6 @@ class MLX_API Device {
     return residency_sets_;
   }
 
-  bool gemma4_expert_qmm_requested() const {
-    return gemma4_expert_qmm_requested_;
-  }
-
-  // MLX_GATHER_QMM_EXPERT_SLICES=trust: skip the descriptor-retract
-  // readback in the expert-tile route (no mid-eval stream drain). The
-  // caller asserts sorted indices are machine-guaranteed; a violation
-  // yields undefined tile output instead of the legacy fallback.
-  bool gemma4_expert_qmm_trust_sorted() const {
-    return gemma4_expert_qmm_trust_sorted_;
-  }
-
-  bool gemma4_expert_qmm_aot_available() const {
-    return gemma4_expert_qmm_aot_available_;
-  }
-  bool gemma4_expert_qmm_diagnostics_armed() const {
-    return gemma4_expert_qmm_counters_.armed();
-  }
-
-  // Call only inside a route boundary guarded by
-  // gemma4_expert_qmm_diagnostics_armed().
-  void record_armed_gemma4_expert_qmm(Gemma4ExpertQMMRoute route) {
-    gemma4_expert_qmm_counters_.record(route);
-  }
-
-  Gemma4ExpertQMMCounterSnapshot gemma4_expert_qmm_counter_snapshot() const {
-    return gemma4_expert_qmm_counters_.snapshot();
-  }
-  Gemma4ExpertQMMCounterSnapshot
-  gemma4_expert_qmm_counter_snapshot_and_disarm() {
-    return gemma4_expert_qmm_counters_.snapshot_and_disarm();
-  }
-
-  void reset_gemma4_expert_qmm_counters() {
-    gemma4_expert_qmm_counters_.reset();
-  }
-  void clear_and_arm_gemma4_expert_qmm_counters() {
-    gemma4_expert_qmm_counters_.clear_and_arm();
-  }
-
  private:
   NS::SharedPtr<MTL::Library> build_library_(
       const std::string& source_string,

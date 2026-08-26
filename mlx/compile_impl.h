@@ -37,9 +37,17 @@ MLX_API void compile_erase(
     const CompileCacheWeakPtr& cache,
     std::uintptr_t fun_id);
 
+// Compatibility entrypoint for bindings created before caches became
+// thread-local. Erases the function from every live thread cache.
+MLX_API void compile_erase(std::uintptr_t fun_id);
+
 // Clear the compiler cache causing a recompilation of all compiled functions
 // when called again.
 MLX_API void compile_clear_cache(const CompileCacheWeakPtr& cache);
+
+// Compatibility entrypoint for bindings created before caches became
+// thread-local. Clears every live thread cache.
+MLX_API void compile_clear_cache();
 
 bool compile_available_for_device(const Device& device);
 

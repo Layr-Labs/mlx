@@ -215,6 +215,27 @@ std::vector<Shape> Compiled::output_shapes(const std::vector<array>& inputs) {
 
 namespace detail {
 
+class CompileCache;
+
+class CompileCacheRegistry {
+ public:
+  void add(CompileCache* cache);
+  void remove(CompileCache* cache);
+  void erase(std::uintptr_t fun_id);
+  void clear();
+
+ private:
+  std::mutex mutex_;
+  std::unordered_set<CompileCache*> caches_;
+};
+
+CompileCacheRegistry& compile_cache_registry() {
+  // Intentionally process-lifetime: thread-local compile caches can be torn
+  // down after ordinary static destruction has started.
+  static auto* registry = new CompileCacheRegistry();
+  return *registry;
+}
+
 std::atomic<CompileMode>& compile_mode() {
   auto get_val = []() {
     if (std::getenv("MLX_DISABLE_COMPILE")) {
@@ -317,6 +338,11 @@ class CompileCache {
   CompileCache() {
     // Make sure the allocator is fully initialized before the compiler cache.
     allocator::allocator();
+    compile_cache_registry().add(this);
+  }
+
+  ~CompileCache() {
+    compile_cache_registry().remove(this);
   }
 
   // Returns a reference to a CacheEntry which can be updated by the caller to
@@ -410,6 +436,30 @@ class CompileCache {
       cache_;
   std::shared_mutex mutex_;
 };
+
+void CompileCacheRegistry::add(CompileCache* cache) {
+  std::unique_lock lock(mutex_);
+  caches_.insert(cache);
+}
+
+void CompileCacheRegistry::remove(CompileCache* cache) {
+  std::unique_lock lock(mutex_);
+  caches_.erase(cache);
+}
+
+void CompileCacheRegistry::erase(std::uintptr_t fun_id) {
+  std::unique_lock lock(mutex_);
+  for (auto* cache : caches_) {
+    cache->erase(fun_id);
+  }
+}
+
+void CompileCacheRegistry::clear() {
+  std::unique_lock lock(mutex_);
+  for (auto* cache : caches_) {
+    cache->clear();
+  }
+}
 
 std::shared_ptr<CompileCache>& compile_cache_unsafe() {
   static thread_local auto cache = std::make_shared<CompileCache>();
@@ -1225,10 +1275,19 @@ void compile_erase(const CompileCacheWeakPtr& cache, std::uintptr_t fun_id) {
   }
 }
 
+void compile_erase(std::uintptr_t fun_id) {
+  compile_cache_registry().erase(fun_id);
+}
+
 void compile_clear_cache(const CompileCacheWeakPtr& cache) {
   if (auto p = cache.lock()) {
     p->clear();
   }
+}
+
+
+void compile_clear_cache() {
+  compile_cache_registry().clear();
 }
 
 } // namespace detail

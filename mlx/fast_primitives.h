@@ -211,12 +211,14 @@ class ScaledDotProductAttention : public Custom {
       float scale,
       bool do_causal,
       bool has_sinks,
-      bool output_logsumexp)
+      bool output_logsumexp,
+      bool force_fused)
       : Custom(stream, std::move(fallback)),
         scale_(scale),
         do_causal_(do_causal),
         has_sinks_(has_sinks),
-        output_logsumexp_(output_logsumexp) {}
+        output_logsumexp_(output_logsumexp),
+        force_fused_(force_fused) {}
 
   static bool use_fallback(
       const array& q,
@@ -227,6 +229,7 @@ class ScaledDotProductAttention : public Custom {
       bool do_causal,
       bool is_training,
       bool output_logsumexp,
+      bool force_fused,
       Stream s);
   static bool supports_bool_mask();
 
@@ -244,13 +247,22 @@ class ScaledDotProductAttention : public Custom {
       const std::vector<int>& argnums,
       const std::vector<array>& outputs) override;
 
+  std::pair<std::vector<array>, std::vector<int>> vmap(
+      const std::vector<array>& inputs,
+      const std::vector<int>& axes) override;
+
   bool is_equivalent(const Primitive& other) const override;
 
   DEFINE_NAME(ScaledDotProductAttention);
   DEFINE_INPUT_OUTPUT_SHAPE()
   auto state() const {
     return std::make_tuple(
-        nullptr, scale_, do_causal_, has_sinks_, output_logsumexp_);
+        nullptr,
+        scale_,
+        do_causal_,
+        has_sinks_,
+        output_logsumexp_,
+        force_fused_);
   }
 
  private:
@@ -258,6 +270,7 @@ class ScaledDotProductAttention : public Custom {
   bool do_causal_;
   bool has_sinks_;
   bool output_logsumexp_;
+  bool force_fused_;
 };
 
 class ScaledDotProductAttentionVJP : public Custom {

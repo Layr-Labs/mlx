@@ -54,6 +54,17 @@ MLX_API array scaled_dot_product_attention(
     const std::optional<array>& sinks = {},
     StreamOrDevice s = {});
 
+MLX_API array scaled_dot_product_attention(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode,
+    std::optional<array> mask_arr,
+    const std::optional<array>& sinks,
+    bool force_fused,
+    StreamOrDevice s = {});
+
 using TemplateArg = std::variant<int, bool, Dtype>;
 using ScalarArg = std::variant<bool, int, float>;
 

@@ -32,7 +32,14 @@ bool fast::ScaledDotProductAttention::use_fallback(
     bool do_causal,
     bool is_training,
     bool output_logsumexp,
+    bool force_fused,
     Stream s) {
+  if (force_fused) {
+    throw std::invalid_argument(
+        "[scaled_dot_product_attention] force_fused=True but no fused kernel "
+        "is available: fused kernels require a GPU, but this MLX build has no "
+        "GPU backend.");
+  }
   return true;
 }
 

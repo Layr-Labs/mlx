@@ -618,7 +618,29 @@ array scaled_dot_product_attention(
     const std::string& mask_mode /* = "" */,
     std::optional<array> mask_arr /* = {} */,
     const std::optional<array>& sinks /* = {} */,
-    StreamOrDevice s /* = {}*/) {
+    StreamOrDevice s /* = {} */) {
+  return scaled_dot_product_attention(
+      queries,
+      keys,
+      values,
+      scale,
+      mask_mode,
+      std::move(mask_arr),
+      sinks,
+      false,
+      s);
+}
+
+array scaled_dot_product_attention(
+    const array& queries,
+    const array& keys,
+    const array& values,
+    const float scale,
+    const std::string& mask_mode /* = "" */,
+    std::optional<array> mask_arr /* = {} */,
+    const std::optional<array>& sinks /* = {} */,
+    bool force_fused /* = false */,
+    StreamOrDevice s /* = {} */) {
   for (const auto& tensor : {queries, keys, values}) {
     if (tensor.ndim() != 4) {
       std::ostringstream msg;
@@ -834,6 +856,7 @@ array scaled_dot_product_attention(
           do_causal,
           is_training,
           output_logsumexp,
+          force_fused,
           stream)) {
     if (has_bool_mask && !ScaledDotProductAttention::supports_bool_mask()) {
       // Convert bool mask to additive mask.
@@ -846,7 +869,13 @@ array scaled_dot_product_attention(
     }
     Shape out_shape{q.shape(0), q.shape(1), q.shape(2), v.shape(-1)};
     auto primitive = std::make_shared<ScaledDotProductAttention>(
-        stream, fallback, scale, do_causal, has_sinks, output_logsumexp);
+        stream,
+        fallback,
+        scale,
+        do_causal,
+        has_sinks,
+        output_logsumexp,
+        force_fused);
     if (output_logsumexp) {
       return array::make_arrays(
           {std::move(out_shape), Shape{q.shape(0), q.shape(1), q.shape(2), 1}},
@@ -912,7 +941,19 @@ bool ScaledDotProductAttention::is_equivalent(const Primitive& other) const {
       static_cast<const ScaledDotProductAttention&>(other);
   return scale_ == a_other.scale_ && do_causal_ == a_other.do_causal_ &&
       has_sinks_ == a_other.has_sinks_ &&
-      output_logsumexp_ == a_other.output_logsumexp_;
+      output_logsumexp_ == a_other.output_logsumexp_ &&
+      force_fused_ == a_other.force_fused_;
+}
+
+std::pair<std::vector<array>, std::vector<int>> ScaledDotProductAttention::vmap(
+    const std::vector<array>& inputs,
+    const std::vector<int>& axes) {
+  if (force_fused_) {
+    throw std::invalid_argument(
+        "[scaled_dot_product_attention] force_fused=True is not supported "
+        "under vmap; refusing to silently use the composed fallback.");
+  }
+  return Custom::vmap(inputs, axes);
 }
 
 bool ScaledDotProductAttentionVJP::is_equivalent(const Primitive& other) const {

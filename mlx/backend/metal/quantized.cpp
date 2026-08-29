@@ -1128,6 +1128,16 @@ void gather_qmm_rhs_nax(
   array w = ensure_row_contiguous(w_, d, s);
   array scales = ensure_row_contiguous(scales_, d, s);
 
+  // Recompute the row count from the POST-broadcast x. The caller passes an M
+  // derived from the pre-broadcast x (x.size() / K); when the sorted-rhs route
+  // fires on an index-unaligned x, broadcast_with_indices grows x to
+  // indices.size() rows, so the caller's M undercounts and the grid/kernel
+  // row bound below would leave the tail rows unwritten (uninitialized pool
+  // memory). Mirror gather_mm_rhs (matmul.cpp), which broadcasts first then
+  // derives M = a.size() / K from the broadcast array. K == x.shape(-1) is
+  // unchanged by the broadcast.
+  M = x.size() / K;
+
   // TODO: Tune the block sizes
   int bm = 64, bn = 64, bk = 64;
   int wm = 2, wn = 2;
@@ -1374,6 +1384,16 @@ void gather_qmm_rhs(
   array x = broadcast_with_indices(x_);
   array w = ensure_row_contiguous(w_, d, s);
   array scales = ensure_row_contiguous(scales_, d, s);
+
+  // Recompute the row count from the POST-broadcast x. The caller passes an M
+  // derived from the pre-broadcast x (x.size() / K); when the sorted-rhs route
+  // fires on an index-unaligned x, broadcast_with_indices grows x to
+  // indices.size() rows, so the caller's M undercounts and the grid/kernel
+  // row bound below (and the Gemma4 expert route's tile count) would leave the
+  // tail rows unwritten (uninitialized pool memory). Mirror gather_mm_rhs
+  // (matmul.cpp), which broadcasts first then derives M = a.size() / K from the
+  // broadcast array. K == x.shape(-1) is unchanged by the broadcast.
+  M = x.size() / K;
 
   if (d.gemma4_expert_qmm_requested()) {
     auto shape_dim = [](const array& value, int axis) {

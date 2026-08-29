@@ -1194,6 +1194,64 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 self.assertTrue(mx.allclose(y1, y3, atol=tol))
                 self.assertTrue(mx.allclose(y1, y4, atol=tol))
 
+    def test_gather_qmm_sorted_nested_broadcast(self):
+        # Regression: the sorted-RHS quantized route (gather_qmm_rhs /
+        # gather_qmm_rhs_nax) must write ALL indices.size() output rows when x
+        # is index-unaligned. The caller passes M = x.size()/K computed on the
+        # PRE-broadcast x; broadcast_with_indices then grows x to
+        # indices.size() rows, so an unrecomputed M leaves the tail rows
+        # uninitialized (deterministic garbage on pool reuse; no NaN). The fix
+        # recomputes M from the post-broadcast x, mirroring gather_mm_rhs.
+        #
+        # Firing geometry pinned to the 125B-A6B batched-prefill shape.
+        # do not retune.
+        if mx.default_device() != mx.gpu:
+            return  # Metal-dispatch-only fault
+
+        E, K, N, A = 128, 2816, 704, 8192  # experts, contraction, out, assignments
+        group_size, bits, mode = 64, 4, "affine"
+        sentinel = 987654.0
+
+        mx.random.seed(0)
+        w = (mx.random.normal((E, N, K)) / (K**0.5)).astype(mx.bfloat16)
+        qw, s, b = mx.quantize(w, group_size=group_size, bits=bits, mode=mode)
+        w_hat = mx.dequantize(qw, s, b, group_size=group_size, bits=bits, mode=mode)
+        idx = mx.repeat(mx.arange(E, dtype=mx.uint32), A // E)  # sorted, 64/expert
+        x0 = (mx.random.normal((K,)) / (K**0.5)).astype(mx.bfloat16)
+
+        # Dense-dequant reference, independent of any gather kernel. All A
+        # assignments share x0, so compute one result per expert then gather.
+        y_pe = (w_hat * x0.reshape(1, 1, K)).sum(-1)  # (E, N)
+        y_ref = y_pe[idx].astype(mx.float32)  # (A, N)
+
+        def run(x_in):
+            y = mx.gather_qmm(
+                x_in, qw, s, b,
+                group_size=group_size, bits=bits, mode=mode,
+                transpose=True, rhs_indices=idx, sorted_indices=True,
+            )
+            mx.eval(y)
+            return y.reshape(A, N).astype(mx.float32)
+
+        # (a) index-ALIGNED x (x already has A rows; broadcast is a no-op) is
+        # correct today and measures the quantization-error tolerance.
+        x_aligned = mx.contiguous(mx.broadcast_to(x0.reshape(1, 1, K), (A, 1, K)))
+        y_aligned = run(x_aligned)
+        tol = float((y_aligned - y_ref).abs().max())
+        # measured affine/4-bit/gs-64 error ~4.9e-4; assert a firm bound
+        self.assertLess(tol, 3e-3)
+
+        # (b) NESTED / non-aligned x (single implied row -> broadcast to A rows).
+        # Poison the (A,1,N) buffer bucket so the buggy tail is unambiguous
+        # (otherwise a prior identical correct result masks the fault).
+        junk = [mx.full((A, 1, N), sentinel, dtype=mx.bfloat16) for _ in range(6)]
+        mx.eval(junk)
+        del junk
+        y_nested = run(x0.reshape(1, 1, K))
+
+        # Every row -- head AND tail -- must match the dense reference.
+        self.assertLess(float((y_nested - y_ref).abs().max()), 8 * tol)
+
     def test_gather_qmm_grad(self):
         def gather_qmm_ref(x, w, s, b, lhs, rhs, trans, sort):
             if lhs is not None:

@@ -28,7 +28,11 @@ using namespace metal;
       qk_dim,                                                  \
       value_dim)
 
-#define instantiate_sdpa_vector_gqa(type, qk_dim, value_dim, hpt)  \
+// `split` is the merge-plane publish count, NOT part of the kernel name --
+// the host names this kernel by type and dims only. SPLIT = 1 is the shipped
+// body instruction for instruction; a larger value only shrinks the
+// threadgroup allocation (see sdpa_vector.h).
+#define instantiate_sdpa_vector_gqa(type, qk_dim, value_dim, hpt, split) \
   instantiate_kernel(                                              \
       "sdpa_vector_2pass_1_gqa_" #type "_" #qk_dim "_" #value_dim, \
       sdpa_vector_2pass_1_gqa,                                     \
@@ -36,7 +40,8 @@ using namespace metal;
       qk_dim,                                                      \
       value_dim,                                                   \
       8,                                                           \
-      hpt)
+      hpt,                                                         \
+      split)
 
 // D512-2PASS. The 2-pass split-K kernels ONLY, with no single-pass twin.
 //
@@ -64,9 +69,9 @@ using namespace metal;
   instantiate_sdpa_vector(type, 192, 192)        \
   instantiate_sdpa_vector(type, 256, 256)        \
   instantiate_sdpa_vector_2pass(type, 512, 512)  \
-  instantiate_sdpa_vector_gqa(type, 64, 64, 8)   \
-  instantiate_sdpa_vector_gqa(type, 128, 128, 4) \
-  instantiate_sdpa_vector_gqa(type, 512, 512, 2) \
+  instantiate_sdpa_vector_gqa(type, 64, 64, 8, 1)      \
+  instantiate_sdpa_vector_gqa(type, 128, 128, 4, 1)   \
+  instantiate_sdpa_vector_gqa(type, 512, 512, 2, 2)   \
   instantiate_sdpa_vector_aggregation(type, 64)  \
   instantiate_sdpa_vector_aggregation(type, 96)  \
   instantiate_sdpa_vector_aggregation(type, 128) \

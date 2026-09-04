@@ -333,7 +333,24 @@ template <typename T, int D, int V = D>
 // each K/V byte is read G / HPT times instead of G times. Single-token
 // queries without mask or sinks only; the partials layout matches
 // sdpa_vector_2pass_2.
-template <typename T, int D, int V, int G, int HPT>
+//
+// SPLIT is how many passes the cross-simdgroup merge plane is published in.
+// The plane is the kernel's only large threadgroup allocation and is
+// G * HPT * V floats at SPLIT = 1 -- 16,640 B at (64, HPT 8) and
+// (128, HPT 4), but 32,896 B at (512, HPT 2), which is 128 B over Metal's
+// 32,768 B threadgroup limit and makes pipeline creation fail outright.
+// SPLIT = n publishes V / n columns at a time and so allocates
+// G * HPT * V / n floats.
+//
+// SPLIT does not change the arithmetic. Each lane keeps the same register
+// slice, the shared plane is only a scratch relabelling of that slice (write
+// and read use the identical lane mapping, never the global column index),
+// `gmax` and `denom` are computed once from the full scalar arrays, and the
+// per-output accumulation over s keeps its order inside every pass. SPLIT = 1
+// is the shipped code path instruction for instruction: one publish of the
+// plane AND the scalars, one barrier, one merge -- the extra write-after-read
+// barrier only exists for p > 0.
+template <typename T, int D, int V, int G, int HPT, int SPLIT>
 [[kernel]] void sdpa_vector_2pass_1_gqa(
     const device T* queries [[buffer(0)]],
     const device T* keys [[buffer(1)]],
@@ -429,33 +446,66 @@ template <typename T, int D, int V, int G, int HPT>
     }
   }
 
-  threadgroup U o_sh[G * HPT * V];
+  constexpr int VS = V / SPLIT;
+  constexpr int v_per_pass = v_per_thread / SPLIT;
+
+  static_assert(V % SPLIT == 0, "sdpa_vector_2pass_1_gqa: SPLIT must divide V");
+  static_assert(
+      v_per_thread % SPLIT == 0,
+      "sdpa_vector_2pass_1_gqa: SPLIT must divide V / 32");
+  // The failure this guards is not hypothetical: (D 512, HPT 2) at SPLIT = 1
+  // allocates 32,896 B and Metal refuses the pipeline at LOAD time with
+  // "Threadgroup memory size (32896) exceeds the maximum threadgroup memory
+  // allowed (32768)" -- a runtime error on the device, far from the code that
+  // caused it. Raising SPLIT is the fix; this turns forgetting to into a
+  // compile error at the offline `xcrun metal -c` gate.
+  static_assert(
+      (G * HPT * VS + 2 * G * HPT) * sizeof(U) <= 32768,
+      "sdpa_vector_2pass_1_gqa: the merge plane exceeds Metal's 32 KB "
+      "threadgroup limit -- raise SPLIT for this instantiation");
+
+  threadgroup U o_sh[G * HPT * VS];
   threadgroup U se_sh[G * HPT];
   threadgroup U mx_sh[G * HPT];
-  for (int j = 0; j < HPT; j++) {
-    int slot = (h0 + j) * HPT + cchunk;
-    U inv = sum_exp_score[j] > 0 ? 1 / sum_exp_score[j] : 0;
-    for (int i = 0; i < v_per_thread; i++) {
-      o_sh[slot * V + simd_lid * v_per_thread + i] = o[j][i] * inv;
-    }
-    if (simd_lid == 0) {
-      se_sh[slot] = sum_exp_score[j];
-      mx_sh[slot] = max_score[j];
-    }
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
 
   U gmax = Limits<U>::finite_min;
-  for (int s = 0; s < HPT; s++) {
-    gmax = max(gmax, mx_sh[g * HPT + s]);
-  }
   U denom = 0;
   U acc[v_per_thread] = {0};
-  for (int s = 0; s < HPT; s++) {
-    U w = se_sh[g * HPT + s] * fast::exp(mx_sh[g * HPT + s] - gmax);
-    denom += w;
-    for (int i = 0; i < v_per_thread; i++) {
-      acc[i] += w * o_sh[(g * HPT + s) * V + simd_lid * v_per_thread + i];
+
+  for (int p = 0; p < SPLIT; p++) {
+    if (p > 0) {
+      // Write-after-read: every lane must finish reading the previous
+      // pass's plane before any lane overwrites it.
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (int j = 0; j < HPT; j++) {
+      int slot = (h0 + j) * HPT + cchunk;
+      U inv = sum_exp_score[j] > 0 ? 1 / sum_exp_score[j] : 0;
+      for (int i = 0; i < v_per_pass; i++) {
+        o_sh[slot * VS + simd_lid * v_per_pass + i] =
+            o[j][p * v_per_pass + i] * inv;
+      }
+      if (p == 0 && simd_lid == 0) {
+        se_sh[slot] = sum_exp_score[j];
+        mx_sh[slot] = max_score[j];
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (p == 0) {
+      for (int s = 0; s < HPT; s++) {
+        gmax = max(gmax, mx_sh[g * HPT + s]);
+      }
+    }
+    for (int s = 0; s < HPT; s++) {
+      U w = se_sh[g * HPT + s] * fast::exp(mx_sh[g * HPT + s] - gmax);
+      if (p == 0) {
+        denom += w;
+      }
+      for (int i = 0; i < v_per_pass; i++) {
+        acc[p * v_per_pass + i] +=
+            w * o_sh[(g * HPT + s) * VS + simd_lid * v_per_pass + i];
+      }
     }
   }
 

@@ -68,12 +68,25 @@ inline bool d512_vector_sdpa_enabled() {
 // At D = 512 a thread holds `HPT * (D / 32)` query floats and the same
 // number of output floats, so HPT = 2 (64 live floats, twice the plain
 // 2-pass kernel's 32) is the only step that is clearly affordable; it
-// halves the K/V stream. It is DEFAULT OFF because the register claim at
-// 32 x gqa_factor = 256 threads per threadgroup has not been checked
-// against `maxTotalThreadsPerThreadgroup` on the device, and a pipeline
-// that comes back under 256 would make `check_kernel_threadgroup_size`
-// throw rather than degrade. Turn it on with
-// `DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP=1` once that is measured.
+// halves the K/V stream.
+//
+// First device run failed pipeline creation outright:
+//   Threadgroup memory size (32896) exceeds the maximum threadgroup memory
+//   allowed (32768)
+// -- the merge plane `o_sh[G * HPT * V]` is 8 * 2 * 512 floats = 32,768 B on
+// its own, and the two 16-float scalar arrays put it 128 B over. Note that
+// `blocks` is not a term in that expression, so tuning MLX_SDPA_BLOCKS could
+// not have helped. Fixed by publishing the plane in SPLIT = 2 passes
+// (kernels/sdpa_vector.h), which allocates 16,512 B -- in line with the
+// shipped 64/128 instantiations' 16,640 B -- and leaves the arithmetic
+// unchanged.
+//
+// Still DEFAULT OFF: the remaining unmeasured claim is the REGISTER one.
+// A thread holds q[2][16] + o[2][16] + kr[16] + vr[16] + acc[16] = 112 live
+// floats at 32 x gqa_factor = 256 threads per threadgroup, and a pipeline
+// whose `maxTotalThreadsPerThreadgroup` came back under 256 would make
+// `check_kernel_threadgroup_size` throw rather than degrade. Turn it on with
+// `DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP=1` for its own arm.
 inline bool d512_gqa_dedup_enabled() {
   static bool enabled =
       env_flag_on("DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP", false);

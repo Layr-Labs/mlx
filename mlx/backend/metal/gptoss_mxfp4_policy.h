@@ -16,11 +16,7 @@ struct GPTOSSMXFP4PrefillTile {
 
 inline GPTOSSMXFP4PrefillTile gptoss_mxfp4_prefill_tile(const char* option) {
   const std::string_view value = option ? option : "";
-  if (value == "m16n32k64") return {16, 32, 64, 1, 2};
   if (value == "m32n32k32") return {32, 32, 32, 2, 2};
-  if (value == "m16n64k32") return {16, 64, 32, 1, 2};
-  if (value == "m32n64k32") return {32, 64, 32, 2, 2};
-  if (value == "m32n64k64") return {32, 64, 64, 2, 2};
   return {};
 }
 

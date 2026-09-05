@@ -1346,7 +1346,10 @@ void gather_qmv(
       (N == 2880 || N == 5760) &&
       (x.dtype() == float32 || x.dtype() == bfloat16)) {
     const char* option = std::getenv("MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL");
-    fast_tail = option && std::string_view(option) == "1";
+    const std::string_view physical_arch =
+        d.mtl_device()->architecture()->name()->utf8String();
+    fast_tail = option ? std::string_view(option) == "1"
+                       : physical_arch == "applegpu_g16s";
   }
   concatenate(
       kname,

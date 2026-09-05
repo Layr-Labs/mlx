@@ -48,7 +48,7 @@ TEST_CASE("gptoss mxfp4 prefill tiles preserve expert boundaries and partial row
                                indices, true, 32, 4, "mxfp4", true, Device::gpu);
         eval(reference);
       }
-      for (const auto* name : {"m16n64k32", "m32n64k32", "m32n64k64", "m16n32k64", "m32n32k32"}) {
+      for (const auto* name : {"m32n32k32"}) {
         ScopedPrefillTile tile(name);
         const auto actual = gather_qmm(x, packed, scales, std::nullopt, std::nullopt,
                                        indices, true, 32, 4, "mxfp4", true, Device::gpu);

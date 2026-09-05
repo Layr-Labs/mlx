@@ -222,3 +222,7 @@ instantiate_quantized_types(float)
 instantiate_quantized_types(bfloat16_t)
 instantiate_quantized_types(float16_t)
     // clang-format on
+
+// Exact GPT-OSS MXFP4 gathered-vector tail experiment.
+instantiate_quantized(mxfp4, gather_qmv_fast_tail, float, 32, 4)
+instantiate_quantized(mxfp4, gather_qmv_fast_tail, bfloat16_t, 32, 4)

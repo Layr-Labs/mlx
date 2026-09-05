@@ -5,6 +5,7 @@
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/metal/device.h"
+#include "mlx/backend/metal/gptoss_mxfp4_policy.h"
 #include "mlx/backend/metal/kernels.h"
 #include "mlx/backend/metal/reduce.h"
 #include "mlx/backend/metal/unary.h"
@@ -1339,9 +1340,18 @@ void gather_qmv(
   kname.reserve(64);
   std::string type_string = get_type_string(x.dtype());
   bool fast = N % bn == 0 && K % qmv_fast_k_alignment(bits) == 0;
+  bool fast_tail = false;
+  if (mode == "mxfp4" && group_size == 32 && bits == 4 &&
+      !global_scale && w.ndim() == 3 && w.shape(0) == 32 && K == 2880 &&
+      (N == 2880 || N == 5760) &&
+      (x.dtype() == float32 || x.dtype() == bfloat16)) {
+    const char* option = std::getenv("MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL");
+    fast_tail = option && std::string_view(option) == "1";
+  }
   concatenate(
       kname,
-      mode + (fast ? "_gather_qmv_fast_" : "_gather_qmv_"),
+      mode + (fast_tail ? "_gather_qmv_fast_tail_" :
+              (fast ? "_gather_qmv_fast_" : "_gather_qmv_")),
       type_string,
       "_gs_",
       group_size,
@@ -1352,7 +1362,8 @@ void gather_qmv(
   auto kernel = get_quantized_kernel_wrapped(
       d,
       kname,
-      (fast ? "gather_qmv_fast" : "gather_qmv"),
+      (fast_tail ? "gather_qmv_fast_tail" :
+       (fast ? "gather_qmv_fast" : "gather_qmv")),
       mode,
       type_string,
       group_size,
@@ -1851,6 +1862,19 @@ void gather_qmm_rhs(
   // TODO: Tune the block sizes
   int bm = 16, bn = 32, bk = 32;
   int wm = 1, wn = 2;
+
+  if (mode == "mxfp4" && transpose && group_size == 32 && bits == 4 &&
+      w.ndim() == 3 && w.shape(0) == 32 && K == 2880 &&
+      (N == 2880 || N == 5760) && M >= 64 &&
+      (x.dtype() == float32 || x.dtype() == bfloat16)) {
+    const auto tile = metal::gptoss_mxfp4_prefill_tile(
+        std::getenv("MLX_GPTOSS_MXFP4_PREFILL_TILE"));
+    bm = tile.bm;
+    bn = tile.bn;
+    bk = tile.bk;
+    wm = tile.wm;
+    wn = tile.wn;
+  }
 
   const bool align_M = (M % bm) == 0;
   const bool align_N = (N % bn) == 0;

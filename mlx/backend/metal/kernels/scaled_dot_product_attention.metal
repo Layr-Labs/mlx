@@ -9,7 +9,7 @@ using namespace metal;
 // SDPA vector instantiations
 #define instantiate_sdpa_vector_aggregation(type, value_dim) \
   instantiate_kernel(                                        \
-      "sdpa_vector_2pass_2_" #type "_" #value_dim,           \
+      "sdpa_vector_2pass_fp32partials_2_" #type "_" #value_dim,           \
       sdpa_vector_2pass_2,                                   \
       type,                                                  \
       value_dim)
@@ -22,7 +22,7 @@ using namespace metal;
       qk_dim,                                                  \
       value_dim)                                               \
   instantiate_kernel(                                          \
-      "sdpa_vector_2pass_1_" #type "_" #qk_dim "_" #value_dim, \
+      "sdpa_vector_2pass_fp32partials_1_" #type "_" #qk_dim "_" #value_dim, \
       sdpa_vector_2pass_1,                                     \
       type,                                                    \
       qk_dim,                                                  \
@@ -30,7 +30,7 @@ using namespace metal;
 
 #define instantiate_sdpa_vector_gqa(type, qk_dim, value_dim, hpt)  \
   instantiate_kernel(                                              \
-      "sdpa_vector_2pass_1_gqa_" #type "_" #qk_dim "_" #value_dim, \
+      "sdpa_vector_2pass_fp32partials_1_gqa_" #type "_" #qk_dim "_" #value_dim, \
       sdpa_vector_2pass_1_gqa,                                     \
       type,                                                        \
       qk_dim,                                                      \

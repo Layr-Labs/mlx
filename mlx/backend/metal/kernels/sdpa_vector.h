@@ -181,7 +181,7 @@ template <typename T, int D, int V = D>
     const device T* queries [[buffer(0)]],
     const device T* keys [[buffer(1)]],
     const device T* values [[buffer(2)]],
-    device T* out [[buffer(3)]],
+    device float* out [[buffer(3)]],
     device float* sums [[buffer(4)]],
     device float* maxs [[buffer(5)]],
     const constant int& N [[buffer(7)]],
@@ -313,7 +313,7 @@ template <typename T, int D, int V = D>
   }
 
   for (int i = 0; i < v_per_thread; i++) {
-    out[i] = static_cast<T>(o[i]);
+    out[i] = o[i];
   }
 }
 
@@ -327,7 +327,7 @@ template <typename T, int D, int V, int G, int HPT>
     const device T* queries [[buffer(0)]],
     const device T* keys [[buffer(1)]],
     const device T* values [[buffer(2)]],
-    device T* out [[buffer(3)]],
+    device float* out [[buffer(3)]],
     device float* sums [[buffer(4)]],
     device float* maxs [[buffer(5)]],
     const constant int& N [[buffer(7)]],
@@ -449,10 +449,10 @@ template <typename T, int D, int V, int G, int HPT>
   }
 
   const int o_offset = base_head + g;
-  device T* op =
+  device float* op =
       out + o_offset * blocks * V + block_idx * V + simd_lid * v_per_thread;
   for (int i = 0; i < v_per_thread; i++) {
-    op[i] = static_cast<T>(acc[i]);
+    op[i] = acc[i];
   }
   if (simd_lid == 0) {
     sums[o_offset * blocks + block_idx] = denom;
@@ -462,7 +462,7 @@ template <typename T, int D, int V, int G, int HPT>
 
 template <typename T, int D>
 [[kernel]] void sdpa_vector_2pass_2(
-    const device T* partials [[buffer(0)]],
+    const device float* partials [[buffer(0)]],
     const device float* sums [[buffer(1)]],
     const device float* maxs [[buffer(2)]],
     device T* out [[buffer(3)]],

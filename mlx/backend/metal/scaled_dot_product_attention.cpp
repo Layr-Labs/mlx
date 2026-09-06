@@ -465,7 +465,7 @@ void sdpa_vector_2pass(
   // Set the kernel name
   std::string kname;
   kname.reserve(64);
-  kname += "sdpa_vector_2pass_1";
+  kname += "sdpa_vector_2pass_fp32partials_1";
   if (!mask && !sinks && q.shape(2) == 1 && q.shape(1) == 8 * k.shape(1) &&
       q.shape(-1) == v.shape(-1) && (q.shape(-1) == 64 || q.shape(-1) == 128) &&
       k.shape(2) >= 8192) {
@@ -535,7 +535,8 @@ void sdpa_vector_2pass(
       intermediate_shape.end(), out.shape().begin(), out.shape().end() - 1);
   intermediate_shape.push_back(blocks);
   intermediate_shape.push_back(out.shape().back());
-  array intermediate(intermediate_shape, q.dtype(), nullptr, {});
+  // Keep unnormalized partials in float until the final reduction.
+  array intermediate(intermediate_shape, float32, nullptr, {});
   intermediate_shape.pop_back();
   array sums(intermediate_shape, float32, nullptr, {});
   array maxs(std::move(intermediate_shape), float32, nullptr, {});
@@ -607,7 +608,7 @@ void sdpa_vector_2pass(
 
   // Final pass
   kname.clear();
-  kname = "sdpa_vector_2pass_2_";
+  kname = "sdpa_vector_2pass_fp32partials_2_";
   kname += get_type_string(q.dtype());
   kname += "_";
   kname += std::to_string(v.shape(-1));

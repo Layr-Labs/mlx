@@ -3,6 +3,7 @@
 #pragma once
 
 #include "mlx/allocator.h"
+#include "mlx/memory.h"
 #include "mlx/backend/common/buffer_cache.h"
 #include "mlx/backend/cuda/cuda_utils.h"
 
@@ -58,6 +59,7 @@ class CudaAllocator : public allocator::Allocator {
   // host memory), and copy the data over. Pass |stream| to copy asynchronously.
   void move_to_unified_memory(CudaBuffer& buf, cudaStream_t stream = nullptr);
 
+  MemorySnapshot get_memory_snapshot();
   size_t get_active_memory() const;
   size_t get_peak_memory() const;
   void reset_peak_memory();

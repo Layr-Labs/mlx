@@ -2,11 +2,76 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdlib>
+#include <limits>
 
 #include "mlx/api.h"
 
 namespace mlx::core {
+
+struct MemorySnapshot {
+  size_t active_memory;
+  size_t cache_memory;
+  size_t peak_memory;
+};
+
+/* Read allocator accounting under one lock. This does not synchronize streams
+ * or include allocations that have not entered allocator accounting yet. */
+MLX_API MemorySnapshot get_memory_snapshot();
+
+/* Bound one allocator buffer, including alignment and larger cache reuse.
+ * This does not allocate, synchronize, or inspect the live buffer cache. */
+MLX_API size_t get_allocation_size_upper_bound(size_t size);
+
+// A detached value: evaluating bounds requires no allocator, error callback,
+// exception, lock, or allocation. Capture once before entering admission locks.
+struct AllocationFootprintPolicy {
+  size_t alignment;
+  size_t rounding_threshold;
+  size_t minimum_allocation;
+  size_t power_of_two_below;
+  size_t cache_page_size;
+
+  bool upper_bound(size_t size, size_t& result) const noexcept {
+    if (size == 0) { result = 0; return true; }
+    if (alignment == 0 || cache_page_size == 0) { return false; }
+    size = std::max(size, minimum_allocation);
+    if (power_of_two_below && size < power_of_two_below) {
+      size_t rounded = 1;
+      while (rounded < size) {
+        if (!add(rounded, rounded, rounded)) { return false; }
+      }
+      size = rounded;
+    } else if (size > rounding_threshold) {
+      auto remainder = size % alignment;
+      if (remainder && !add(size, alignment - remainder, size)) { return false; }
+    }
+    size_t two_pages;
+    return add(cache_page_size, cache_page_size, two_pages) &&
+        add(size, std::min(size - 1, two_pages - 1), result);
+  }
+
+  // For any positive n with a valid bound, B(n) <= n + this overhead.
+  bool maximum_extra_bytes(size_t& result) const noexcept {
+    if (alignment == 0 || cache_page_size == 0) { return false; }
+    auto normalization = std::max({alignment - 1,
+        minimum_allocation ? minimum_allocation - 1 : 0,
+        power_of_two_below ? power_of_two_below - 1 : 0});
+    size_t two_pages;
+    return add(cache_page_size, cache_page_size, two_pages) &&
+        add(normalization, two_pages - 1, result);
+  }
+
+ private:
+  static bool add(size_t a, size_t b, size_t& result) noexcept {
+    if (b > std::numeric_limits<size_t>::max() - a) { return false; }
+    result = a + b;
+    return true;
+  }
+};
+
+MLX_API AllocationFootprintPolicy get_allocation_footprint_policy() noexcept;
 
 /* Get the actively used memory in bytes.
  *

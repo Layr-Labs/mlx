@@ -2,6 +2,7 @@ import math
 import os
 import unittest
 from itertools import product
+from unittest.mock import patch
 
 import mlx.core as mx
 import mlx_tests
@@ -355,6 +356,52 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                 ref = mlx_primitives_sdpa(q, kr, vr, scale)
                 out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
                 self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_two_pass_partial_cancellation(self):
+        # Uniform attention has the exact output 1 / L. Casting an
+        # unnormalized block sum to the input dtype loses the residual 1.
+        L = 8192
+        for dtype, D, blocks, masked in product(
+            (mx.bfloat16, mx.float16, mx.float32),
+            (64, 128, 256),
+            (32, 128),
+            (False, True),
+        ):
+            with self.subTest(dtype=dtype, D=D, blocks=blocks, masked=masked):
+                amplitude = 2048 if dtype == mx.float16 else 256
+                values = np.zeros((1, 1, L, D), dtype=np.float32)
+                values[:, :, 0, :] = amplitude
+                # D64/D128 without a mask uses contiguous GQA chunks.
+                gqa = D in (64, 128) and not masked
+                values[:, :, 1 if gqa else blocks, :] = 1
+                values[:, :, L - 1 if gqa else 1, :] = -amplitude
+                q = mx.zeros((1, 8, 1, D), dtype=dtype)
+                k = mx.zeros((1, 1, L, D), dtype=dtype)
+                v = mx.array(values, dtype=dtype)
+                mask = mx.ones((L,), dtype=mx.bool_) if masked else None
+                with patch.dict(os.environ, MLX_SDPA_BLOCKS=str(blocks)):
+                    out = mx.fast.scaled_dot_product_attention(
+                        q, k, v, scale=1, mask=mask
+                    )
+                    mx.eval(out)
+                self.assertEqual(out.dtype, dtype)
+                self.assertTrue(mx.array_equal(out, mx.full(out.shape, 1 / L, dtype)))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_two_pass_partial_overflow(self):
+        # The final mean is representable in FP16, but its partial sums are not.
+        L = 8192
+        for D, blocks in product((64, 128, 256), (32, 128)):
+            with self.subTest(D=D, blocks=blocks):
+                q = mx.zeros((1, 8, 1, D), dtype=mx.float16)
+                k = mx.zeros((1, 1, L, D), dtype=mx.float16)
+                v = mx.full((1, 1, L, D), 32768, dtype=mx.float16)
+                with patch.dict(os.environ, MLX_SDPA_BLOCKS=str(blocks)):
+                    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=1)
+                    mx.eval(out)
+                self.assertTrue(mx.all(mx.isfinite(out)))
+                self.assertTrue(mx.array_equal(out, mx.full(out.shape, 32768, mx.float16)))
 
     def test_sdpa_fully_masked(self):
         Lkv = 8

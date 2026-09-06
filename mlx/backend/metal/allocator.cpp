@@ -120,6 +120,11 @@ size_t MetalAllocator::set_memory_limit(size_t limit) {
   return limit;
 };
 
+MemorySnapshot MetalAllocator::get_memory_snapshot() {
+  std::lock_guard lock(mutex_);
+  return {active_memory_, buffer_cache_.cache_size(), peak_memory_};
+}
+
 size_t MetalAllocator::get_memory_limit() {
   return block_limit_;
 }
@@ -149,7 +154,7 @@ Buffer MetalAllocator::malloc(size_t size) {
 
   // Align up memory
   if (size > vm_page_size) {
-    size = vm_page_size * ((size + vm_page_size - 1) / vm_page_size);
+    size = allocator::round_allocation_size(size, vm_page_size);
   }
 
   // Try the cache
@@ -291,6 +296,18 @@ MetalAllocator& allocator() {
 
 } // namespace metal
 
+AllocationFootprintPolicy get_allocation_footprint_policy() noexcept {
+  return {vm_page_size, vm_page_size, 0, 0, vm_page_size};
+}
+
+size_t get_allocation_size_upper_bound(size_t size) {
+  size_t result;
+  if (!get_allocation_footprint_policy().upper_bound(size, result)) {
+    throw std::overflow_error("allocation footprint overflow");
+  }
+  return result;
+}
+
 size_t set_cache_limit(size_t limit) {
   return metal::allocator().set_cache_limit(limit);
 }
@@ -308,6 +325,9 @@ size_t set_wired_limit(size_t limit) {
         "the maximum working set size is not allowed.");
   }
   return metal::allocator().set_wired_limit(limit);
+}
+MemorySnapshot get_memory_snapshot() {
+  return metal::allocator().get_memory_snapshot();
 }
 size_t get_active_memory() {
   return metal::allocator().get_active_memory();

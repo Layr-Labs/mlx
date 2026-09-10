@@ -6,6 +6,7 @@
 #include "mlx/backend/metal/utils.h"
 #include "mlx/fast_primitives.h"
 
+#include <algorithm>
 #include <fmt/format.h>
 
 namespace mlx::core::fast {
@@ -18,6 +19,16 @@ void CustomKernel::eval_gpu(
   (void)shared_memory_;
 
   auto& s = stream();
+
+  for (auto i : mutable_inputs_) {
+    if (i < 0 || i >= inputs.size()) {
+      throw std::invalid_argument("Invalid mutable kernel input index.");
+    }
+    if (ensure_row_contiguous_ && !inputs[i].flags().row_contiguous) {
+      throw std::invalid_argument(
+          "Mutable kernel inputs cannot use an implicit contiguous copy.");
+    }
+  }
 
   std::vector<array> copies;
 
@@ -59,6 +70,10 @@ void CustomKernel::eval_gpu(
     const array& in = checked_inputs[i];
     auto& shape_info = shape_infos_[i];
     compute_encoder.set_input_array(in, index);
+    if (std::find(mutable_inputs_.begin(), mutable_inputs_.end(), i) !=
+        mutable_inputs_.end()) {
+      compute_encoder.register_output_array(in);
+    }
     index++;
     if (in.ndim() > 0) {
       int ndim = in.ndim();

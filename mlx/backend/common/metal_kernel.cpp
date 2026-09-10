@@ -1,5 +1,6 @@
 // Copyright © 2024 Apple Inc.
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -60,7 +61,8 @@ std::string write_signature(
     const std::vector<std::pair<std::string, TemplateArg>>& template_args,
     const std::vector<std::string>& attributes,
     const std::vector<std::tuple<bool, bool, bool>>& shape_infos,
-    bool atomic_outputs) {
+    bool atomic_outputs,
+    const std::vector<int>& mutable_inputs) {
   std::string kernel_source;
   kernel_source.reserve(header.size() + source.size() + 16384);
   kernel_source += header;
@@ -97,11 +99,13 @@ std::string write_signature(
   for (int i = 0; i < inputs.size(); ++i) {
     const auto& name = input_names[i];
     const auto& arr = inputs[i];
+    bool is_mutable = std::find(
+        mutable_inputs.begin(), mutable_inputs.end(), i) != mutable_inputs.end();
     auto dtype = get_type_string(arr.dtype());
     std::string location =
-        arr.size() < max_constant_array_size ? "constant" : "device";
-    std::string ref = arr.ndim() == 0 ? "&" : "*";
-    kernel_source += "  const ";
+        !is_mutable && arr.size() < max_constant_array_size ? "constant" : "device";
+    std::string ref = !is_mutable && arr.ndim() == 0 ? "&" : "*";
+    kernel_source += is_mutable ? "  " : "  const ";
     kernel_source += location;
     kernel_source += " ";
     kernel_source += dtype;
@@ -228,6 +232,36 @@ CustomKernelFunction metal_kernel(
     bool ensure_row_contiguous /* = true */,
     bool atomic_outputs /* = false */,
     const CompileOptions& compile_options /* = {} */) {
+  return metal_kernel_with_mutable_inputs(
+      name, input_names, output_names, source, {}, header,
+      ensure_row_contiguous, atomic_outputs, compile_options);
+}
+
+CustomKernelFunction metal_kernel_with_mutable_inputs(
+    const std::string& name,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    const std::string& source,
+    const std::vector<std::string>& mutable_input_names,
+    const std::string& header,
+    bool ensure_row_contiguous,
+    bool atomic_outputs,
+    const CompileOptions& compile_options) {
+  std::vector<int> mutable_inputs;
+  for (const auto& mutable_name : mutable_input_names) {
+    auto it = std::find(input_names.begin(), input_names.end(), mutable_name);
+    if (it == input_names.end() ||
+        std::count(input_names.begin(), input_names.end(), mutable_name) != 1) {
+      throw std::invalid_argument("Mutable input must name one kernel input.");
+    }
+    int index = static_cast<int>(it - input_names.begin());
+    if (std::find(mutable_inputs.begin(), mutable_inputs.end(), index) !=
+        mutable_inputs.end()) {
+      throw std::invalid_argument("Duplicate mutable kernel input.");
+    }
+    mutable_inputs.push_back(index);
+  }
+  std::sort(mutable_inputs.begin(), mutable_inputs.end());
   if (output_names.empty()) {
     throw std::invalid_argument(
         "[metal_kernel] Must specify at least one output.");
@@ -310,10 +344,14 @@ CustomKernelFunction metal_kernel(
     // The generated source depends on the dtypes of the inputs and outputs
     // and on how each input is passed (see `write_signature`). Include them
     // in the kernel name so that a given name always maps to the same source.
-    for (const auto& arr : inputs) {
+    for (int i = 0; i < inputs.size(); ++i) {
+      const auto& arr = inputs[i];
       kernel_name += "_";
       kernel_name += get_type_string(arr.dtype());
-      if (arr.ndim() == 0) {
+      if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+          mutable_inputs.end()) {
+        kernel_name += "m";
+      } else if (arr.ndim() == 0) {
         kernel_name += "s";
       } else if (arr.size() < max_constant_array_size) {
         kernel_name += "c";
@@ -335,7 +373,8 @@ CustomKernelFunction metal_kernel(
         template_args,
         attributes,
         shape_infos,
-        atomic_outputs);
+        atomic_outputs,
+        mutable_inputs);
 
     if (!template_args.empty()) {
       template_def = kernel_name + template_def;
@@ -355,6 +394,15 @@ CustomKernelFunction metal_kernel(
                 << "```" << std::endl;
     }
 
+    if (!mutable_inputs.empty()) {
+      return array::make_arrays(
+          output_shapes, output_dtypes,
+          std::make_shared<MutableInputCustomKernel>(
+              s, kernel_name, kernel_source, grid, threadgroup, shape_infos,
+              ensure_row_contiguous, init_value, std::vector<ScalarArg>{},
+              false, 0, compile_options.serialize(), mutable_inputs),
+          inputs);
+    }
     return array::make_arrays(
         std::move(output_shapes),
         std::move(output_dtypes),

@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include "mlx/array.h"
+#include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/common/metal_kernel.h"
 #include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/metal/resident.h"
@@ -196,10 +197,6 @@ class MLX_API Device {
       const MTLFCList& func_consts = {},
       const std::vector<MTL::Function*>& linked_functions = {});
 
-  ResidencySets& residency_sets() {
-    return residency_sets_;
-  }
-
   bool gemma4_expert_qmm_requested() const {
     return gemma4_expert_qmm_requested_;
   }
@@ -238,6 +235,10 @@ class MLX_API Device {
   }
   void clear_and_arm_gemma4_expert_qmm_counters() {
     gemma4_expert_qmm_counters_.clear_and_arm();
+  }
+
+  ResidencySets& residency_sets() {
+    return residency_sets_;
   }
 
  private:

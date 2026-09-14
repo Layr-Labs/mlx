@@ -714,11 +714,10 @@ TEST_CASE("test layer norm vjp bias grad race") {
   CHECK(worst <= 1e-5);
 }
 
-
 TEST_CASE("test Gemma 4 expert QMM pure route table") {
+  using metal::classify_gemma4_expert_qmm;
   using metal::Gemma4ExpertQMMRoute;
   using metal::Gemma4ExpertQMMRouteInput;
-  using metal::classify_gemma4_expert_qmm;
 
   auto gate_up = [](int assignments) {
     Gemma4ExpertQMMRouteInput input;
@@ -787,8 +786,7 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
   }
 
   auto exact = gate_up(4096);
-  auto check_miss = [&exact](
-                        auto mutate, Gemma4ExpertQMMRoute expected) {
+  auto check_miss = [&exact](auto mutate, Gemma4ExpertQMMRoute expected) {
     auto input = exact;
     mutate(input);
     CHECK(classify_gemma4_expert_qmm(input) == expected);
@@ -815,8 +813,7 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
       [](auto& x) { x.group_size = 32; },
       Gemma4ExpertQMMRoute::fallback_quantization);
   check_miss(
-      [](auto& x) { x.bits = 8; },
-      Gemma4ExpertQMMRoute::fallback_quantization);
+      [](auto& x) { x.bits = 8; }, Gemma4ExpertQMMRoute::fallback_quantization);
   check_miss(
       [](auto& x) { x.indices_uint32 = false; },
       Gemma4ExpertQMMRoute::fallback_quantization);
@@ -851,11 +848,9 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
       [](auto& x) { x.expert_count = 127; },
       Gemma4ExpertQMMRoute::fallback_topology);
   check_miss(
-      [](auto& x) { x.x_rank = 4; },
-      Gemma4ExpertQMMRoute::fallback_topology);
+      [](auto& x) { x.x_rank = 4; }, Gemma4ExpertQMMRoute::fallback_topology);
   check_miss(
-      [](auto& x) { x.w_rank = 2; },
-      Gemma4ExpertQMMRoute::fallback_topology);
+      [](auto& x) { x.w_rank = 2; }, Gemma4ExpertQMMRoute::fallback_topology);
   check_miss(
       [](auto& x) { x.scales_rank = 2; },
       Gemma4ExpertQMMRoute::fallback_topology);
@@ -875,11 +870,9 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
         Gemma4ExpertQMMRoute::fallback_assignment_count);
   }
   check_miss(
-      [](auto& x) { x.w_dim2 = 176; },
-      Gemma4ExpertQMMRoute::fallback_geometry);
+      [](auto& x) { x.w_dim2 = 176; }, Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
-      [](auto& x) { x.w_dim1 += 1; },
-      Gemma4ExpertQMMRoute::fallback_geometry);
+      [](auto& x) { x.w_dim1 += 1; }, Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
       [](auto& x) {
         x.k += 32;
@@ -887,8 +880,7 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
       },
       Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
-      [](auto& x) { x.n -= 32; },
-      Gemma4ExpertQMMRoute::fallback_geometry);
+      [](auto& x) { x.n -= 32; }, Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
       [](auto& x) { x.aot_available = false; },
       Gemma4ExpertQMMRoute::fallback_metallib_unavailable);
@@ -902,9 +894,9 @@ TEST_CASE("test Gemma 4 expert QMM pure route table") {
 }
 
 TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
+  using metal::classify_gemma4_expert_qmm;
   using metal::Gemma4ExpertQMMRoute;
   using metal::Gemma4ExpertQMMRouteInput;
-  using metal::classify_gemma4_expert_qmm;
 
   // Base input: Qwen 3.5/3.6 35B-A3B expert projection at W4/g64,
   // parametrized by whole-projection [E=256, n, k].
@@ -967,8 +959,7 @@ TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
   }
 
   auto exact = qwen(4096, 2048, 1024);
-  auto check_miss = [&exact](
-                        auto mutate, Gemma4ExpertQMMRoute expected) {
+  auto check_miss = [&exact](auto mutate, Gemma4ExpertQMMRoute expected) {
     auto input = exact;
     mutate(input);
     CHECK(classify_gemma4_expert_qmm(input) == expected);
@@ -998,11 +989,9 @@ TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
       },
       Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
-      [](auto& x) { x.w_dim2 = 128; },
-      Gemma4ExpertQMMRoute::fallback_geometry);
+      [](auto& x) { x.w_dim2 = 128; }, Gemma4ExpertQMMRoute::fallback_geometry);
   check_miss(
-      [](auto& x) { x.n -= 32; },
-      Gemma4ExpertQMMRoute::fallback_geometry);
+      [](auto& x) { x.n -= 32; }, Gemma4ExpertQMMRoute::fallback_geometry);
   // T=128 chunks (1024 assignments) intentionally stay on the legacy path.
   for (int assignments : {8, 1024, 4095, 4097}) {
     check_miss(
@@ -1014,8 +1003,7 @@ TEST_CASE("test Qwen 3.6 expert QMM pure route table") {
         Gemma4ExpertQMMRoute::fallback_assignment_count);
   }
   check_miss(
-      [](auto& x) { x.bits = 8; },
-      Gemma4ExpertQMMRoute::fallback_quantization);
+      [](auto& x) { x.bits = 8; }, Gemma4ExpertQMMRoute::fallback_quantization);
   check_miss(
       [](auto& x) { x.aot_available = false; },
       Gemma4ExpertQMMRoute::fallback_metallib_unavailable);
@@ -1060,9 +1048,10 @@ TEST_CASE("test Gemma 4 expert QMM counter invariant") {
   counters.reset();
   snapshot = counters.snapshot();
   CHECK(snapshot.attempts() == 0);
-  CHECK(snapshot.attempts() == snapshot.hits + snapshot.fallback_nax +
-          snapshot.fallback_outer_route + snapshot.fallback_quantization +
-          snapshot.fallback_topology +
+  CHECK(
+      snapshot.attempts() ==
+      snapshot.hits + snapshot.fallback_nax + snapshot.fallback_outer_route +
+          snapshot.fallback_quantization + snapshot.fallback_topology +
           snapshot.fallback_assignment_count + snapshot.fallback_geometry +
           snapshot.fallback_metallib_unavailable +
           snapshot.fallback_sortedness_retracted);
@@ -1097,10 +1086,12 @@ TEST_CASE("test Gemma 4 expert QMM arm disarm cycle") {
   CHECK(interval.hits == 1);
   CHECK(interval.fallback_sortedness_retracted == 1);
   CHECK(interval.fallback_metallib_unavailable == 1);
-  CHECK(interval.attempts() == interval.hits + interval.fallback_nax +
-          interval.fallback_outer_route + interval.fallback_quantization +
-          interval.fallback_topology + interval.fallback_assignment_count +
-          interval.fallback_geometry + interval.fallback_metallib_unavailable +
+  CHECK(
+      interval.attempts() ==
+      interval.hits + interval.fallback_nax + interval.fallback_outer_route +
+          interval.fallback_quantization + interval.fallback_topology +
+          interval.fallback_assignment_count + interval.fallback_geometry +
+          interval.fallback_metallib_unavailable +
           interval.fallback_sortedness_retracted);
 
   // The snapshot stays readable while disarmed.

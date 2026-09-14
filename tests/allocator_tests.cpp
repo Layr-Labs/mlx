@@ -3,8 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <future>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 
@@ -177,9 +177,8 @@ TEST_CASE("test memory snapshot does not wait for stream work") {
   });
   started_future.wait();
 
-  auto snapshot = std::async(std::launch::async, [] {
-    return get_memory_snapshot();
-  });
+  auto snapshot =
+      std::async(std::launch::async, [] { return get_memory_snapshot(); });
   auto status = snapshot.wait_for(std::chrono::seconds(1));
   release.set_value();
   synchronize(stream);
@@ -202,8 +201,9 @@ TEST_CASE("allocation footprint bounds fresh and cached buffer owners") {
   auto larger_bytes = allocator::allocator().size(large);
   allocator::free(large);
   auto reused = allocator::malloc(32768);
-  CHECK_LE(allocator::allocator().size(reused),
-           get_allocation_size_upper_bound(32768));
+  CHECK_LE(
+      allocator::allocator().size(reused),
+      get_allocation_size_upper_bound(32768));
   CHECK_GE(larger_bytes, 49152);
   allocator::free(reused);
   clear_cache();
@@ -214,14 +214,16 @@ TEST_CASE("allocation prediction does not change allocator counters") {
   auto before = get_memory_snapshot();
   CHECK_GE(get_allocation_size_upper_bound(24576), 24576);
   CHECK_EQ(get_allocation_size_upper_bound(0), 0);
-  CHECK_THROWS(get_allocation_size_upper_bound(std::numeric_limits<size_t>::max()));
+  CHECK_THROWS(
+      get_allocation_size_upper_bound(std::numeric_limits<size_t>::max()));
   auto after = get_memory_snapshot();
   CHECK_EQ(after.active_memory, before.active_memory);
   CHECK_EQ(after.cache_memory, before.cache_memory);
   CHECK_EQ(after.peak_memory, before.peak_memory);
 }
 
-TEST_CASE("detached allocation policies preserve backend size classes without exceptions") {
+TEST_CASE(
+    "detached allocation policies preserve backend size classes without exceptions") {
   const AllocationFootprintPolicy cpu{1, 0, 0, 0, 4096};
   const AllocationFootprintPolicy metal{16384, 16384, 0, 0, 16384};
   const AllocationFootprintPolicy cuda{16384, 0, 8, 16384, 16384};
@@ -237,7 +239,8 @@ TEST_CASE("detached allocation policies preserve backend size classes without ex
   for (auto p : {cpu, metal, cuda}) {
     size_t extra = 0;
     REQUIRE(p.maximum_extra_bytes(extra));
-    for (size_t n : {1, 4, 8191, 8192, 8193, 16383, 16384, 16385, 24576, 65537}) {
+    for (size_t n :
+         {1, 4, 8191, 8192, 8193, 16383, 16384, 16385, 24576, 65537}) {
       REQUIRE(p.upper_bound(n, result));
       CHECK_GE(result, n);
       CHECK_LE(result - n, extra);

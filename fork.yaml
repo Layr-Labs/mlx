@@ -1,0 +1,278 @@
+title: "Layr-Labs/mlx - MLX fork diff overview"
+footer: |
+  Fork-diff overview of [`Layr-Labs/mlx`](https://github.com/Layr-Labs/mlx), a fork of
+  [`ml-explore/mlx`](https://github.com/ml-explore/mlx) &middot; created with
+  [Forkdiff](https://github.com/protolambda/forkdiff)
+base:
+  name: ml-explore/mlx
+  url: https://github.com/ml-explore/mlx
+  # The upstream commit this fork is based on. CI (`scripts/check_forkdiff.py`)
+  # requires this to equal `git merge-base HEAD upstream/main`, so a rebase onto
+  # newer upstream fails the gate until the hash — and the sections below — are
+  # brought up to date. Upstream main as of 2026-08-14.
+  hash: 77a0c1e8ae16eb781a79e2b7134ba84b2ee7b597
+fork:
+  name: Layr-Labs/mlx
+  url: https://github.com/Layr-Labs/mlx
+  ref: refs/heads/main
+def:
+  title: "Layr-Labs/mlx"
+  description: |
+    This is an overview of the changes in [`Layr-Labs/mlx`](https://github.com/Layr-Labs/mlx),
+    a fork of [`ml-explore/mlx`](https://github.com/ml-explore/mlx).
+
+    The fork is the core of Layr-Labs' Apple-silicon inference stack — `mlx` → `mlx-c` →
+    `mlx-swift` → `mlx-swift-lm` — and carries the kernel, allocator and Metal-runtime work
+    that serving production MoE models (Gemma 4, Qwen 3.5/3.6, GPT-OSS) needed before or
+    beyond what upstream ships: sorted expert-tile quantized matmul routes, a masked-tail
+    MXFP4 decode kernel, FP32-safe SDPA partials, coherent allocator accounting for admission
+    control, declared-mutable custom-kernel inputs for paged KV, and a use-after-free fix in
+    Metal eval. Every change is meant to be additive and rebasable; each is gated by shape,
+    device or environment checks so the upstream path stays the default elsewhere.
+
+    One section is not fork work at all: the fork carries upstream's own v0.32.2 changes
+    (applied in PR #10 rather than merged), and those files are listed as such so the page
+    stays honest about what Layr-Labs actually changed.
+  sub:
+    - title: "Metal eval: use-after-free with mid-eval synchronization"
+      description: |
+        `gpu::eval` captured the `MTL::CommandBuffer*` before `eval_gpu` ran and attached the
+        input-buffer liveness handler to it afterwards. Any primitive that calls
+        `CommandEncoder::synchronize()` mid-eval — the expert-tile route's sortedness-retract
+        check does — commits and replaces the encoder's buffer, so the handler landed on a
+        dangling pointer (latent on Gemma E=128, a deterministic SIGSEGV on Qwen E=256). The
+        buffer is now fetched from the encoder *after* `eval_gpu`, so inputs outlive exactly the
+        tail of the primitive's work. (PR #5)
+      globs:
+        - "mlx/backend/metal/eval.cpp"
+    - title: "Sorted expert-tile quantized matmul (Gemma 4 E=128, Qwen 3.5/3.6 E=256)"
+      description: |
+        An opt-in route (`MLX_GATHER_QMM_EXPERT_SLICES=1|trust`) for gathered, affine-quantized
+        MoE expert matmuls: a descriptor kernel builds sorted expert tiles on device (one
+        instantiation per expert count) and a single expert-count-agnostic tile kernel consumes
+        them. `classify_gemma4_expert_qmm` is a pure route table admitting exactly the shapes
+        the kernel is built for; availability is all-or-nothing on a source-matched metallib so
+        an older library fails the route closed; `trust` skips the descriptor-retract readback
+        when the caller guarantees sorted indices. Diagnostics counters
+        (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
+        mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
+        quantized-vector bias-sum operand is promoted to the accumulator type before summation
+        (PR #15).
+      globs:
+        - "mlx/backend/common/gemma4_expert_qmm.h"
+        - "mlx/backend/metal/device.h"
+        - "mlx/backend/metal/device.cpp"
+        - "mlx/backend/metal/kernels/quantized.h"
+        - "mlx/backend/metal/kernels/quantized.metal"
+        - "tests/gpu_tests.cpp"
+    - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
+      description: |
+        GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's
+        512-element alignment and fell to the general path. `fp_gather_qmv_fast_tail` runs five
+        full blocks plus a 320-value tail read only by the participating lanes, preserving FP32
+        accumulation and the gathered indices/strides. It is enabled automatically only on the
+        physical M4 Max architecture (`applegpu_g16s`) for the exact MXFP4/group-32/4-bit,
+        E=32, K=2880, N=2880|5760, FP32/BF16 shape; `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL=0`
+        restores the original route and `MLX_GPTOSS_MXFP4_PREFILL_TILE=m32n32k32` opts into a
+        separately measured prefill tile (`gptoss_mxfp4_policy.h`). (PR #14)
+      globs:
+        - "mlx/backend/metal/gptoss_mxfp4_policy.h"
+        - "mlx/backend/metal/kernels/fp_quantized.h"
+        - "mlx/backend/metal/kernels/fp_quantized.metal"
+        - "mlx/backend/metal/quantized.cpp"
+        - "tests/gptoss_mxfp4_tests.cpp"
+        - "tests/CMakeLists.txt"
+    - title: "Coherent allocator accounting for admission control"
+      description: |
+        Admission accounting used to combine independent reads of the allocator counters with
+        logical buffer sizes, so concurrent allocator activity could produce an incoherent
+        snapshot and alignment / cache reuse could make the real backing larger than the
+        request. `get_memory_snapshot()` reads active / cache / peak under one lock;
+        `get_allocation_size_upper_bound()` and the detached, lock-free
+        `AllocationFootprintPolicy` bound a buffer including alignment and the (now inclusive,
+        overflow-checked) cache-reuse limit shared with `BufferCache`. Metal, CPU and CUDA
+        allocators implement the same interface; the allocator's own behaviour stays the
+        authority. These describe allocator accounting, not process RSS. (PR #15)
+      globs:
+        - "mlx/memory.h"
+        - "mlx/backend/common/allocation_footprint.h"
+        - "mlx/backend/common/buffer_cache.h"
+        - "mlx/backend/metal/allocator.h"
+        - "mlx/backend/metal/allocator.cpp"
+        - "mlx/backend/cuda/allocator.h"
+        - "mlx/backend/cuda/allocator.cpp"
+        - "mlx/backend/no_gpu/allocator.cpp"
+        - "tests/allocator_tests.cpp"
+    - title: "FP32 partial sums in two-pass vector SDPA"
+      description: |
+        The two-pass vector SDPA cast unnormalized partial sums to the input dtype before
+        combining them: BF16 lost cancellation residuals and FP16 could overflow even when the
+        final output was representable. Partials now stay FP32 through the second pass and only
+        the final result is cast; kernel entry names change so a stale shader cannot silently
+        satisfy the new buffer contract. Python regressions cover cancellation and overflow
+        across D64/D128/D256, 32/128 partitions, masked and unmasked. (PR #16)
+      globs:
+        - "mlx/backend/metal/kernels/sdpa_vector.h"
+        - "mlx/backend/metal/kernels/scaled_dot_product_attention.metal"
+        - "mlx/backend/metal/scaled_dot_product_attention.cpp"
+        - "python/tests/test_fast_sdpa.py"
+    - title: "Declared-mutable inputs for Metal custom kernels"
+      description: |
+        `metal_kernel_with_mutable_inputs` lets a caller declare which custom-kernel inputs will
+        be written, so paged-KV consumers keep writes on the original allocation and Metal sees
+        the read/write hazard. Mutable names must identify exactly one input; mutable `device`
+        pointers are generated (including for small/scalar storage) and take part in the
+        compiled-kernel identity; an implicit contiguous copy of declared-mutable storage is
+        rejected; allocations are registered for writes as well as reads. A separate
+        `MutableInputCustomKernel` primitive serializes the declaration while the existing
+        `CustomKernel` export schema is untouched. (PR #18)
+      globs:
+        - "mlx/fast.h"
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "mlx/export.cpp"
+    - title: "Cross-thread compile-cache cleanup"
+      description: |
+        Compile caches became thread-local upstream; bindings built before that (the mlx-c /
+        mlx-swift consumers) still call the process-wide `compile_erase` / `compile_clear_cache`.
+        A process-lifetime registry records each thread's cache once at construction so those
+        entrypoints can erase or clear every live cache, with no per-call hot-path work. (PR #10)
+      globs:
+        - "mlx/compile.cpp"
+        - "mlx/compile_impl.h"
+        - "tests/compile_tests.cpp"
+    - title: "Upstream v0.32.2 sync carried in PR #10"
+      description: |
+        **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
+        v0.32.2 by applying upstream's changes rather than merging them, so `git` sees them as
+        fork commits even though every file below is byte-identical to upstream `v0.32.2`
+        (CUDA backend, CPU SIMD, kernels, Python bindings and tests, repository CI and
+        templates, `AGENTS.md` / `CLAUDE.md`, docs). Listed here so the page does not credit
+        Layr-Labs with upstream's changes; the section disappears once the fork rebases onto
+        an upstream commit at or past v0.32.2.
+      globs:
+        - ".pre-commit-config.yaml"
+        - "AGENTS.md"
+        - "CLAUDE.md"
+        - "CMakeLists.txt"
+        - "CONTRIBUTING.md"
+        - "setup.py"
+        - ".github/pull_request_template.md"
+        - ".github/ISSUE_TEMPLATE/*"
+        - ".github/actions/build/action.yml"
+        - ".github/actions/build-macos/action.yml"
+        - ".github/actions/build-wheel/action.yml"
+        - ".github/actions/setup/action.yml"
+        - ".github/actions/test-linux/action.yml"
+        - ".github/actions/test-macos/action.yml"
+        - ".github/actions/test-wheel/action.yml"
+        - ".github/actions/test-windows/action.yml"
+        - ".github/scripts/*"
+        - ".github/workflows/build_and_test.yml"
+        - ".github/workflows/release.yml"
+        - ".github/workflows/update_bypass_list.yml"
+        - "benchmarks/python/sdpa_bench.py"
+        - "docs/src/install.rst"
+        - "docs/src/python/fast.rst"
+        - "examples/extensions/*"
+        - "mlx/array.h"
+        - "mlx/einsum.cpp"
+        - "mlx/error.h"
+        - "mlx/event.h"
+        - "mlx/fast.cpp"
+        - "mlx/fence.h"
+        - "mlx/fft.cpp"
+        - "mlx/ops.cpp"
+        - "mlx/ops.h"
+        - "mlx/primitives.cpp"
+        - "mlx/primitives.h"
+        - "mlx/scheduler.cpp"
+        - "mlx/scheduler.h"
+        - "mlx/version.h"
+        - "mlx/backend/common/load.cpp"
+        - "mlx/backend/cpu/*"
+        - "mlx/backend/cpu/simd/base_simd.h"
+        - "mlx/backend/cuda/CMakeLists.txt"
+        - "mlx/backend/cuda/cross_entropy.cu"
+        - "mlx/backend/cuda/cuda_utils.h"
+        - "mlx/backend/cuda/custom_kernel.cpp"
+        - "mlx/backend/cuda/delayload.cpp"
+        - "mlx/backend/cuda/device.cpp"
+        - "mlx/backend/cuda/device.h"
+        - "mlx/backend/cuda/dirs.cpp"
+        - "mlx/backend/cuda/event.cu"
+        - "mlx/backend/cuda/event.h"
+        - "mlx/backend/cuda/fence.cpp"
+        - "mlx/backend/cuda/jit_module.cpp"
+        - "mlx/backend/cuda/scaled_dot_product_attention.cpp"
+        - "mlx/backend/cuda/device/binary_ops.cuh"
+        - "mlx/backend/metal/compiled.cpp"
+        - "mlx/backend/metal/conv.cpp"
+        - "mlx/backend/metal/event.cpp"
+        - "mlx/backend/metal/event.h"
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/metal/jit_kernels.cpp"
+        - "mlx/backend/metal/kernels.h"
+        - "mlx/backend/metal/nojit_kernels.cpp"
+        - "mlx/backend/metal/normalization.cpp"
+        - "mlx/backend/metal/primitives.cpp"
+        - "mlx/backend/metal/kernels/binary_ops.h"
+        - "mlx/backend/metal/kernels/copy.h"
+        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+        - "mlx/backend/metal/kernels/fp_quantized_nax.metal"
+        - "mlx/backend/metal/kernels/fp8.h"
+        - "mlx/backend/metal/kernels/quantized_nax.h"
+        - "mlx/backend/metal/kernels/quantized_nax.metal"
+        - "mlx/backend/metal/kernels/rms_norm.metal"
+        - "mlx/backend/metal/kernels/sort.h"
+        - "mlx/backend/metal/kernels/utils.h"
+        - "mlx/backend/metal/kernels/reduction/*"
+        - "mlx/backend/metal/kernels/steel/attn/kernels/*"
+        - "mlx/backend/no_gpu/event.cpp"
+        - "mlx/backend/no_gpu/fence.cpp"
+        - "mlx/backend/no_gpu/primitives.cpp"
+        - "mlx/distributed/mpi/mpi.cpp"
+        - "mlx/distributed/ring/ring.cpp"
+        - "mlx/io/gguf.cpp"
+        - "python/mlx/*"
+        - "python/mlx/_distributed_utils/launch.py"
+        - "python/mlx/nn/losses.py"
+        - "python/mlx/nn/layers/normalization.py"
+        - "python/mlx/optimizers/optimizers.py"
+        - "python/src/*"
+        - "python/tests/__main__.py"
+        - "python/tests/mlx_tests.py"
+        - "python/tests/run.py"
+        - "python/tests/test_array.py"
+        - "python/tests/test_compile.py"
+        - "python/tests/test_conv_transpose.py"
+        - "python/tests/test_conv.py"
+        - "python/tests/test_double.py"
+        - "python/tests/test_einsum.py"
+        - "python/tests/test_eval.py"
+        - "python/tests/test_fast.py"
+        - "python/tests/test_fft.py"
+        - "python/tests/test_load.py"
+        - "python/tests/test_nn.py"
+        - "python/tests/test_ops.py"
+        - "python/tests/test_quantized.py"
+        - "python/tests/test_reduce.py"
+        - "python/tests/test_vmap.py"
+        - "tests/load_tests.cpp"
+        - "tests/ops_tests.cpp"
+    - title: "Fork tooling"
+      description: |
+        The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
+        not the merge-base with upstream, when a file the fork changes is not described by a
+        section above, or when a section names files the fork no longer changes.
+      globs:
+        - "scripts/check_forkdiff.py"
+        - "FORKDIFF.md"
+        - "README.md"
+
+# ignored globally, does not count towards line count
+ignore:
+  - "fork.yaml"
+  - ".github/workflows/forkdiff-check.yml"
+  - ".github/workflows/forkdiff-pages.yml"

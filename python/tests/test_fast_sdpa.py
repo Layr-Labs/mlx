@@ -401,7 +401,9 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     out = mx.fast.scaled_dot_product_attention(q, k, v, scale=1)
                     mx.eval(out)
                 self.assertTrue(mx.all(mx.isfinite(out)))
-                self.assertTrue(mx.array_equal(out, mx.full(out.shape, 32768, mx.float16)))
+                self.assertTrue(
+                    mx.array_equal(out, mx.full(out.shape, 32768, mx.float16))
+                )
 
     def test_sdpa_fully_masked(self):
         Lkv = 8

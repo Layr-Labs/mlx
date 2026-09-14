@@ -99,11 +99,13 @@ std::string write_signature(
   for (int i = 0; i < inputs.size(); ++i) {
     const auto& name = input_names[i];
     const auto& arr = inputs[i];
-    bool is_mutable = std::find(
-        mutable_inputs.begin(), mutable_inputs.end(), i) != mutable_inputs.end();
+    bool is_mutable =
+        std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+        mutable_inputs.end();
     auto dtype = get_type_string(arr.dtype());
-    std::string location =
-        !is_mutable && arr.size() < max_constant_array_size ? "constant" : "device";
+    std::string location = !is_mutable && arr.size() < max_constant_array_size
+        ? "constant"
+        : "device";
     std::string ref = !is_mutable && arr.ndim() == 0 ? "&" : "*";
     kernel_source += is_mutable ? "  " : "  const ";
     kernel_source += location;
@@ -233,8 +235,15 @@ CustomKernelFunction metal_kernel(
     bool atomic_outputs /* = false */,
     const CompileOptions& compile_options /* = {} */) {
   return metal_kernel_with_mutable_inputs(
-      name, input_names, output_names, source, {}, header,
-      ensure_row_contiguous, atomic_outputs, compile_options);
+      name,
+      input_names,
+      output_names,
+      source,
+      {},
+      header,
+      ensure_row_contiguous,
+      atomic_outputs,
+      compile_options);
 }
 
 CustomKernelFunction metal_kernel_with_mutable_inputs(
@@ -396,11 +405,22 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
 
     if (!mutable_inputs.empty()) {
       return array::make_arrays(
-          output_shapes, output_dtypes,
+          output_shapes,
+          output_dtypes,
           std::make_shared<MutableInputCustomKernel>(
-              s, kernel_name, kernel_source, grid, threadgroup, shape_infos,
-              ensure_row_contiguous, init_value, std::vector<ScalarArg>{},
-              false, 0, compile_options.serialize(), mutable_inputs),
+              s,
+              kernel_name,
+              kernel_source,
+              grid,
+              threadgroup,
+              shape_infos,
+              ensure_row_contiguous,
+              init_value,
+              std::vector<ScalarArg>{},
+              false,
+              0,
+              compile_options.serialize(),
+              mutable_inputs),
           inputs);
     }
     return array::make_arrays(

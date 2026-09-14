@@ -366,7 +366,8 @@ METAL_FUNC void fp_qmv_fast_impl(
   y += tid.x * out_vec_size + out_row;
 
   const int full_size = allow_aligned_tail
-      ? (in_vec_size / block_size) * block_size : in_vec_size;
+      ? (in_vec_size / block_size) * block_size
+      : in_vec_size;
   for (int k = 0; k < full_size; k += block_size) {
     load_vector<T, U, values_per_thread>(x, x_thread);
 

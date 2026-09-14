@@ -589,8 +589,7 @@ Device::Device() : device_(load_device()), residency_sets_(device_.get()) {
   auto pool = new_scoped_memory_pool();
   default_library_ = NS::TransferPtr(load_default_library(device_.get()));
 
-  std::string expert_qmm_env =
-      env::get_var("MLX_GATHER_QMM_EXPERT_SLICES", "");
+  std::string expert_qmm_env = env::get_var("MLX_GATHER_QMM_EXPERT_SLICES", "");
   std::transform(
       expert_qmm_env.begin(),
       expert_qmm_env.end(),
@@ -615,16 +614,14 @@ Device::Device() : device_(load_device()), residency_sets_(device_.get()) {
       "alN_true_bm_32_bn_32_bk_32";
   auto has_default_function = [this](const char* name) {
     auto ns_name = NS::String::string(name, NS::ASCIIStringEncoding);
-    auto function =
-        NS::TransferPtr(default_library_->newFunction(ns_name));
+    auto function = NS::TransferPtr(default_library_->newFunction(ns_name));
     return function.get() != nullptr;
   };
   // All expert-tile symbols ship from one source-matched metallib
   // (scripts/fetch-metallib.sh completeness contract), so availability is
   // all-or-nothing: a metallib missing any of them predates this revision
   // and must fail the whole route closed.
-  gemma4_expert_qmm_aot_available_ =
-      has_default_function(descriptor_kernel) &&
+  gemma4_expert_qmm_aot_available_ = has_default_function(descriptor_kernel) &&
       has_default_function(descriptor_kernel_e256) &&
       has_default_function(tile_kernel);
   if (gemma4_expert_qmm_requested_ && gemma4_expert_qmm_aot_available_) {
@@ -1043,8 +1040,7 @@ void gemma4_expert_qmm_diagnostics_snapshot(
     diagnostics->fallback_outer_route = counters.fallback_outer_route;
     diagnostics->fallback_quantization = counters.fallback_quantization;
     diagnostics->fallback_topology = counters.fallback_topology;
-    diagnostics->fallback_assignment_count =
-        counters.fallback_assignment_count;
+    diagnostics->fallback_assignment_count = counters.fallback_assignment_count;
     diagnostics->fallback_geometry = counters.fallback_geometry;
     diagnostics->fallback_metallib_unavailable =
         counters.fallback_metallib_unavailable;
@@ -1080,8 +1076,7 @@ extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_clear_and_arm(void) {
   }
 }
 
-extern "C" void
-mlx_metal_gemma4_expert_qmm_diagnostics_snapshot_and_disarm(
+extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot_and_disarm(
     mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics) {
   gemma4_expert_qmm_diagnostics_snapshot(diagnostics, true);
 }

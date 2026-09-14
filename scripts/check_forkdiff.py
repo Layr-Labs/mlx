@@ -176,9 +176,11 @@ def review_status(problems: list[str], detail: str) -> list[dict]:
                 {
                     "kind": "action_required",
                     "title": "fork.yaml no longer describes the fork",
-                    "summary": problems[0]
-                    if len(problems) == 1
-                    else f"{len(problems)} issues: {problems[0]}",
+                    "summary": (
+                        problems[0]
+                        if len(problems) == 1
+                        else f"{len(problems)} issues: {problems[0]}"
+                    ),
                     "detail": detail,
                     "how_to_fix": (
                         "See docs/forkdiff.md. After a rebase: set base.hash to "
@@ -204,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
         help="a ref holding upstream main (e.g. refs/remotes/upstream/main); "
         "enables the merge-base check",
     )
-    ap.add_argument("--review-status-out", default=None, help="write review-status JSON here")
+    ap.add_argument(
+        "--review-status-out", default=None, help="write review-status JSON here"
+    )
     args = ap.parse_args(argv)
 
     repo = Path(args.repo).resolve()
@@ -239,8 +243,10 @@ def main(argv: list[str] | None = None) -> int:
         lines += [f"  - {g}    [{section}]" for section, g in stale]
 
     covered = len(paths) - len(uncovered)
-    print(f"fork.yaml: base {base[:12]}  head {args.head}  changed files {len(paths)}  "
-          f"described {covered}  sections+ignores {len(globs)}")
+    print(
+        f"fork.yaml: base {base[:12]}  head {args.head}  changed files {len(paths)}  "
+        f"described {covered}  sections+ignores {len(globs)}"
+    )
     if args.upstream_ref is None:
         print("  (no --upstream-ref: merge-base check skipped)")
     for line in lines:

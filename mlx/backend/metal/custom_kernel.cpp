@@ -6,8 +6,8 @@
 #include "mlx/backend/metal/utils.h"
 #include "mlx/fast_primitives.h"
 
-#include <algorithm>
 #include <fmt/format.h>
+#include <algorithm>
 
 namespace mlx::core::fast {
 

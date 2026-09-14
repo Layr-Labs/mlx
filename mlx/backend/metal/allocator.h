@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "mlx/allocator.h"
-#include "mlx/memory.h"
 #include "mlx/backend/common/buffer_cache.h"
 #include "mlx/backend/metal/device.h"
+#include "mlx/memory.h"
 
 namespace mlx::core::metal {
 

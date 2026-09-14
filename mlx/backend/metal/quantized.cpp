@@ -16,9 +16,9 @@
 
 namespace mlx::core {
 
+using metal::classify_gemma4_expert_qmm;
 using metal::Gemma4ExpertQMMRoute;
 using metal::Gemma4ExpertQMMRouteInput;
-using metal::classify_gemma4_expert_qmm;
 
 namespace {
 
@@ -1341,8 +1341,8 @@ void gather_qmv(
   std::string type_string = get_type_string(x.dtype());
   bool fast = N % bn == 0 && K % qmv_fast_k_alignment(bits) == 0;
   bool fast_tail = false;
-  if (mode == "mxfp4" && group_size == 32 && bits == 4 &&
-      !global_scale && w.ndim() == 3 && w.shape(0) == 32 && K == 2880 &&
+  if (mode == "mxfp4" && group_size == 32 && bits == 4 && !global_scale &&
+      w.ndim() == 3 && w.shape(0) == 32 && K == 2880 &&
       (N == 2880 || N == 5760) &&
       (x.dtype() == float32 || x.dtype() == bfloat16)) {
     const char* option = std::getenv("MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL");
@@ -1353,8 +1353,9 @@ void gather_qmv(
   }
   concatenate(
       kname,
-      mode + (fast_tail ? "_gather_qmv_fast_tail_" :
-              (fast ? "_gather_qmv_fast_" : "_gather_qmv_")),
+      mode +
+          (fast_tail ? "_gather_qmv_fast_tail_"
+                     : (fast ? "_gather_qmv_fast_" : "_gather_qmv_")),
       type_string,
       "_gs_",
       group_size,
@@ -1365,8 +1366,8 @@ void gather_qmv(
   auto kernel = get_quantized_kernel_wrapped(
       d,
       kname,
-      (fast_tail ? "gather_qmv_fast_tail" :
-       (fast ? "gather_qmv_fast" : "gather_qmv")),
+      (fast_tail ? "gather_qmv_fast_tail"
+                 : (fast ? "gather_qmv_fast" : "gather_qmv")),
       mode,
       type_string,
       group_size,
@@ -1705,8 +1706,7 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   compute_encoder.set_bytes(N, c++);
 
   compute_encoder.dispatch_threadgroups(
-      MTL::Size((N + bn - 1) / bn, max_tile_count, 1),
-      MTL::Size(32, wn, wm));
+      MTL::Size((N + bn - 1) / bn, max_tile_count, 1), MTL::Size(32, wn, wm));
   return Gemma4ExpertQMMRoute::hit;
 }
 
@@ -1735,8 +1735,7 @@ void gather_qmm_rhs(
       route_input.requested = true;
       route_input.outer_route = true;
       route_input.nax_available = true;
-      d.record_armed_gemma4_expert_qmm(
-          classify_gemma4_expert_qmm(route_input));
+      d.record_armed_gemma4_expert_qmm(classify_gemma4_expert_qmm(route_input));
     }
     return gather_qmm_rhs_nax(
         /* const array& x_ = */ x_,
@@ -1812,8 +1811,7 @@ void gather_qmm_rhs(
     route_input.biases_contiguous = biases_ && biases_->flags().row_contiguous;
     route_input.group_size = group_size;
     route_input.bits = bits;
-    route_input.expert_count =
-        w.size() / w.shape(-1) / w.shape(-2);
+    route_input.expert_count = w.size() / w.shape(-1) / w.shape(-2);
     route_input.assignments = M;
     route_input.index_count = indices.size();
     route_input.k = K;
@@ -2105,11 +2103,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
 // record below and the dispatch decision evaluate this one predicate so a
 // future tuning change cannot desynchronize them.
 // TODO: Tune 16 and 4 here a bit better.
-static constexpr bool takes_sorted_rhs_route(
-    int M,
-    int B,
-    int E,
-    bool right_sorted) {
+static constexpr bool
+takes_sorted_rhs_route(int M, int B, int E, bool right_sorted) {
   return M == 1 && B >= 16 && right_sorted && B / E >= 4;
 }
 
@@ -2143,8 +2138,7 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
     Gemma4ExpertQMMRouteInput route_input;
     route_input.requested = true;
     route_input.outer_route = false;
-    d.record_armed_gemma4_expert_qmm(
-        classify_gemma4_expert_qmm(route_input));
+    d.record_armed_gemma4_expert_qmm(classify_gemma4_expert_qmm(route_input));
   }
 
   // We are walking x in order and w is also in order so we can batch up the

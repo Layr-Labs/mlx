@@ -73,9 +73,11 @@ jobs:
           for lib in "$(dirname "$core")"/lib/*.dylib; do
             objects+=(-object "$lib")
           done
+          # Drop the tests, the Python bindings, the dependencies, the Python
+          # headers and the generated files in the build folders.
           options=(
             -instr-profile="$out/coverage.profdata"
-            -ignore-filename-regex='/tests/|/_deps/|/python/|/\.venv/|/site-packages/'
+            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/'
           )
           xcrun llvm-cov report "${objects[@]}" "${options[@]}" > "$out/report.txt"
           xcrun llvm-cov export -summary-only "${objects[@]}" "${options[@]}" \

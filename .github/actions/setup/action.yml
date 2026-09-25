@@ -52,6 +52,8 @@ runs:
         brew update
         brew trust aws/tap # suppress warning in github actions
         brew install openmpi
+        xcodebuild -version
+        swift --version
         xcodebuild -showComponent MetalToolchain
         sysctl -a | grep machdep.cpu
 
@@ -80,12 +82,13 @@ runs:
         enable-cache: false
         quiet: true
 
-    - name: Use ccache
+    # The organization blocks hendrikmuhs/ccache-action. The next three steps
+    # do the same work with Homebrew and actions/cache.
+    - name: Install ccache
       if: inputs.use-ccache == 'true'
-      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
-      with:
-        key: v7-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}
-        max-size: |-
+      shell: bash
+      env:
+        MAX_SIZE: |-
           ${{ case(inputs.ccache-key == 'release',
                    case(startsWith(inputs.toolkit, 'cuda'),
                         case(runner.os == 'Linux', '300MB',
@@ -98,9 +101,31 @@ runs:
                         runner.os == 'macOS' && inputs.toolkit == 'metal', '300MB',
                         '200MB'))
           }}
-        save: ${{ !startsWith(github.ref, 'refs/pull/') && (inputs.ccache-save != 'false') }}
-        # ccache-action bug: running "apt-get update" fails on large arm runner.
-        update-package-index: false
+      run: |
+        brew install ccache
+        ccache --set-config=cache_dir="$GITHUB_WORKSPACE/.ccache"
+        ccache --set-config=max_size="$MAX_SIZE"
+        ccache --set-config=compression=true
+        ccache --set-config=compiler_check=content
+        ccache -p
+
+    - name: Restore the ccache files
+      # Pull requests only restore the cache. They do not save it.
+      if: inputs.use-ccache == 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ccache-save != 'false')
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/.ccache
+        key: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-${{ hashFiles('mlx/**') }}
+        restore-keys: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
+
+    - name: Restore the ccache files and save them at the end of the job
+      # Pushes to main restore the cache and save it after the build.
+      if: inputs.use-ccache == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ccache-save != 'false'
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/.ccache
+        key: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-${{ hashFiles('mlx/**') }}
+        restore-keys: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
 
     - name: Cache JIT-compiled CUDA kernels
       if: runner.os == 'Linux' && startsWith(inputs.toolkit, 'cuda')

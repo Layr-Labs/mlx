@@ -268,7 +268,9 @@ def:
 
         `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on a
         GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
-        because the organization blocks actions that are not pinned.
+        because the organization blocks actions that are not pinned. The organization also
+        blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
+        the ccache files with `actions/cache`.
       globs:
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"

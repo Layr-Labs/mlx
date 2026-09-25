@@ -2,6 +2,7 @@
 
 #include <netdb.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <thread>
@@ -168,7 +169,18 @@ TCPSocket TCPSocket::connect(
     std::function<void(int, int)> cb) {
   int sock, success;
 
-  // Attempt to connect `num_retries` times with exponential backoff.
+  // Attempt to connect `num_retries` times.
+  //
+  // Two changes that mattered when bringing up a ring across separately-started
+  // machines (each node connecting many times before its peer is ready):
+  //   1. Close the socket fd on a failed attempt, before retrying. A fresh
+  //      socket is created each iteration, so without this the failed ones are
+  //      left open; under many retries they accumulate (SYN_SENT/CLOSED), which
+  //      we saw interfere with the peer's accept().
+  //   2. Cap the inter-attempt wait. The wait doubles each miss; left unbounded
+  //      it grows to many seconds, so a node can be asleep when its peer becomes
+  //      ready and the two stop lining up. Capping it keeps retries frequent so
+  //      they stay in-phase across the `num_retries` window.
   for (int attempt = 0; attempt < num_retries; attempt++) {
     // Create the socket
     sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -183,6 +195,8 @@ TCPSocket TCPSocket::connect(
     if (success == 0) {
       break;
     }
+    // Failed attempt: close the fd so we don't leak a half-open socket.
+    ::close(sock);
 
     if (cb != nullptr) {
       cb(attempt, wait);
@@ -191,7 +205,10 @@ TCPSocket TCPSocket::connect(
       std::this_thread::sleep_for(std::chrono::milliseconds(wait));
     }
 
-    wait <<= 1;
+    // Bounded growth: gentle ramp, capped at 2s so we keep retrying steadily.
+    if (wait < 2000) {
+      wait = std::min(2000, wait * 2);
+    }
   }
 
   if (success < 0) {

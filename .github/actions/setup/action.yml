@@ -75,14 +75,14 @@ runs:
         :: Export to all steps.
         >>%GITHUB_ENV% set
 
-    - uses: astral-sh/setup-uv@v8.2.0
+    - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       with:
         enable-cache: false
         quiet: true
 
     - name: Use ccache
       if: inputs.use-ccache == 'true'
-      uses: hendrikmuhs/ccache-action@v1.2.23
+      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: v7-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}
         max-size: |-
@@ -104,7 +104,7 @@ runs:
 
     - name: Cache JIT-compiled CUDA kernels
       if: runner.os == 'Linux' && startsWith(inputs.toolkit, 'cuda')
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: /tmp/mlx-ptx-cache
         key: >-

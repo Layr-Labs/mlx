@@ -1,0 +1,43 @@
+name: Fork Tests
+
+# Build the fork with Metal and run its C++ and Python tests on a
+# GitHub-hosted macOS runner. The steps use the actions in .github/actions.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  metal-build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      # Cancel an older run of the same pull request. Let runs on main finish.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup
+        id: setup
+        with:
+          toolkit: metal
+          # This cache key is not an upstream key. The setup action saves
+          # the cache on pushes only, never on pull requests.
+          ccache-key: fork-tests
+
+      - uses: ./.github/actions/build-macos
+        with:
+          cmake-args: ${{ steps.setup.outputs.cmake-args }}
+          # The runner has macOS 26. Version 26.2 is the lowest target that
+          # builds all Metal kernels.
+          macos-target: '26.2'
+
+      - uses: ./.github/actions/test-macos
+        with:
+          toolkit: metal

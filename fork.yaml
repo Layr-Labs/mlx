@@ -163,7 +163,6 @@ def:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-macos/action.yml"
         - ".github/actions/build-wheel/action.yml"
-        - ".github/actions/setup/action.yml"
         - ".github/actions/test-linux/action.yml"
         - ".github/actions/test-macos/action.yml"
         - ".github/actions/test-wheel/action.yml"
@@ -266,10 +265,16 @@ def:
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
         not the merge-base with upstream, when a file the fork changes is not described by a
         section above, or when a section names files the fork no longer changes.
+
+        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on a
+        GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
+        because the organization blocks actions that are not pinned.
       globs:
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "README.md"
+        - ".github/actions/setup/action.yml"
+        - ".github/workflows/fork-tests.yml"
 
 # ignored globally, does not count towards line count
 ignore:

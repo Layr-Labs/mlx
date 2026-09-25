@@ -13,7 +13,7 @@ on:
 jobs:
   metal-build-and-test:
     runs-on: macos-26
-    timeout-minutes: 150
+    timeout-minutes: 60
     permissions:
       contents: read
     concurrency:
@@ -28,7 +28,7 @@ jobs:
         with:
           toolkit: metal
           # This cache key is not an upstream key. The setup action saves
-          # the cache on pushes only, never on pull requests.
+          # the cache on pushes to main only, never on pull requests.
           ccache-key: fork-tests
 
       - uses: ./.github/actions/build-macos

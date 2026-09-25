@@ -75,6 +75,9 @@ def:
         E=32, K=2880, N=2880|5760, FP32/BF16 shape; `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL=0`
         restores the original route and `MLX_GPTOSS_MXFP4_PREFILL_TILE=m32n32k32` opts into a
         separately measured prefill tile (`gptoss_mxfp4_policy.h`). (PR #14)
+        `fp_quantized.metal` also builds the two m32n32k32 prefill-tile kernels (float and
+        bfloat16) ahead of time, so CMake builds with the default `MLX_METAL_JIT=OFF` can load
+        them. (PR #24)
       globs:
         - "mlx/backend/metal/gptoss_mxfp4_policy.h"
         - "mlx/backend/metal/kernels/fp_quantized.h"

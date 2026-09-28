@@ -75,6 +75,9 @@ def:
         E=32, K=2880, N=2880|5760, FP32/BF16 shape; `MLX_GPTOSS_MXFP4_DECODE_FAST_TAIL=0`
         restores the original route and `MLX_GPTOSS_MXFP4_PREFILL_TILE=m32n32k32` opts into a
         separately measured prefill tile (`gptoss_mxfp4_policy.h`). (PR #14)
+        `fp_quantized.metal` also builds the two m32n32k32 prefill-tile kernels (float and
+        bfloat16) ahead of time, so CMake builds with the default `MLX_METAL_JIT=OFF` can load
+        them. (PR #24)
       globs:
         - "mlx/backend/metal/gptoss_mxfp4_policy.h"
         - "mlx/backend/metal/kernels/fp_quantized.h"
@@ -162,6 +165,8 @@ def:
         - ".github/ISSUE_TEMPLATE/*"
         - ".github/actions/build-macos/action.yml"
         - ".github/actions/setup/action.yml"
+        - ".github/actions/build-wheel/action.yml"
+        - ".github/actions/test-linux/action.yml"
         - ".github/actions/test-macos/action.yml"
         - "benchmarks/python/sdpa_bench.py"
         - "docs/src/install.rst"
@@ -262,6 +267,12 @@ def:
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
         not the merge-base with upstream, when a file the fork changes is not described by a
         section above, or when a section names files the fork no longer changes.
+
+        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on a
+        GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
+        because the organization blocks actions that are not pinned. The organization also
+        blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
+        the ccache files with `actions/cache`.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
@@ -275,6 +286,8 @@ def:
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "README.md"
+        - ".github/actions/setup/action.yml"
+        - ".github/workflows/fork-tests.yml"
 
 # ignored globally, does not count towards line count
 ignore:

@@ -226,3 +226,7 @@ instantiate_quantized_types(float16_t)
 // Exact GPT-OSS MXFP4 gathered-vector tail experiment.
 instantiate_quantized(mxfp4, gather_qmv_fast_tail, float, 32, 4)
 instantiate_quantized(mxfp4, gather_qmv_fast_tail, bfloat16_t, 32, 4)
+
+// GPT-OSS MXFP4 prefill tile m32n32k32, selected by MLX_GPTOSS_MXFP4_PREFILL_TILE.
+instantiate_gather_qmm_rhs(fp_gather_qmm_rhs, gather_qmm_rhs_nt, float, 32, 32, 32, 2, 2, true, mxfp4, 32, 4)
+instantiate_gather_qmm_rhs(fp_gather_qmm_rhs, gather_qmm_rhs_nt, bfloat16_t, 32, 32, 32, 2, 2, true, mxfp4, 32, 4)

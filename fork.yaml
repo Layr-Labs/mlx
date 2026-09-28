@@ -261,18 +261,27 @@ def:
         - "python/tests/test_vmap.py"
         - "tests/load_tests.cpp"
         - "tests/ops_tests.cpp"
-    - title: "Upstream gather_mm row-tile scheduling (ml-explore/mlx #4567)"
+    - title: "Upstream gather_mm and gather_qmm row-tile scheduling (ml-explore/mlx #4567, #4572)"
       description: |
-        **Not fork work.** A cherry-pick of upstream commit `a2a09fd5`
-        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)). The `gather_mm`
-        kernels schedule row tiles from per-expert offsets, so one tile holds rows of one
-        expert and does one matmul pass. A small kernel (`gather_mm_offsets`) computes the
-        offsets from the sorted `rhs_indices`. The change applies to `gather_mm` only;
-        `gather_qmm` is not changed. `mlx/backend/metal/kernels/utils.h` also carries this
-        change (`schedule_row_tile`) and is listed in the v0.32.2 section. The section
-        disappears once the fork rebases onto an upstream commit at or past `a2a09fd5`.
+        **Not fork work.** Cherry-picks of upstream commits `a2a09fd5`
+        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)) and `90089440`
+        ([ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572)). The sorted
+        `gather_mm` and `gather_qmm` kernels schedule row tiles from per-expert offsets, so
+        one tile holds rows of one expert and does one matmul pass. A small kernel
+        (`gather_mm_offsets`) computes the offsets from the sorted `rhs_indices`.
+
+        The `gather_qmm` change is in `quantized.h`, `quantized_nax.h`, `fp_quantized.h`,
+        `fp_quantized_nax.h` and `quantized.cpp`, which are listed in the sections that
+        describe the fork work in those files. `utils.h` (`schedule_row_tile`) is listed in
+        the v0.32.2 section. Two differences from upstream `90089440` remain in the ported
+        kernels, because the fork base does not have the related upstream changes: the
+        floating-point kernels have no global-scale input, and the NAX kernels keep the
+        fork's bound for the last K tile. The section disappears once the fork rebases onto
+        an upstream commit at or past `90089440`.
       globs:
+        - ".gitignore"
         - "benchmarks/python/swiglu_bench.py"
+        - "benchmarks/python/swiglu_qmm_bench.py"
         - "mlx/backend/metal/matmul.cpp"
         - "mlx/backend/metal/matmul.h"
         - "mlx/backend/metal/kernels/CMakeLists.txt"

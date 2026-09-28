@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "jaccl/send_frame.h"
 #include "jaccl/tcp.h"
 
 constexpr const char* IBV_TAG = "[jaccl]";
@@ -123,6 +124,12 @@ class SharedBuffer {
     entry.length = size();
     entry.lkey = local_key(protection_domain);
     return entry;
+  }
+
+  template <typename T>
+  void stage_send(const T* source, int64_t count) {
+    stage_send_frame(
+        std::span<char>(static_cast<char*>(data_), size()), source, count);
   }
 
   template <typename T>

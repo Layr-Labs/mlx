@@ -261,6 +261,24 @@ def:
         - "python/tests/test_vmap.py"
         - "tests/load_tests.cpp"
         - "tests/ops_tests.cpp"
+    - title: "Upstream gather_mm row-tile scheduling (ml-explore/mlx #4567)"
+      description: |
+        **Not fork work.** A cherry-pick of upstream commit `a2a09fd5`
+        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)). The `gather_mm`
+        kernels schedule row tiles from per-expert offsets, so one tile holds rows of one
+        expert and does one matmul pass. A small kernel (`gather_mm_offsets`) computes the
+        offsets from the sorted `rhs_indices`. The change applies to `gather_mm` only;
+        `gather_qmm` is not changed. `mlx/backend/metal/kernels/utils.h` also carries this
+        change (`schedule_row_tile`) and is listed in the v0.32.2 section. The section
+        disappears once the fork rebases onto an upstream commit at or past `a2a09fd5`.
+      globs:
+        - "benchmarks/python/swiglu_bench.py"
+        - "mlx/backend/metal/matmul.cpp"
+        - "mlx/backend/metal/matmul.h"
+        - "mlx/backend/metal/kernels/CMakeLists.txt"
+        - "mlx/backend/metal/kernels/gather_mm_offsets.metal"
+        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather.h"
+        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
     - title: "Fork tooling"
       description: |
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is

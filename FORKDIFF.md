@@ -42,20 +42,10 @@ section with a short description). Files that are not code go under the
 top-level `ignore`. Keep globs specific: a `mlx/**` catch-all would swallow
 upstream's changes after a bad rebase and defeat the gate.
 
-**Rebasing onto newer upstream.** The gate will fail with the new merge-base
-in its message:
-
-```
-git fetch https://github.com/ml-explore/mlx.git main:refs/remotes/upstream/main
-git merge-base HEAD refs/remotes/upstream/main      # → new base.hash
-```
-
-Set `base.hash` to that value, then run the check locally and fix what it
-reports — usually files upstream absorbed (stale globs to delete) and files
-that moved (globs to rename). In particular, the "Upstream v0.32.2 sync"
-section exists only because the fork applied upstream's v0.32.2 changes
-instead of merging them; a rebase onto a commit at or past v0.32.2 makes it
-disappear.
+**Upstream sync policy (2026-09-25).** This fork does not merge or rebase onto
+upstream. `base.hash` stays fixed. An upstream fix the fork needs is ported as
+its own commit and described in its own `fork.yaml` section. The check keeps
+comparing the fork against the fixed base:
 
 ```
 python3 -m pip install pyyaml

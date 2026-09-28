@@ -163,17 +163,11 @@ def:
         - "setup.py"
         - ".github/pull_request_template.md"
         - ".github/ISSUE_TEMPLATE/*"
-        - ".github/actions/build/action.yml"
         - ".github/actions/build-macos/action.yml"
+        - ".github/actions/setup/action.yml"
         - ".github/actions/build-wheel/action.yml"
         - ".github/actions/test-linux/action.yml"
         - ".github/actions/test-macos/action.yml"
-        - ".github/actions/test-wheel/action.yml"
-        - ".github/actions/test-windows/action.yml"
-        - ".github/scripts/*"
-        - ".github/workflows/build_and_test.yml"
-        - ".github/workflows/release.yml"
-        - ".github/workflows/update_bypass_list.yml"
         - "benchmarks/python/sdpa_bench.py"
         - "docs/src/install.rst"
         - "docs/src/python/fast.rst"
@@ -265,6 +259,11 @@ def:
         - "tests/ops_tests.cpp"
     - title: "Fork tooling"
       description: |
+        The fork deletes the upstream workflows that cannot run here: the PyPI release build and
+        the documentation deploy. `build_and_test.yml` keeps the lint, sanitizer and Fedora jobs.
+        The fork deletes the jobs that run only in the upstream repository, and the composite
+        actions that only the deleted workflows and jobs used.
+
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
         not the merge-base with upstream, when a file the fork changes is not described by a
         section above, or when a section names files the fork no longer changes.
@@ -275,6 +274,15 @@ def:
         blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
         the ccache files with `actions/cache`.
       globs:
+        - ".github/actions/build/action.yml"
+        - ".github/actions/build-docs/action.yml"
+        - ".github/actions/build-wheel/action.yml"
+        - ".github/actions/test-linux/action.yml"
+        - ".github/actions/test-wheel/action.yml"
+        - ".github/actions/test-windows/action.yml"
+        - ".github/workflows/build_and_test.yml"
+        - ".github/workflows/documentation.yml"
+        - ".github/workflows/release.yml"
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "README.md"

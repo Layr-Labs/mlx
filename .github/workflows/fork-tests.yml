@@ -74,30 +74,79 @@ jobs:
             objects+=(-object "$lib")
           done
           # Drop the tests, the Python bindings, the dependencies, the Python
-          # headers and the generated files in the build folders.
+          # headers, the generated files in the build folders, the vendored
+          # pocketfft header, the Metal shader source and the CUDA backend.
           options=(
             -instr-profile="$out/coverage.profdata"
-            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/'
+            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/metal/kernels/|/mlx/backend/cuda/'
           )
-          xcrun llvm-cov report "${objects[@]}" "${options[@]}" > "$out/report.txt"
-          xcrun llvm-cov export -summary-only "${objects[@]}" "${options[@]}" \
-            > "$out/summary.json"
-          python - "$out/summary.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          import json
-          import os
-          import sys
-
-          totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
-          print("### C++ line coverage")
-          print()
-          print(f"Test step: {os.environ['TESTS_OUTCOME']}")
-          print()
-          print("| Coverage | Covered | Total | Percent |")
-          print("| --- | ---: | ---: | ---: |")
-          for name in ("lines", "functions", "regions"):
-              t = totals[name]
-              print(f"| {name.capitalize()} | {t['covered']} | {t['count']} | {t['percent']:.2f}% |")
-          EOF
+          # report FILE DIR writes the llvm-cov report for the files under
+          # DIR. llvm-cov ignores a path that does not exist and then
+          # reports every file, so the function checks the path first.
+          report() {
+            if [ ! -d "$GITHUB_WORKSPACE/$2" ]; then
+              echo "::error::The directory $2 does not exist."
+              return 1
+            fi
+            xcrun llvm-cov report "${objects[@]}" "${options[@]}" \
+              "$GITHUB_WORKSPACE/$2" > "$1"
+          }
+          # value_of FILE NAME prints the value of the column NAME in the
+          # TOTAL row, for example "Lines" (a count) or "Lines Cover" (a
+          # percentage). It finds the column by its name in the header row,
+          # and it fails when the value is missing.
+          value_of() {
+            awk -v want="$2" '
+              NR == 1 {
+                field = 1
+                for (i = 2; i <= NF; i++) {
+                  if ($i == "Missed") { missed = 1; continue }
+                  field++
+                  if (missed) { missed = 0; continue }
+                  if ($i == "Cover" || $i == "Executed") {
+                    if (group " Cover" == want) col = field
+                    continue
+                  }
+                  group = $i
+                  if (group == want) col = field
+                }
+              }
+              $1 == "TOTAL" && col { value = $col }
+              END {
+                if (want ~ / Cover$/ && value !~ /^[0-9.]+%$/) exit 1
+                if (want !~ / Cover$/ && value !~ /^[0-9]+$/) exit 1
+                print value
+              }
+            ' "$1" || { echo "::error::$1 has no $2 value in the TOTAL row." >&2; return 1; }
+          }
+          # row NAME FILE DIR adds one table row.
+          row() {
+            report "$2" "$3"
+            grep '^TOTAL' "$2"
+            lines=$(value_of "$2" "Lines Cover")
+            branches=$(value_of "$2" "Branches Cover")
+            functions=$(value_of "$2" "Functions Cover")
+            echo "| $1 | $lines | $branches | $functions | 80% |" >> "$out/rows.md"
+          }
+          : > "$out/rows.md"
+          row "All of \`mlx/\`" "$out/report.txt" mlx
+          for dir in backend/metal backend/cpu backend/common distributed io; do
+            row "\`mlx/$dir\`" "$out/report-${dir//\//-}.txt" "mlx/$dir"
+          done
+          lines_total=$(value_of "$out/report.txt" Lines)
+          {
+            echo "### C++ line coverage"
+            echo
+            echo "Test step: $TESTS_OUTCOME"
+            echo
+            echo "| Component | Lines | Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            cat "$out/rows.md"
+            echo
+            echo "The denominator is the host C++ code under \`mlx/\` that the C++ tests and the Python wheel run: $lines_total lines. It leaves out the tests, the Python bindings in \`python/src\`, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
+            echo "It also leaves out the Metal shader source in \`mlx/backend/metal/kernels/\`. The Metal kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted."
+            echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the coverage report
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}

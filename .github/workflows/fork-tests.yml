@@ -75,10 +75,13 @@ jobs:
           done
           # Drop the tests, the Python bindings, the dependencies, the Python
           # headers, the generated files in the build folders, the vendored
-          # pocketfft header, the Metal shader source and the CUDA backend.
+          # pocketfft header and the CUDA backend. The Metal shader source
+          # needs no pattern: the host compiler never builds it, so it has no
+          # coverage records. The few headers in mlx/backend/metal/kernels/
+          # that host C++ includes, such as steel/conv/params.h, stay counted.
           options=(
             -instr-profile="$out/coverage.profdata"
-            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/metal/kernels/|/mlx/backend/cuda/'
+            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/cuda/'
           )
           # report FILE DIR writes the llvm-cov report for the files under
           # DIR. llvm-cov ignores a path that does not exist and then
@@ -94,7 +97,9 @@ jobs:
           # value_of FILE NAME prints the value of the column NAME in the
           # TOTAL row, for example "Lines" (a count) or "Lines Cover" (a
           # percentage). It finds the column by its name in the header row,
-          # and it fails when the value is missing.
+          # and it fails when the value is missing. It also rejects the "-"
+          # that llvm-cov prints for a Cover column with no counters, so a
+          # future row without branches fails the step.
           value_of() {
             awk -v want="$2" '
               NR == 1 {
@@ -143,8 +148,8 @@ jobs:
             echo "|---|---|---|---|---|"
             cat "$out/rows.md"
             echo
-            echo "The denominator is the host C++ code under \`mlx/\` that the C++ tests and the Python wheel run: $lines_total lines. It leaves out the tests, the Python bindings in \`python/src\`, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
-            echo "It also leaves out the Metal shader source in \`mlx/backend/metal/kernels/\`. The Metal kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted."
+            echo "The denominator is the host C++ code under \`mlx/\` that the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the Python bindings in \`python/src\`, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
+            echo "The Metal shader source in \`mlx/backend/metal/kernels/\` is not in the denominator: the kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted, and so are the few headers in that folder that host C++ includes."
             echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."
           } >> "$GITHUB_STEP_SUMMARY"
 

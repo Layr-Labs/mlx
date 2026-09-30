@@ -62,14 +62,78 @@ jobs:
         env:
           DEVICE: cpu
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
+          # Tests that take more than 5 minutes on the CPU. The GPU pass
+          # still runs them.
+          # test_sdpa_long_masked_sequence: 21 min 36 s on the CPU.
+          # test_sdpa_full_head_dim_256: 6 min 46 s on the CPU.
+          CPU_EXCLUDE: >-
+            test_fast_sdpa.TestFastSDPA.test_sdpa_long_masked_sequence
+            test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
         run: |
           status=0
           echo "::group::Run C++ tests on the CPU"
           ./build/tests/tests || status=1
           echo "::endgroup::"
-          echo "::group::Run Python tests on the CPU"
-          uv run python/tests/run.py -v || status=1
-          echo "::endgroup::"
+
+          # Run one process for each Python test file, three at a time. Each
+          # file runs in a child process that writes its own log, so a crash
+          # stops only that file.
+          logs="$RUNNER_TEMP/cpu-logs"
+          mkdir -p "$logs"
+          cat > "$RUNNER_TEMP/run_cpu.py" <<'EOF'
+          import os
+          import subprocess
+          import sys
+          import unittest
+
+          if len(sys.argv) == 2:
+              name = os.path.basename(sys.argv[1])[: -len(".py")]
+              with open(os.path.join(os.environ["LOGS"], name + ".log"), "w") as log:
+                  code = subprocess.run(
+                      [sys.executable, "-u", __file__, name, "child"],
+                      stdout=log,
+                      stderr=subprocess.STDOUT,
+                  ).returncode
+              result = "passed" if code == 0 else f"failed (exit code {code})"
+              print(f"{name}: {result}", flush=True)
+              sys.exit(0)
+
+          os.environ["MLX_ENABLE_TF32"] = "0"
+          os.environ["MLX_ENABLE_CACHE_THRASHING_CHECK"] = "0"
+          sys.path.insert(0, "python/tests")
+          import mlx.core as mx
+
+          exclude = set(os.environ["CPU_EXCLUDE"].split())
+
+          def flatten(suite):
+              for test in suite:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from flatten(test)
+                  elif test.id() not in exclude:
+                      yield test
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
+          suite = unittest.TestSuite(flatten(suite))
+          result = unittest.TextTestRunner(sys.stdout, verbosity=2).run(suite)
+          mx.clear_streams()
+          sys.exit(0 if result.wasSuccessful() else 1)
+          EOF
+          export LOGS="$logs"
+          printf '%s\n' python/tests/test_*.py \
+            | xargs -P 3 -n 1 python "$RUNNER_TEMP/run_cpu.py" \
+            | tee "$logs/results.txt" || true
+          failed=()
+          for file in python/tests/test_*.py; do
+            name=$(basename "$file" .py)
+            echo "::group::Python tests on the CPU: $name"
+            cat "$logs/$name.log" || true
+            echo "::endgroup::"
+            grep -qx "$name: passed" "$logs/results.txt" || failed+=("$name")
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Python test files that failed on the CPU: ${failed[*]}"
+            status=1
+          fi
           exit $status
 
       - name: Report C++ line coverage

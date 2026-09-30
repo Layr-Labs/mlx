@@ -243,12 +243,10 @@ def:
         - "python/tests/test_array.py"
         - "python/tests/test_compile.py"
         - "python/tests/test_conv_transpose.py"
-        - "python/tests/test_conv.py"
         - "python/tests/test_double.py"
         - "python/tests/test_einsum.py"
         - "python/tests/test_eval.py"
         - "python/tests/test_fast.py"
-        - "python/tests/test_fft.py"
         - "python/tests/test_load.py"
         - "python/tests/test_nn.py"
         - "python/tests/test_ops.py"
@@ -272,7 +270,10 @@ def:
         GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
         because the organization blocks actions that are not pinned. The organization also
         blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
-        the ccache files with `actions/cache`.
+        the ccache files with `actions/cache`. It then runs the same tests a second time with
+        the CPU as the default device. Two Python tests check behavior that exists only in the
+        Metal backend (Winograd batch tiling and the FFT size limit), so they skip when the
+        default device is not the GPU.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
@@ -288,6 +289,8 @@ def:
         - "README.md"
         - ".github/actions/setup/action.yml"
         - ".github/workflows/fork-tests.yml"
+        - "python/tests/test_conv.py"
+        - "python/tests/test_fft.py"
 
 # ignored globally, does not count towards line count
 ignore:

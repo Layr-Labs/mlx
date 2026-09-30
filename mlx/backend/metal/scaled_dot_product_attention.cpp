@@ -1,5 +1,8 @@
 // Copyright © 2024 Apple Inc.
+#include <cctype>
+#include <cstdlib>
 #include <sstream>
+#include <string>
 
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/gpu/copy.h"
@@ -14,6 +17,84 @@
 namespace mlx::core::fast {
 
 namespace {
+
+// D512-2PASS (C1 rung 2). Gemma 4's five global attention layers are
+// 16 query heads / 2 KV heads at head_dim 512, so `has_fused_kernel`'s
+// vector head-dim list ({64, 96, 128, 192, 256}) rejects every decode call
+// and `use_fallback` sends them to the unfused
+// `scale.q -> matmul -> softmax -> matmul` graph, whose two matmuls are
+// batched gemvs over the GQA-expanded batch: each of the 2 key planes and
+// each of the 2 value planes is streamed once PER QUERY HEAD, eight times.
+// `sdpa_vector_2pass_1` / `_2` are templated on D and V and need no new
+// body at 512; this admits the dim and instantiates them
+// (kernels/scaled_dot_product_attention.metal).
+//
+// Not bit-exact against the unfused graph: the split-K kernel carries an
+// online (running-max) softmax and folds `blocks` partials in a second
+// pass, so the reduction order over the key axis differs. The bar is
+// greedy-token parity.
+//
+// Off value: `DARKBLOOM_GEMMA4_D512_DECODE_2PASS` in {0, false, no, off}
+// removes the admission and restores the unfused graph exactly. Default ON.
+inline bool env_flag_on(const char* name, bool default_on) {
+  const char* raw = std::getenv(name);
+  if (raw == nullptr) {
+    return default_on;
+  }
+  std::string value(raw);
+  for (auto& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (value == "0" || value == "false" || value == "no" || value == "off") {
+    return false;
+  }
+  return true;
+}
+
+inline bool d512_vector_sdpa_enabled() {
+  static bool enabled =
+      env_flag_on("DARKBLOOM_GEMMA4_D512_DECODE_2PASS", true);
+  return enabled;
+}
+
+// D512-2PASS-DEDUP. `sdpa_vector_2pass_1` gives every query head of a GQA
+// group its own simdgroup, so it still reads each K/V byte `gqa_factor`
+// times -- it removes the dispatch chain and the materialised score plane,
+// not the redundant stream. `sdpa_vector_2pass_1_gqa` is the
+// duplication-free variant already in the tree (instantiated at 64/HPT=8
+// and 128/HPT=4): each simdgroup owns a token sub-chunk and carries HPT
+// query heads, so each byte is read gqa_factor / HPT times.
+//
+// At D = 512 a thread holds `HPT * (D / 32)` query floats and the same
+// number of output floats, so HPT = 2 (64 live floats, twice the plain
+// 2-pass kernel's 32) is the only step that is clearly affordable; it
+// halves the K/V stream.
+//
+// First device run failed pipeline creation outright:
+//   Threadgroup memory size (32896) exceeds the maximum threadgroup memory
+//   allowed (32768)
+// -- the merge plane `o_sh[G * HPT * V]` is 8 * 2 * 512 floats = 32,768 B on
+// its own, and the two 16-float scalar arrays put it 128 B over. Note that
+// `blocks` is not a term in that expression, so tuning MLX_SDPA_BLOCKS could
+// not have helped. Fixed by publishing the plane in SPLIT = 2 passes
+// (kernels/sdpa_vector.h), which allocates 16,512 B -- in line with the
+// shipped 64/128 instantiations' 16,640 B -- and leaves the arithmetic
+// unchanged.
+//
+// Still DEFAULT OFF: the remaining unmeasured claim is the REGISTER one.
+// A thread holds q[2][16] + o[2][16] + kr[16] + vr[16] + acc[16] = 112 live
+// floats at 32 x gqa_factor = 256 threads per threadgroup, and a pipeline
+// whose `maxTotalThreadsPerThreadgroup` came back under 256 would make
+// `check_kernel_threadgroup_size` throw rather than degrade. Turn it on with
+// `DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP=1` for its own arm.
+inline bool d512_gqa_dedup_enabled() {
+  static bool enabled =
+      env_flag_on("DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP", false);
+  return enabled;
+}
+
+// The one head dim this port adds to the vector path.
+constexpr int kD512 = 512;
 
 void sdpa_full_self_attention_nax(
     const Stream& s,
@@ -467,7 +548,9 @@ void sdpa_vector_2pass(
   kname.reserve(64);
   kname += "sdpa_vector_2pass_fp32partials_1";
   if (!mask && !sinks && q.shape(2) == 1 && q.shape(1) == 8 * k.shape(1) &&
-      q.shape(-1) == v.shape(-1) && (q.shape(-1) == 64 || q.shape(-1) == 128) &&
+      q.shape(-1) == v.shape(-1) &&
+      (q.shape(-1) == 64 || q.shape(-1) == 128 ||
+       (q.shape(-1) == kD512 && d512_gqa_dedup_enabled())) &&
       k.shape(2) >= 8192) {
     kname += "_gqa";
   }
@@ -684,7 +767,8 @@ std::tuple<bool, std::string> has_fused_kernel(
         (query_head_dim == value_head_dim &&
          (query_head_dim == 64 || query_head_dim == 96 ||
           query_head_dim == 128 || query_head_dim == 192 ||
-          query_head_dim == 256)) ||
+          query_head_dim == 256 ||
+          (query_head_dim == kD512 && d512_vector_sdpa_enabled()))) ||
         (query_head_dim == 192 && value_head_dim == 128);
     if (!supported_head_dim) {
       msg << "the vector attention kernel supports head dims "
@@ -873,7 +957,14 @@ void ScaledDotProductAttention::eval_gpu(
     // - The sequence length is even longer and we have gqa
     bool do_causal = do_causal_ && q.shape(2) > 1;
     char devc = d.get_architecture().back();
-    if (((devc == 'd' || devc == 's') && k.shape(2) >= 1024) ||
+    // D512-2PASS: head dim 512 has no single-pass instantiation (see
+    // kernels/scaled_dot_product_attention.metal), so it takes the split-K
+    // form at EVERY key length, not only past the device thresholds below.
+    // The 2-pass kernel is length-generic: blocks with no keys leave
+    // `sums = 0` / `maxs = finite_min`, which the merge pass folds in with
+    // weight `exp(finite_min - max) == 0`.
+    if (q.shape(-1) == kD512 ||
+        ((devc == 'd' || devc == 's') && k.shape(2) >= 1024) ||
         (k.shape(1) < q.shape(1) && k.shape(2) >= 4096)) {
       sdpa_vector_2pass(s, d, q, k, v, o, scale_, do_causal, mask, sinks);
     } else {

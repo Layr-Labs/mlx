@@ -239,6 +239,12 @@ void sdpa_full_self_attention_metal(
   int bd = q.shape(-1);
   int bq = 32;
   int bk = bd < 128 ? 32 : 16;
+  // Keep FP32 wide-head tiles below Metal's 32 KiB threadgroup limit.
+  if (q.dtype() == float32 && bd >= 192) {
+    bq = 16;
+    bk = bd == 256 ? 8 : 16;
+    wm = 2;
+  }
 
   const bool align_Q = (qL % bq) == 0;
   const bool align_K = (kL % bk) == 0;

@@ -3635,6 +3635,24 @@ TEST_CASE("test floor_divide with negative operands") {
       CHECK(array_equal(out, expected).item<bool>());
     }
 
+    // 40 elements, so the SIMD path runs for every width (16 lanes for int8)
+    {
+      std::vector<int> av, bv, ev;
+      int divisors[] = {3, -3, 4, -4, 7};
+      for (int i = 0; i < 40; ++i) {
+        int u = i - 20;
+        int v = divisors[i % 5];
+        av.push_back(u);
+        bv.push_back(v);
+        ev.push_back(static_cast<int>(std::floor(double(u) / v)));
+      }
+      for (auto t : {int8, int16, int32, int64}) {
+        auto out = floor_divide(
+            array(av.begin(), {40}, t), array(bv.begin(), {40}, t), d);
+        CHECK(array_equal(out, array(ev.begin(), {40}, t)).item<bool>());
+      }
+    }
+
     auto a = array({-128, 127, -128, 127}, int8);
     auto b = array({3, -2, 127, -128}, int8);
     auto out = floor_divide(a, b, d);
@@ -3653,6 +3671,31 @@ TEST_CASE("test floor_divide with negative operands") {
     CHECK(array_equal(out, array({-4.0f, -4.0f, -4.0f, -4.0f, 3.0f}))
               .item<bool>());
   }
+}
+
+TEST_CASE("test floor_divide integer edge cases on the CPU") {
+  // The Metal Shading Language does not define these cases.
+  for (auto t : {int8, int16, int32, int64}) {
+    auto out = floor_divide(array({-7, 7, 0}, t), array(0, t), Device::cpu);
+    CHECK(array_equal(out, array({0, 0, 0}, t)).item<bool>());
+
+    // 33 elements run the SIMD path and the scalar path.
+    auto x = astype(arange(-16, 17, Device::cpu), t, Device::cpu);
+    out = floor_divide(x, zeros({33}, t, Device::cpu), Device::cpu);
+    CHECK(array_equal(out, zeros({33}, t)).item<bool>());
+  }
+
+  auto check_min = [](int64_t lo, Dtype t) {
+    auto out = floor_divide(
+        full({33}, lo, t, Device::cpu),
+        full({33}, -1, t, Device::cpu),
+        Device::cpu);
+    CHECK(array_equal(out, full({33}, lo, t)).item<bool>());
+  };
+  check_min(std::numeric_limits<int8_t>::min(), int8);
+  check_min(std::numeric_limits<int16_t>::min(), int16);
+  check_min(std::numeric_limits<int32_t>::min(), int32);
+  check_min(std::numeric_limits<int64_t>::min(), int64);
 }
 
 TEST_CASE("test diagonal") {

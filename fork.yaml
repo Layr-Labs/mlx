@@ -150,10 +150,18 @@ def:
         `floor_divide` on integers uses the `Divide` primitive. The CPU and Metal `Divide`
         functors truncated toward zero, so `-7 // 2` gave -3. NumPy and Python give -4. For
         signed integers the functors now subtract 1 when the remainder is not zero and the
-        signs are different. When the divisor is 0 they return `x / y` as before. Unsigned and
-        floating-point division do not change. Upstream fixed the same defect in `ops.cpp`
-        (ml-explore/mlx #4515); the fork does the fix in the kernels. The CUDA `Divide`
-        functor does not change.
+        signs are different. On the CPU the signed-integer functor does not divide by 0 or
+        divide the minimum value by -1, because C++ does not define these. It returns 0 for
+        `x // 0` and the minimum value for `min // -1`, the same values as before. The Metal
+        Shading Language does not define these cases either. Unsigned and floating-point
+        division do not change. Upstream fixed the same defect in `ops.cpp` (ml-explore/mlx
+        #4515); the fork does the fix in the kernels. If a later upstream sync ports #4515 on
+        top of these kernels, `floor_divide` subtracts 1 twice; the tests catch this. The CUDA
+        `Divide` functor (`cuda/device/binary_ops.cuh:36-41`) does not change and still
+        truncates; no workflow in this fork builds CUDA. mlx-swift keeps generated copies of
+        both headers (`Source/Cmlx/mlx-generated/binary_ops.cpp`,
+        `mlx-generated/metal/binary_ops.h`, `mlx-generated/compiled_preamble.cpp`), so
+        `tools/update-mlx.sh` must run at the mlx-swift pin bump.
       globs:
         - "mlx/backend/cpu/binary_ops.h"
         - "mlx/backend/metal/kernels/binary_ops.h"

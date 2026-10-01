@@ -402,6 +402,33 @@ class TestOps(mlx_tests.MLXTestCase):
                 out = mx.compile(lambda u, v: u // v + 1)(x, y)
                 self.assertEqual(out.tolist(), (expected + 1).tolist())
 
+        # 40 elements, so the SIMD path runs for every width (16 lanes for int8)
+        a = list(range(-20, 20))
+        b = [[3, -3, 4, -4, 7][i % 5] for i in range(40)]
+        for t in ["int8", "int16", "int32", "int64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                out = mx.array(a, dtype) // mx.array(b, dtype)
+                self.assertEqual(out.tolist(), [u // v for u, v in zip(a, b)])
+
+        # On the CPU, x // 0 gives 0 and min // -1 gives min. The Metal
+        # Shading Language does not define these cases.
+        for t in ["int8", "int16", "int32", "int64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                x = mx.array([-7, 7, 0], dtype)
+                out = mx.floor_divide(x, 0, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [0, 0, 0])
+                x = mx.arange(-16, 17, dtype=dtype, stream=mx.cpu)
+                y = mx.zeros((33,), dtype, stream=mx.cpu)
+                out = mx.floor_divide(x, y, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [0] * 33)
+                lo = mx.iinfo(dtype).min
+                x = mx.full((33,), lo, dtype, stream=mx.cpu)
+                y = mx.full((33,), -1, dtype, stream=mx.cpu)
+                out = mx.floor_divide(x, y, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [lo] * 33)
+
         a = [-128, 127, -128, 127]
         b = [3, -2, 127, -128]
         out = mx.array(a, mx.int8) // mx.array(b, mx.int8)

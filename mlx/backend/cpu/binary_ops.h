@@ -43,10 +43,18 @@ struct Divide {
   template <int N, typename T>
   Simd<T, N> operator()(Simd<T, N> x, Simd<T, N> y) {
     if constexpr (std::is_integral_v<T> && std::is_signed_v<T>) {
-      // Integer Divide is floor_divide: round down, keep x / 0 unchanged.
-      Simd<T, N> q = x / y;
-      auto mask = (x != q * y) && ((x < 0) != (y < 0)) && (y != 0);
-      return select(mask, Simd<T, N>(q - 1), q);
+      // Integer Divide is floor_divide: round down. Divide by 1 where C++
+      // does not define x / y: x / 0 gives 0 and min / -1 gives min.
+      const Simd<T, N> zero_v(T(0));
+      const Simd<T, N> one_v(T(1));
+      auto zero = y == zero_v;
+      auto wrap = (x == Simd<T, N>(std::numeric_limits<T>::min())) &&
+          (y == Simd<T, N>(T(-1)));
+      Simd<T, N> d = select(zero || wrap, one_v, y);
+      Simd<T, N> q = x / d;
+      auto mask = (x != q * d) && ((x < 0) != (y < 0));
+      q = q - select(mask, one_v, zero_v);
+      return select(zero, zero_v, q);
     } else {
       return x / y;
     }

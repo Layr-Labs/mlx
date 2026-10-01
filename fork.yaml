@@ -145,6 +145,20 @@ def:
         - "mlx/compile.cpp"
         - "mlx/compile_impl.h"
         - "tests/compile_tests.cpp"
+    - title: "Integer floor_divide rounds down"
+      description: |
+        `floor_divide` on integers uses the `Divide` primitive. The CPU and Metal `Divide`
+        functors truncated toward zero, so `-7 // 2` gave -3. NumPy and Python give -4. For
+        signed integers the functors now subtract 1 when the remainder is not zero and the
+        signs are different. When the divisor is 0 they return `x / y` as before. Unsigned and
+        floating-point division do not change. Upstream fixed the same defect in `ops.cpp`
+        (ml-explore/mlx #4515); the fork does the fix in the kernels. The CUDA `Divide`
+        functor does not change.
+      globs:
+        - "mlx/backend/cpu/binary_ops.h"
+        - "mlx/backend/metal/kernels/binary_ops.h"
+        - "tests/ops_tests.cpp"
+        - "python/tests/test_ops.py"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |
         **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official

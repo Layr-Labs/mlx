@@ -25,7 +25,6 @@ using namespace mlx::core::simd;
 
 DEFAULT_BINARY_OP(Add, operator+)
 DEFAULT_BINARY_OP(ArcTan2, atan2)
-DEFAULT_BINARY_OP(Divide, operator/)
 DEFAULT_BINARY_OP(Multiply, operator*)
 DEFAULT_BINARY_OP(Subtract, operator-)
 DEFAULT_BINARY_OP(LogicalAnd, operator&&)
@@ -39,6 +38,21 @@ DEFAULT_BINARY_OP(Remainder, remainder)
 DEFAULT_BINARY_OP(Maximum, maximum)
 DEFAULT_BINARY_OP(Minimum, minimum)
 DEFAULT_BINARY_OP(Power, pow)
+
+struct Divide {
+  template <int N, typename T>
+  Simd<T, N> operator()(Simd<T, N> x, Simd<T, N> y) {
+    if constexpr (std::is_integral_v<T> && std::is_signed_v<T>) {
+      // Integer Divide is floor_divide: round down, keep x / 0 unchanged.
+      Simd<T, N> q = x / y;
+      auto mask = (x != q * y) && ((x < 0) != (y < 0)) && (y != 0);
+      return select(mask, Simd<T, N>(q - 1), q);
+    } else {
+      return x / y;
+    }
+  }
+  BINARY_SINGLE()
+};
 
 #define DEFAULT_BOOL_OP(Op, op)                            \
   struct Op {                                              \

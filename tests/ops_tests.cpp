@@ -3608,6 +3608,53 @@ TEST_CASE("test divmod") {
   CHECK_EQ(out_holder[0].item<float>(), 1.0);
 }
 
+TEST_CASE("test floor_divide with negative operands") {
+  std::vector<Device> devices = {Device::cpu};
+  if (metal::is_available()) {
+    devices.push_back(Device::gpu);
+  }
+  for (auto& d : devices) {
+    for (auto t : {int8, int16, int32, int64}) {
+      auto a = array({-7, 7, -7, 7, -6, 6, -6, 6, 0, 0, -1, 1, -1, 1}, t);
+      auto b = array({2, 2, -2, -2, 3, 3, -3, -3, 5, -5, 4, -4, -4, 4}, t);
+      auto expected =
+          array({-4, 3, 3, -4, -2, 2, 2, -2, 0, 0, -1, -1, 0, 0}, t);
+      auto out = floor_divide(a, b, d);
+      CHECK_EQ(out.dtype(), t);
+      CHECK(array_equal(out, expected).item<bool>());
+      CHECK(array_equal(out, divmod(a, b, d)[0]).item<bool>());
+
+      // Scalar and strided inputs
+      out = floor_divide(a, array(-2, t), d);
+      expected = array({3, -4, 3, -4, 3, -3, 3, -3, 0, 0, 0, -1, 0, -1}, t);
+      CHECK(array_equal(out, expected).item<bool>());
+      out = floor_divide(
+          transpose(reshape(a, {2, 7})), transpose(reshape(b, {2, 7})), d);
+      expected = transpose(reshape(
+          array({-4, 3, 3, -4, -2, 2, 2, -2, 0, 0, -1, -1, 0, 0}, t), {2, 7}));
+      CHECK(array_equal(out, expected).item<bool>());
+    }
+
+    auto a = array({-128, 127, -128, 127}, int8);
+    auto b = array({3, -2, 127, -128}, int8);
+    auto out = floor_divide(a, b, d);
+    CHECK(array_equal(out, array({-43, -64, -2, -1}, int8)).item<bool>());
+
+    for (auto t : {uint8, uint16, uint32, uint64}) {
+      out = floor_divide(array({7, 6, 0, 255}, t), array({2, 3, 5, 16}, t), d);
+      CHECK_EQ(out.dtype(), t);
+      CHECK(array_equal(out, array({3, 2, 0, 15}, t)).item<bool>());
+    }
+
+    out = floor_divide(
+        array({-7.0f, 7.0f, -7.5f, 7.5f, 7.0f}),
+        array({2.0f, -2.0f, 2.0f, -2.0f, 2.0f}),
+        d);
+    CHECK(array_equal(out, array({-4.0f, -4.0f, -4.0f, -4.0f, 3.0f}))
+              .item<bool>());
+  }
+}
+
 TEST_CASE("test diagonal") {
   auto x = array({0, 1, 2, 3, 4, 5, 6, 7}, {4, 2});
   auto out = diagonal(x);

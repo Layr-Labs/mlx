@@ -54,12 +54,95 @@ jobs:
         with:
           toolkit: metal
 
+      - name: Run the tests on the CPU
+        id: cpu-tests
+        # Run the CPU code of ops that also have a Metal implementation.
+        # The profiles go to the same folder, so the report merges both runs.
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        env:
+          DEVICE: cpu
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
+          # Tests that take more than 5 minutes on the CPU. The GPU pass
+          # still runs them.
+          # test_sdpa_long_masked_sequence: 21 min 36 s on the CPU.
+          # test_sdpa_full_head_dim_256: 6 min 46 s on the CPU.
+          CPU_EXCLUDE: >-
+            test_fast_sdpa.TestFastSDPA.test_sdpa_long_masked_sequence
+            test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
+        run: |
+          status=0
+          echo "::group::Run C++ tests on the CPU"
+          ./build/tests/tests || status=1
+          echo "::endgroup::"
+
+          # Run one process for each Python test file, three at a time. Each
+          # file runs in a child process that writes its own log, so a crash
+          # stops only that file.
+          logs="$RUNNER_TEMP/cpu-logs"
+          mkdir -p "$logs"
+          cat > "$RUNNER_TEMP/run_cpu.py" <<'EOF'
+          import os
+          import subprocess
+          import sys
+          import unittest
+
+          if len(sys.argv) == 2:
+              name = os.path.basename(sys.argv[1])[: -len(".py")]
+              with open(os.path.join(os.environ["LOGS"], name + ".log"), "w") as log:
+                  code = subprocess.run(
+                      [sys.executable, "-u", __file__, name, "child"],
+                      stdout=log,
+                      stderr=subprocess.STDOUT,
+                  ).returncode
+              result = "passed" if code == 0 else f"failed (exit code {code})"
+              print(f"{name}: {result}", flush=True)
+              sys.exit(0)
+
+          os.environ["MLX_ENABLE_TF32"] = "0"
+          os.environ["MLX_ENABLE_CACHE_THRASHING_CHECK"] = "0"
+          sys.path.insert(0, "python/tests")
+          import mlx.core as mx
+
+          exclude = set(os.environ["CPU_EXCLUDE"].split())
+
+          def flatten(suite):
+              for test in suite:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from flatten(test)
+                  elif test.id() not in exclude:
+                      yield test
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
+          suite = unittest.TestSuite(flatten(suite))
+          result = unittest.TextTestRunner(sys.stdout, verbosity=2).run(suite)
+          mx.clear_streams()
+          sys.exit(0 if result.wasSuccessful() else 1)
+          EOF
+          export LOGS="$logs"
+          printf '%s\n' python/tests/test_*.py \
+            | xargs -P 3 -n 1 python "$RUNNER_TEMP/run_cpu.py" \
+            | tee "$logs/results.txt" || true
+          failed=()
+          for file in python/tests/test_*.py; do
+            name=$(basename "$file" .py)
+            echo "::group::Python tests on the CPU: $name"
+            cat "$logs/$name.log" || true
+            echo "::endgroup::"
+            grep -qx "$name: passed" "$logs/results.txt" || failed+=("$name")
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Python test files that failed on the CPU: ${failed[*]}"
+            status=1
+          fi
+          exit $status
+
       - name: Report C++ line coverage
         # Report also after a test failure, so that a red run shows the
         # coverage of the tests that ran.
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
         env:
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          CPU_TESTS_OUTCOME: ${{ steps.cpu-tests.outcome }}
         run: |
           shopt -s nullglob
           out="$RUNNER_TEMP/coverage"
@@ -149,13 +232,16 @@ jobs:
           {
             echo "### C++ line coverage"
             echo
-            echo "Test step: $TESTS_OUTCOME"
+            echo "Test step (GPU default device): $TESTS_OUTCOME"
+            echo
+            echo "Test step (CPU default device): $CPU_TESTS_OUTCOME"
             echo
             echo "| Component | Lines | Branches | Functions | Target |"
             echo "|---|---|---|---|---|"
             cat "$out/rows.md"
             echo
             echo "The denominator is the host C++ code under \`mlx/\` and the Python bindings in \`python/src\`, which the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
+            echo "The C++ and Python tests run two times, first with the GPU and then with the CPU as the default device. The report merges the two runs."
             echo "The Metal shader source in \`mlx/backend/metal/kernels/\` is not in the denominator: the kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted, and so are the few headers in that folder that host C++ includes."
             echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."
           } >> "$GITHUB_STEP_SUMMARY"

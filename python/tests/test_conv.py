@@ -1217,6 +1217,11 @@ class TestConv(mlx_tests.MLXTestCase):
 
     @unittest.skipIf(not mx.metal.is_available(), "requires Metal")
     def test_conv2d_winograd_batch_tiling(self):
+        # Winograd and its batch tiling exist only in the Metal backend. On
+        # the CPU every run takes the same path, so the fallback checks
+        # cannot tell the paths apart.
+        if mx.default_device() != mx.gpu:
+            self.skipTest("Winograd batch tiling is specific to the GPU device")
         # Use envs to test tiling without allocating large buffers.
         tile_key = "MLX_CONV_WINOGRAD_TILE_BATCH"
         ws_key = "MLX_CONV_WINOGRAD_WORKING_SET"

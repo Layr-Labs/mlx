@@ -20,6 +20,12 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}
       # Cancel an older run of the same pull request. Let runs on main finish.
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      # Instrument the C and C++ code for line coverage. Both builds in
+      # build-macos run cmake from scratch, and cmake reads these variables.
+      # The Metal shaders are not instrumented.
+      CFLAGS: -fprofile-instr-generate -fcoverage-mapping
+      CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -39,5 +45,63 @@ jobs:
           macos-target: '26.2'
 
       - uses: ./.github/actions/test-macos
+        id: tests
+        env:
+          # Each test process writes one profile for each instrumented binary.
+          # The job-level env cannot read the runner context, so this step
+          # sets the path. The build steps then write no profiles here.
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
         with:
           toolkit: metal
+
+      - name: Report C++ line coverage
+        # Report also after a test failure, so that a red run shows the
+        # coverage of the tests that ran.
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        env:
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          shopt -s nullglob
+          out="$RUNNER_TEMP/coverage"
+          mkdir -p "$out"
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+            -o "$out/coverage.profdata"
+          # The Python tests run the code in the installed wheel: the
+          # extension module and the libraries in mlx/lib.
+          core=$(python -c 'import mlx.core as c; print(c.__file__)')
+          objects=(./build/tests/tests -object "$core")
+          for lib in "$(dirname "$core")"/lib/*.dylib; do
+            objects+=(-object "$lib")
+          done
+          # Drop the tests, the Python bindings, the dependencies, the Python
+          # headers and the generated files in the build folders.
+          options=(
+            -instr-profile="$out/coverage.profdata"
+            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/'
+          )
+          xcrun llvm-cov report "${objects[@]}" "${options[@]}" > "$out/report.txt"
+          xcrun llvm-cov export -summary-only "${objects[@]}" "${options[@]}" \
+            > "$out/summary.json"
+          python - "$out/summary.json" >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          import os
+          import sys
+
+          totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
+          print("### C++ line coverage")
+          print()
+          print(f"Test step: {os.environ['TESTS_OUTCOME']}")
+          print()
+          print("| Coverage | Covered | Total | Percent |")
+          print("| --- | ---: | ---: | ---: |")
+          for name in ("lines", "functions", "regions"):
+              t = totals[name]
+              print(f"| {name.capitalize()} | {t['covered']} | {t['count']} | {t['percent']:.2f}% |")
+          EOF
+
+      - name: Upload the coverage report
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: ${{ runner.temp }}/coverage/report.txt

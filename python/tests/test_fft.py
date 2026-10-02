@@ -217,6 +217,9 @@ class TestFFT(mlx_tests.MLXTestCase):
         not mx.metal.is_available(), "the size limit is specific to the Metal FFT plan"
     )
     def test_fft_too_large(self):
+        # The CPU FFT has no size limit, so this runs only on the GPU device.
+        if mx.default_device() != mx.gpu:
+            self.skipTest("the size limit is specific to the GPU device")
         # Larger than the four step plan can decompose, so it has to throw
         # rather than run a kernel that silently returns the wrong answer.
         # CUDA hands this to cuFFT instead and has no such limit.

@@ -156,26 +156,31 @@ jobs:
           for lib in "$(dirname "$core")"/lib/*.dylib; do
             objects+=(-object "$lib")
           done
-          # Drop the tests, the Python bindings, the dependencies, the Python
-          # headers, the generated files in the build folders, the vendored
-          # pocketfft header and the CUDA backend. The Metal shader source
+          # Drop the tests, the dependencies, the Python headers, the
+          # generated files in the build folders, the vendored pocketfft
+          # header and the CUDA backend. The Metal shader source
           # needs no pattern: the host compiler never builds it, so it has no
           # coverage records. The few headers in mlx/backend/metal/kernels/
           # that host C++ includes, such as steel/conv/params.h, stay counted.
           options=(
             -instr-profile="$out/coverage.profdata"
-            -ignore-filename-regex='/build/|/tests/|/python/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/cuda/'
+            -ignore-filename-regex='/build/|/tests/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/cuda/'
           )
-          # report FILE DIR writes the llvm-cov report for the files under
-          # DIR. llvm-cov ignores a path that does not exist and then
-          # reports every file, so the function checks the path first.
+          # report FILE DIR... writes the llvm-cov report for the files under
+          # each DIR. llvm-cov ignores a path that does not exist and then
+          # reports every file, so the function checks each path first.
           report() {
-            if [ ! -d "$GITHUB_WORKSPACE/$2" ]; then
-              echo "::error::The directory $2 does not exist."
-              return 1
-            fi
+            local file=$1 dir paths=()
+            shift
+            for dir in "$@"; do
+              if [ ! -d "$GITHUB_WORKSPACE/$dir" ]; then
+                echo "::error::The directory $dir does not exist."
+                return 1
+              fi
+              paths+=("$GITHUB_WORKSPACE/$dir")
+            done
             xcrun llvm-cov report "${objects[@]}" "${options[@]}" \
-              "$GITHUB_WORKSPACE/$2" > "$1"
+              "${paths[@]}" > "$file"
           }
           # value_of FILE NAME prints the value of the column NAME in the
           # TOTAL row, for example "Lines" (a count) or "Lines Cover" (a
@@ -207,9 +212,9 @@ jobs:
               }
             ' "$1" || { echo "::error::$1 has no $2 value in the TOTAL row." >&2; return 1; }
           }
-          # row NAME FILE DIR adds one table row.
+          # row NAME FILE DIR... adds one table row.
           row() {
-            report "$2" "$3"
+            report "${@:2}"
             grep '^TOTAL' "$2"
             lines=$(value_of "$2" "Lines Cover")
             branches=$(value_of "$2" "Branches Cover")
@@ -217,10 +222,12 @@ jobs:
             echo "| $1 | $lines | $branches | $functions | 80% |" >> "$out/rows.md"
           }
           : > "$out/rows.md"
-          row "All of \`mlx/\`" "$out/report.txt" mlx
+          row "Total" "$out/report.txt" mlx python/src
+          row "All of \`mlx/\`" "$out/report-mlx.txt" mlx
           for dir in backend/metal backend/cpu backend/common distributed io; do
             row "\`mlx/$dir\`" "$out/report-${dir//\//-}.txt" "mlx/$dir"
           done
+          row "\`python/src\`" "$out/report-python-src.txt" python/src
           lines_total=$(value_of "$out/report.txt" Lines)
           {
             echo "### C++ line coverage"
@@ -233,7 +240,7 @@ jobs:
             echo "|---|---|---|---|---|"
             cat "$out/rows.md"
             echo
-            echo "The denominator is the host C++ code under \`mlx/\` that the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the Python bindings in \`python/src\`, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
+            echo "The denominator is the host C++ code under \`mlx/\` and the Python bindings in \`python/src\`, which the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
             echo "The C++ and Python tests run two times, first with the GPU and then with the CPU as the default device. The report merges the two runs."
             echo "The Metal shader source in \`mlx/backend/metal/kernels/\` is not in the denominator: the kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted, and so are the few headers in that folder that host C++ includes."
             echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."

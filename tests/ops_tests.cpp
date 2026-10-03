@@ -3608,6 +3608,96 @@ TEST_CASE("test divmod") {
   CHECK_EQ(out_holder[0].item<float>(), 1.0);
 }
 
+TEST_CASE("test floor_divide with negative operands") {
+  std::vector<Device> devices = {Device::cpu};
+  if (metal::is_available()) {
+    devices.push_back(Device::gpu);
+  }
+  for (auto& d : devices) {
+    for (auto t : {int8, int16, int32, int64}) {
+      auto a = array({-7, 7, -7, 7, -6, 6, -6, 6, 0, 0, -1, 1, -1, 1}, t);
+      auto b = array({2, 2, -2, -2, 3, 3, -3, -3, 5, -5, 4, -4, -4, 4}, t);
+      auto expected =
+          array({-4, 3, 3, -4, -2, 2, 2, -2, 0, 0, -1, -1, 0, 0}, t);
+      auto out = floor_divide(a, b, d);
+      CHECK_EQ(out.dtype(), t);
+      CHECK(array_equal(out, expected).item<bool>());
+      CHECK(array_equal(out, divmod(a, b, d)[0]).item<bool>());
+
+      // Scalar and strided inputs
+      out = floor_divide(a, array(-2, t), d);
+      expected = array({3, -4, 3, -4, 3, -3, 3, -3, 0, 0, 0, -1, 0, -1}, t);
+      CHECK(array_equal(out, expected).item<bool>());
+      out = floor_divide(
+          transpose(reshape(a, {2, 7})), transpose(reshape(b, {2, 7})), d);
+      expected = transpose(reshape(
+          array({-4, 3, 3, -4, -2, 2, 2, -2, 0, 0, -1, -1, 0, 0}, t), {2, 7}));
+      CHECK(array_equal(out, expected).item<bool>());
+    }
+
+    // 40 elements, so the SIMD path runs for every width (16 lanes for int8)
+    {
+      std::vector<int> av, bv, ev;
+      int divisors[] = {3, -3, 4, -4, 7};
+      for (int i = 0; i < 40; ++i) {
+        int u = i - 20;
+        int v = divisors[i % 5];
+        av.push_back(u);
+        bv.push_back(v);
+        ev.push_back(static_cast<int>(std::floor(double(u) / v)));
+      }
+      for (auto t : {int8, int16, int32, int64}) {
+        auto out = floor_divide(
+            array(av.begin(), {40}, t), array(bv.begin(), {40}, t), d);
+        CHECK(array_equal(out, array(ev.begin(), {40}, t)).item<bool>());
+      }
+    }
+
+    auto a = array({-128, 127, -128, 127}, int8);
+    auto b = array({3, -2, 127, -128}, int8);
+    auto out = floor_divide(a, b, d);
+    CHECK(array_equal(out, array({-43, -64, -2, -1}, int8)).item<bool>());
+
+    for (auto t : {uint8, uint16, uint32, uint64}) {
+      out = floor_divide(array({7, 6, 0, 255}, t), array({2, 3, 5, 16}, t), d);
+      CHECK_EQ(out.dtype(), t);
+      CHECK(array_equal(out, array({3, 2, 0, 15}, t)).item<bool>());
+    }
+
+    out = floor_divide(
+        array({-7.0f, 7.0f, -7.5f, 7.5f, 7.0f}),
+        array({2.0f, -2.0f, 2.0f, -2.0f, 2.0f}),
+        d);
+    CHECK(array_equal(out, array({-4.0f, -4.0f, -4.0f, -4.0f, 3.0f}))
+              .item<bool>());
+  }
+}
+
+TEST_CASE("test floor_divide integer edge cases on the CPU") {
+  // The Metal Shading Language does not define these cases.
+  for (auto t : {int8, int16, int32, int64}) {
+    auto out = floor_divide(array({-7, 7, 0}, t), array(0, t), Device::cpu);
+    CHECK(array_equal(out, array({0, 0, 0}, t)).item<bool>());
+
+    // 33 elements run the SIMD path and the scalar path.
+    auto x = astype(arange(-16, 17, Device::cpu), t, Device::cpu);
+    out = floor_divide(x, zeros({33}, t, Device::cpu), Device::cpu);
+    CHECK(array_equal(out, zeros({33}, t)).item<bool>());
+  }
+
+  auto check_min = [](int64_t lo, Dtype t) {
+    auto out = floor_divide(
+        full({33}, lo, t, Device::cpu),
+        full({33}, -1, t, Device::cpu),
+        Device::cpu);
+    CHECK(array_equal(out, full({33}, lo, t)).item<bool>());
+  };
+  check_min(std::numeric_limits<int8_t>::min(), int8);
+  check_min(std::numeric_limits<int16_t>::min(), int16);
+  check_min(std::numeric_limits<int32_t>::min(), int32);
+  check_min(std::numeric_limits<int64_t>::min(), int64);
+}
+
 TEST_CASE("test diagonal") {
   auto x = array({0, 1, 2, 3, 4, 5, 6, 7}, {4, 2});
   auto out = diagonal(x);

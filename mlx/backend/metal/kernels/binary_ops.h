@@ -41,8 +41,19 @@ struct FloorDivide {
 };
 
 struct Divide {
+  // Integer Divide is floor_divide: round down, keep x / 0 unchanged.
   template <typename T>
-  T operator()(T x, T y) thread {
+  metal::enable_if_t<metal::is_integral_v<T> & metal::is_signed_v<T>, T>
+  operator()(T x, T y) thread {
+    auto q = x / y;
+    if (y != 0 && x % y != 0 && (x < 0) != (y < 0)) {
+      q -= 1;
+    }
+    return q;
+  }
+  template <typename T>
+  metal::enable_if_t<!(metal::is_integral_v<T> & metal::is_signed_v<T>), T>
+  operator()(T x, T y) thread {
     return x / y;
   }
 };

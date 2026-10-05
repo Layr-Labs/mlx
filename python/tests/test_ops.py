@@ -378,6 +378,78 @@ class TestOps(mlx_tests.MLXTestCase):
         self.assertEqual(z.dtype, mx.int32)
         self.assertEqual(z.item(), 2)
 
+    def test_floor_divide_negative_operands(self):
+        a = [-7, 7, -7, 7, -6, 6, -6, 6, 0, 0, -1, 1, -1, 1]
+        b = [2, 2, -2, -2, 3, 3, -3, -3, 5, -5, 4, -4, -4, 4]
+        for t in ["int8", "int16", "int32", "int64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                x = mx.array(a, dtype)
+                y = mx.array(b, dtype)
+                expected = np.floor_divide(
+                    np.array(a, getattr(np, t)), np.array(b, getattr(np, t))
+                )
+                self.assertEqual(expected.tolist(), [u // v for u, v in zip(a, b)])
+                out = mx.floor_divide(x, y)
+                self.assertEqual(out.dtype, dtype)
+                self.assertEqual(out.tolist(), expected.tolist())
+                self.assertEqual((x // y).tolist(), expected.tolist())
+                self.assertEqual(mx.divmod(x, y)[0].tolist(), expected.tolist())
+                self.assertEqual((x // -2).tolist(), [u // -2 for u in a])
+                self.assertEqual((-7 // y).tolist(), [-7 // v for v in b])
+                out = mx.reshape(x, (2, 7)).T // mx.reshape(y, (2, 7)).T
+                self.assertEqual(out.tolist(), expected.reshape(2, 7).T.tolist())
+                out = mx.compile(lambda u, v: u // v + 1)(x, y)
+                self.assertEqual(out.tolist(), (expected + 1).tolist())
+
+        # 40 elements, so the SIMD path runs for every width (16 lanes for int8)
+        a = list(range(-20, 20))
+        b = [[3, -3, 4, -4, 7][i % 5] for i in range(40)]
+        for t in ["int8", "int16", "int32", "int64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                out = mx.array(a, dtype) // mx.array(b, dtype)
+                self.assertEqual(out.tolist(), [u // v for u, v in zip(a, b)])
+
+        # On the CPU, x // 0 gives 0 and min // -1 gives min. The Metal
+        # Shading Language does not define these cases.
+        for t in ["int8", "int16", "int32", "int64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                x = mx.array([-7, 7, 0], dtype)
+                out = mx.floor_divide(x, 0, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [0, 0, 0])
+                x = mx.arange(-16, 17, dtype=dtype, stream=mx.cpu)
+                y = mx.zeros((33,), dtype, stream=mx.cpu)
+                out = mx.floor_divide(x, y, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [0] * 33)
+                lo = mx.iinfo(dtype).min
+                x = mx.full((33,), lo, dtype, stream=mx.cpu)
+                y = mx.full((33,), -1, dtype, stream=mx.cpu)
+                out = mx.floor_divide(x, y, stream=mx.cpu)
+                self.assertEqual(out.tolist(), [lo] * 33)
+
+        a = [-128, 127, -128, 127]
+        b = [3, -2, 127, -128]
+        out = mx.array(a, mx.int8) // mx.array(b, mx.int8)
+        self.assertEqual(out.tolist(), [u // v for u, v in zip(a, b)])
+
+        for t in ["uint8", "uint16", "uint32", "uint64"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                out = mx.array([7, 6, 0, 255], dtype) // mx.array([2, 3, 5, 16], dtype)
+                self.assertEqual(out.dtype, dtype)
+                self.assertEqual(out.tolist(), [3, 2, 0, 15])
+
+        a = [-7.0, 7.0, -7.5, 7.5, 7.0]
+        b = [2.0, -2.0, 2.0, -2.0, 2.0]
+        for t in ["float16", "float32"]:
+            with self.subTest(dtype=t):
+                dtype = getattr(mx, t)
+                out = mx.array(a, dtype) // mx.array(b, dtype)
+                self.assertEqual(out.dtype, dtype)
+                self.assertEqual(out.tolist(), [-4.0, -4.0, -4.0, -4.0, 3.0])
+
     def test_remainder(self):
         # Complex is not supported and has to say so rather than quietly
         # computing a componentwise remainder, which no other library defines

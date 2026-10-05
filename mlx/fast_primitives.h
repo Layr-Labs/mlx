@@ -447,7 +447,8 @@ class CustomKernel : public Primitive {
       std::vector<ScalarArg> scalar_arguments,
       bool is_precompiled,
       int shared_memory,
-      CompileOptions::Data compile_options = {})
+      CompileOptions::Data compile_options = {},
+      std::vector<int> mutable_inputs = {})
       : Primitive(stream),
         name_(std::move(name)),
         source_(std::move(source)),
@@ -459,7 +460,8 @@ class CustomKernel : public Primitive {
         scalar_arguments_(std::move(scalar_arguments)),
         is_precompiled_(is_precompiled),
         shared_memory_(shared_memory),
-        compile_options_(compile_options) {}
+        compile_options_(compile_options),
+        mutable_inputs_(std::move(mutable_inputs)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -497,6 +499,19 @@ class CustomKernel : public Primitive {
   bool is_precompiled_;
   int shared_memory_;
   CompileOptions::Data compile_options_;
+
+ protected:
+  std::vector<int> mutable_inputs_;
+};
+
+class MutableInputCustomKernel : public CustomKernel {
+ public:
+  using CustomKernel::CustomKernel;
+  DEFINE_NAME(MutableInputCustomKernel);
+  auto state() const {
+    return std::tuple_cat(
+        CustomKernel::state(), std::make_tuple(mutable_inputs_));
+  }
 };
 
 } // namespace mlx::core::fast

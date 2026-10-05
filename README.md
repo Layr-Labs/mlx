@@ -6,6 +6,8 @@
 
 [![CircleCI](https://circleci.com/gh/ml-explore/mlx.svg?style=svg)](https://circleci.com/gh/ml-explore/mlx)
 
+> **This is a fork.** `Layr-Labs/mlx` tracks [`ml-explore/mlx`](https://github.com/ml-explore/mlx) and carries the kernel, allocator and Metal-runtime work behind Layr-Labs' Apple-silicon inference stack (`mlx` → `mlx-c` → `mlx-swift` → `mlx-swift-lm`). Everything changed relative to upstream is published as a fork diff at **https://layr-labs.github.io/mlx/**, described in [`fork.yaml`](fork.yaml) and kept honest by CI — see [FORKDIFF.md](FORKDIFF.md).
+
 MLX is an array framework for machine learning on Apple silicon,
 brought to you by Apple machine learning research.
 

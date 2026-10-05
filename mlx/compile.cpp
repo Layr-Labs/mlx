@@ -1285,7 +1285,6 @@ void compile_clear_cache(const CompileCacheWeakPtr& cache) {
   }
 }
 
-
 void compile_clear_cache() {
   compile_cache_registry().clear();
 }

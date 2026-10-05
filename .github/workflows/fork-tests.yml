@@ -1,0 +1,254 @@
+name: Fork Tests
+
+# Build the fork with Metal and run its C++ and Python tests on a
+# GitHub-hosted macOS runner. The steps use the actions in .github/actions.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  metal-build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      # Cancel an older run of the same pull request. Let runs on main finish.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      # Instrument the C and C++ code for line coverage. Both builds in
+      # build-macos run cmake from scratch, and cmake reads these variables.
+      # The Metal shaders are not instrumented.
+      CFLAGS: -fprofile-instr-generate -fcoverage-mapping
+      CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup
+        id: setup
+        with:
+          toolkit: metal
+          # This cache key is not an upstream key. The setup action saves
+          # the cache on pushes to main only, never on pull requests.
+          ccache-key: fork-tests
+
+      - uses: ./.github/actions/build-macos
+        with:
+          cmake-args: ${{ steps.setup.outputs.cmake-args }}
+          # The runner has macOS 26. Version 26.2 is the lowest target that
+          # builds all Metal kernels.
+          macos-target: '26.2'
+
+      - uses: ./.github/actions/test-macos
+        id: tests
+        env:
+          # Each test process writes one profile for each instrumented binary.
+          # The job-level env cannot read the runner context, so this step
+          # sets the path. The build steps then write no profiles here.
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
+        with:
+          toolkit: metal
+
+      - name: Run the tests on the CPU
+        id: cpu-tests
+        # Run the CPU code of ops that also have a Metal implementation.
+        # The profiles go to the same folder, so the report merges both runs.
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        env:
+          DEVICE: cpu
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
+          # Tests that take more than 5 minutes on the CPU. The GPU pass
+          # still runs them.
+          # test_sdpa_long_masked_sequence: 21 min 36 s on the CPU.
+          # test_sdpa_full_head_dim_256: 6 min 46 s on the CPU.
+          CPU_EXCLUDE: >-
+            test_fast_sdpa.TestFastSDPA.test_sdpa_long_masked_sequence
+            test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
+        run: |
+          status=0
+          echo "::group::Run C++ tests on the CPU"
+          ./build/tests/tests || status=1
+          echo "::endgroup::"
+
+          # Run one process for each Python test file, three at a time. Each
+          # file runs in a child process that writes its own log, so a crash
+          # stops only that file.
+          logs="$RUNNER_TEMP/cpu-logs"
+          mkdir -p "$logs"
+          cat > "$RUNNER_TEMP/run_cpu.py" <<'EOF'
+          import os
+          import subprocess
+          import sys
+          import unittest
+
+          if len(sys.argv) == 2:
+              name = os.path.basename(sys.argv[1])[: -len(".py")]
+              with open(os.path.join(os.environ["LOGS"], name + ".log"), "w") as log:
+                  code = subprocess.run(
+                      [sys.executable, "-u", __file__, name, "child"],
+                      stdout=log,
+                      stderr=subprocess.STDOUT,
+                  ).returncode
+              result = "passed" if code == 0 else f"failed (exit code {code})"
+              print(f"{name}: {result}", flush=True)
+              sys.exit(0)
+
+          os.environ["MLX_ENABLE_TF32"] = "0"
+          os.environ["MLX_ENABLE_CACHE_THRASHING_CHECK"] = "0"
+          sys.path.insert(0, "python/tests")
+          import mlx.core as mx
+
+          exclude = set(os.environ["CPU_EXCLUDE"].split())
+
+          def flatten(suite):
+              for test in suite:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from flatten(test)
+                  elif test.id() not in exclude:
+                      yield test
+
+          suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
+          suite = unittest.TestSuite(flatten(suite))
+          result = unittest.TextTestRunner(sys.stdout, verbosity=2).run(suite)
+          mx.clear_streams()
+          sys.exit(0 if result.wasSuccessful() else 1)
+          EOF
+          export LOGS="$logs"
+          printf '%s\n' python/tests/test_*.py \
+            | xargs -P 3 -n 1 python "$RUNNER_TEMP/run_cpu.py" \
+            | tee "$logs/results.txt" || true
+          failed=()
+          for file in python/tests/test_*.py; do
+            name=$(basename "$file" .py)
+            echo "::group::Python tests on the CPU: $name"
+            cat "$logs/$name.log" || true
+            echo "::endgroup::"
+            grep -qx "$name: passed" "$logs/results.txt" || failed+=("$name")
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Python test files that failed on the CPU: ${failed[*]}"
+            status=1
+          fi
+          exit $status
+
+      - name: Report C++ line coverage
+        # Report also after a test failure, so that a red run shows the
+        # coverage of the tests that ran.
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        env:
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          CPU_TESTS_OUTCOME: ${{ steps.cpu-tests.outcome }}
+        run: |
+          shopt -s nullglob
+          out="$RUNNER_TEMP/coverage"
+          mkdir -p "$out"
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+            -o "$out/coverage.profdata"
+          # The Python tests run the code in the installed wheel: the
+          # extension module and the libraries in mlx/lib.
+          core=$(python -c 'import mlx.core as c; print(c.__file__)')
+          objects=(./build/tests/tests -object "$core")
+          for lib in "$(dirname "$core")"/lib/*.dylib; do
+            objects+=(-object "$lib")
+          done
+          # Drop the tests, the dependencies, the Python headers, the
+          # generated files in the build folders, the vendored pocketfft
+          # header and the CUDA backend. The Metal shader source
+          # needs no pattern: the host compiler never builds it, so it has no
+          # coverage records. The few headers in mlx/backend/metal/kernels/
+          # that host C++ includes, such as steel/conv/params.h, stay counted.
+          options=(
+            -instr-profile="$out/coverage.profdata"
+            -ignore-filename-regex='/build/|/tests/|/\.venv/|/site-packages/|/uv-python-dir/|/mlx/3rdparty/|/mlx/backend/cuda/'
+          )
+          # report FILE DIR... writes the llvm-cov report for the files under
+          # each DIR. llvm-cov ignores a path that does not exist and then
+          # reports every file, so the function checks each path first.
+          report() {
+            local file=$1 dir paths=()
+            shift
+            for dir in "$@"; do
+              if [ ! -d "$GITHUB_WORKSPACE/$dir" ]; then
+                echo "::error::The directory $dir does not exist."
+                return 1
+              fi
+              paths+=("$GITHUB_WORKSPACE/$dir")
+            done
+            xcrun llvm-cov report "${objects[@]}" "${options[@]}" \
+              "${paths[@]}" > "$file"
+          }
+          # value_of FILE NAME prints the value of the column NAME in the
+          # TOTAL row, for example "Lines" (a count) or "Lines Cover" (a
+          # percentage). It finds the column by its name in the header row,
+          # and it fails when the value is missing. It also rejects the "-"
+          # that llvm-cov prints for a Cover column with no counters, so a
+          # future row without branches fails the step.
+          value_of() {
+            awk -v want="$2" '
+              NR == 1 {
+                field = 1
+                for (i = 2; i <= NF; i++) {
+                  if ($i == "Missed") { missed = 1; continue }
+                  field++
+                  if (missed) { missed = 0; continue }
+                  if ($i == "Cover" || $i == "Executed") {
+                    if (group " Cover" == want) col = field
+                    continue
+                  }
+                  group = $i
+                  if (group == want) col = field
+                }
+              }
+              $1 == "TOTAL" && col { value = $col }
+              END {
+                if (want ~ / Cover$/ && value !~ /^[0-9.]+%$/) exit 1
+                if (want !~ / Cover$/ && value !~ /^[0-9]+$/) exit 1
+                print value
+              }
+            ' "$1" || { echo "::error::$1 has no $2 value in the TOTAL row." >&2; return 1; }
+          }
+          # row NAME FILE DIR... adds one table row.
+          row() {
+            report "${@:2}"
+            grep '^TOTAL' "$2"
+            lines=$(value_of "$2" "Lines Cover")
+            branches=$(value_of "$2" "Branches Cover")
+            functions=$(value_of "$2" "Functions Cover")
+            echo "| $1 | $lines | $branches | $functions | 80% |" >> "$out/rows.md"
+          }
+          : > "$out/rows.md"
+          row "Total" "$out/report.txt" mlx python/src
+          row "All of \`mlx/\`" "$out/report-mlx.txt" mlx
+          for dir in backend/metal backend/cpu backend/common distributed io; do
+            row "\`mlx/$dir\`" "$out/report-${dir//\//-}.txt" "mlx/$dir"
+          done
+          row "\`python/src\`" "$out/report-python-src.txt" python/src
+          lines_total=$(value_of "$out/report.txt" Lines)
+          {
+            echo "### C++ line coverage"
+            echo
+            echo "Test step (GPU default device): $TESTS_OUTCOME"
+            echo
+            echo "Test step (CPU default device): $CPU_TESTS_OUTCOME"
+            echo
+            echo "| Component | Lines | Branches | Functions | Target |"
+            echo "|---|---|---|---|---|"
+            cat "$out/rows.md"
+            echo
+            echo "The denominator is the host C++ code under \`mlx/\` and the Python bindings in \`python/src\`, which the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
+            echo "The C++ and Python tests run two times, first with the GPU and then with the CPU as the default device. The report merges the two runs."
+            echo "The Metal shader source in \`mlx/backend/metal/kernels/\` is not in the denominator: the kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted, and so are the few headers in that folder that host C++ includes."
+            echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the coverage report
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: ${{ runner.temp }}/coverage/report.txt

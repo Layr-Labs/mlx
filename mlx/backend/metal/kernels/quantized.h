@@ -36,7 +36,7 @@ inline U load_vector(const device T* x, thread U* x_thread) {
 
   if (bits == 2) {
     for (int i = 0; i < values_per_thread; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 4.0f;
       x_thread[i + 2] = x[i + 2] / 16.0f;
@@ -46,8 +46,8 @@ inline U load_vector(const device T* x, thread U* x_thread) {
 
   else if (bits == 3) {
     for (int i = 0; i < values_per_thread; i += 8) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3] + x[i + 4] + x[i + 5] +
-          x[i + 6] + x[i + 7];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]) + U(x[i + 4]) +
+          U(x[i + 5]) + U(x[i + 6]) + U(x[i + 7]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 8.0f;
       x_thread[i + 2] = x[i + 2] / 64.0f;
@@ -61,7 +61,7 @@ inline U load_vector(const device T* x, thread U* x_thread) {
 
   else if (bits == 4) {
     for (int i = 0; i < values_per_thread; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 16.0f;
       x_thread[i + 2] = x[i + 2] / 256.0f;
@@ -71,8 +71,8 @@ inline U load_vector(const device T* x, thread U* x_thread) {
 
   else if (bits == 5) {
     for (int i = 0; i < values_per_thread; i += 8) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3] + x[i + 4] + x[i + 5] +
-          x[i + 6] + x[i + 7];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]) + U(x[i + 4]) +
+          U(x[i + 5]) + U(x[i + 6]) + U(x[i + 7]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 32.0f;
       x_thread[i + 2] = x[i + 2] / 4.0f;
@@ -86,7 +86,7 @@ inline U load_vector(const device T* x, thread U* x_thread) {
 
   else if (bits == 6) {
     for (int i = 0; i < values_per_thread; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 64.0f;
       x_thread[i + 2] = x[i + 2] / 16.0f;
@@ -115,7 +115,7 @@ inline U load_vector_safe(const device T* x, thread U* x_thread, int N) {
 
   if (bits == 2) {
     for (int i = 0; i < N; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 4.0f;
       x_thread[i + 2] = x[i + 2] / 16.0f;
@@ -125,8 +125,8 @@ inline U load_vector_safe(const device T* x, thread U* x_thread, int N) {
 
   else if (bits == 3) {
     for (int i = 0; i < N; i += 8) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3] + x[i + 4] + x[i + 5] +
-          x[i + 6] + x[i + 7];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]) + U(x[i + 4]) +
+          U(x[i + 5]) + U(x[i + 6]) + U(x[i + 7]);
 
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 8.0f;
@@ -141,7 +141,7 @@ inline U load_vector_safe(const device T* x, thread U* x_thread, int N) {
 
   else if (bits == 4) {
     for (int i = 0; i < N; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 16.0f;
       x_thread[i + 2] = x[i + 2] / 256.0f;
@@ -151,8 +151,8 @@ inline U load_vector_safe(const device T* x, thread U* x_thread, int N) {
 
   else if (bits == 5) {
     for (int i = 0; i < N; i += 8) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3] + x[i + 4] + x[i + 5] +
-          x[i + 6] + x[i + 7];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]) + U(x[i + 4]) +
+          U(x[i + 5]) + U(x[i + 6]) + U(x[i + 7]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 32.0f;
       x_thread[i + 2] = x[i + 2] / 4.0f;
@@ -166,7 +166,7 @@ inline U load_vector_safe(const device T* x, thread U* x_thread, int N) {
 
   else if (bits == 6) {
     for (int i = 0; i < N; i += 4) {
-      sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+      sum += U(x[i]) + U(x[i + 1]) + U(x[i + 2]) + U(x[i + 3]);
       x_thread[i] = x[i];
       x_thread[i + 1] = x[i + 1] / 64.0f;
       x_thread[i + 2] = x[i + 2] / 16.0f;
@@ -4841,8 +4841,7 @@ template <int NE>
   for (int i = int(lid) + 1; i < M; i += int(expert_count)) {
     adjacent_ok = adjacent_ok && indices[i - 1] <= indices[i];
   }
-  const uint violation_vote =
-      simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
+  const uint violation_vote = simd_or((boundary_ok && adjacent_ok) ? 0u : 1u);
   if (simd_lid == 0) {
     violation_votes[simd_gid] = violation_vote;
   }
@@ -4876,8 +4875,7 @@ template <int NE>
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
 
-  const uint descriptor_count =
-      inclusive_tile_offsets[expert_count - 1];
+  const uint descriptor_count = inclusive_tile_offsets[expert_count - 1];
   if (lid == expert_count - 1) {
     // A retracted count keeps the tile kernel's capacity check memory-safe
     // (every threadgroup early-returns) and unambiguously signals the host:
@@ -4892,8 +4890,7 @@ template <int NE>
     uint expert_lower = 0;
     uint expert_upper = expert_count;
     while (expert_lower < expert_upper) {
-      const uint midpoint =
-          expert_lower + (expert_upper - expert_lower) / 2;
+      const uint midpoint = expert_lower + (expert_upper - expert_lower) / 2;
       if (inclusive_tile_offsets[midpoint] <= slot) {
         expert_lower = midpoint + 1;
       } else {
@@ -4903,10 +4900,8 @@ template <int NE>
     const uint expert = expert_lower;
     const uint expert_tile_begin =
         expert == 0 ? 0 : inclusive_tile_offsets[expert - 1];
-    const uint row =
-        segment_starts[expert] + (slot - expert_tile_begin) * BM;
-    const uint row_count =
-        min(BM, segment_starts[expert + 1] - row);
+    const uint row = segment_starts[expert] + (slot - expert_tile_begin) * BM;
+    const uint row_count = min(BM, segment_starts[expert + 1] - row);
     descriptors[slot] = uint4(row, row_count, expert, 0);
   }
 }
@@ -4963,8 +4958,7 @@ template <
   x += row_start * size_t(K);
   y += row_start * size_t(N);
   const device uint8_t* expert_w =
-      reinterpret_cast<const device uint8_t*>(w) +
-      expert * expert_w_stride;
+      reinterpret_cast<const device uint8_t*>(w) + expert * expert_w_stride;
   scales += expert * expert_sb_stride;
   biases += expert * expert_sb_stride;
 

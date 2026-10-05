@@ -7,6 +7,8 @@
 #include <functional>
 #include <map>
 
+#include "mlx/backend/common/allocation_footprint.h"
+
 namespace mlx::core {
 
 template <typename T>
@@ -28,10 +30,13 @@ class BufferCache {
   BufferCache& operator=(const BufferCache&) = delete;
 
   T* reuse_from_cache(size_t size) {
+    if (size == 0) {
+      return nullptr;
+    }
     // Find the closest buffer in pool.
     auto it = buffer_pool_.lower_bound(size);
     if (it == buffer_pool_.end() ||
-        it->first >= std::min(2 * size, size + 2 * page_size_)) {
+        it->first > allocator::maximum_reuse_size(size, page_size_)) {
       return nullptr;
     }
 

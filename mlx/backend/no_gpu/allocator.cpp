@@ -41,6 +41,11 @@ class CommonAllocator : public Allocator {
   virtual void free(Buffer buffer) override;
   virtual size_t size(Buffer buffer) const override;
 
+  MemorySnapshot get_memory_snapshot() const {
+    std::lock_guard lock(mutex_);
+    return {active_memory_, buffer_cache_.cache_size(), peak_memory_};
+  }
+
   size_t get_active_memory() const {
     return active_memory_;
   };
@@ -184,6 +189,21 @@ bool can_reuse_alien_buffer(void*) {
 
 } // namespace allocator
 
+AllocationFootprintPolicy get_allocation_footprint_policy() noexcept {
+  return {1, 0, 0, 0, 4096};
+}
+
+size_t get_allocation_size_upper_bound(size_t size) {
+  size_t result;
+  if (!get_allocation_footprint_policy().upper_bound(size, result)) {
+    throw std::overflow_error("allocation footprint overflow");
+  }
+  return result;
+}
+
+MemorySnapshot get_memory_snapshot() {
+  return allocator::common_allocator().get_memory_snapshot();
+}
 size_t get_active_memory() {
   return allocator::common_allocator().get_active_memory();
 }

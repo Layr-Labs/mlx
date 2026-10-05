@@ -24,6 +24,19 @@ constexpr int page_size = 16384;
 // Any allocations smaller than this will try to use the small pool
 constexpr int small_block_size = 8;
 
+size_t normalized_allocation_size(size_t size) {
+  if (size == 0) {
+    return 0;
+  }
+  if (size <= small_block_size) {
+    return 8;
+  }
+  if (size < page_size) {
+    return next_power_of_2(size);
+  }
+  return allocator::round_allocation_size(size, page_size);
+}
+
 // The small pool size in bytes. This should be a multiple of the host page
 // size and small_block_size.
 constexpr int small_pool_size = 4 * page_size;
@@ -168,13 +181,7 @@ CudaAllocator::malloc_async(size_t size, int device, cudaStream_t stream) {
     return Buffer{new CudaBuffer{nullptr, 0, -1}};
   }
 
-  if (size <= small_block_size) {
-    size = 8;
-  } else if (size < page_size) {
-    size = next_power_of_2(size);
-  } else {
-    size = page_size * ((size + page_size - 1) / page_size);
-  }
+  size = normalized_allocation_size(size);
 
   if (size <= small_block_size || stream == nullptr) {
     device = -1;
@@ -339,6 +346,11 @@ void CudaAllocator::reset_peak_memory() {
   peak_memory_ = 0;
 }
 
+MemorySnapshot CudaAllocator::get_memory_snapshot() {
+  std::lock_guard lock(mutex_);
+  return {active_memory_, buffer_cache_.cache_size(), peak_memory_};
+}
+
 size_t CudaAllocator::get_memory_limit() {
   return memory_limit_;
 }
@@ -404,6 +416,21 @@ bool can_reuse_alien_buffer(void* ptr) {
 
 } // namespace allocator
 
+AllocationFootprintPolicy get_allocation_footprint_policy() noexcept {
+  return {cu::page_size, 0, cu::small_block_size, cu::page_size, cu::page_size};
+}
+
+size_t get_allocation_size_upper_bound(size_t size) {
+  size_t result;
+  if (!get_allocation_footprint_policy().upper_bound(size, result)) {
+    throw std::overflow_error("allocation footprint overflow");
+  }
+  return result;
+}
+
+MemorySnapshot get_memory_snapshot() {
+  return cu::allocator().get_memory_snapshot();
+}
 size_t get_active_memory() {
   return cu::allocator().get_active_memory();
 }

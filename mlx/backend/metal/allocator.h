@@ -9,6 +9,7 @@
 #include "mlx/allocator.h"
 #include "mlx/backend/common/buffer_cache.h"
 #include "mlx/backend/metal/device.h"
+#include "mlx/memory.h"
 
 namespace mlx::core::metal {
 
@@ -23,6 +24,7 @@ class MetalAllocator : public allocator::Allocator {
   virtual Buffer make_buffer(void* ptr, size_t size) override;
   virtual void release(Buffer buffer) override;
 
+  MemorySnapshot get_memory_snapshot();
   size_t get_active_memory() {
     return active_memory_;
   };

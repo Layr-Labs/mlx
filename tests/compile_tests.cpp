@@ -11,8 +11,8 @@
 #include <limits>
 #include <thread>
 
-#include "mlx/mlx.h"
 #include "mlx/compile_impl.h"
+#include "mlx/mlx.h"
 #include "mlx/primitives.h"
 
 using namespace mlx::core;

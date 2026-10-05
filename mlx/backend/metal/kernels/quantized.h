@@ -1272,10 +1272,11 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64_wide(
 // multiplied by the UNSCALED activation: (x / 4^k) * (w & (3 << 2k)) and
 // x * ((w >> 2k) & 3) are the same real product (power-of-two scaling is
 // exact in FP32), so every elementary product equals the generic
-// qmv_fast_impl<T, 64, 2> value; the wider lane coverage reassociates the
-// FP32 partial sums, which is safe for this stage because the coarse
-// shortlist is approximate by design and the exact affine-4 rerank plus
-// target verification decide every emitted token. The serial leg runs no
+// qmv_fast_impl<T, 64, 2> value. The bias run sum widens each x to FP32
+// before the add, as load_vector does, so the wider lane coverage only
+// reassociates FP32 partial sums. That is safe for this stage because the
+// coarse shortlist is approximate by design and the exact affine-4 rerank
+// plus target verification decide every emitted token. The serial leg runs no
 // 2-bit matmul (all its projections are affine-4), and out_vec_size ==
 // 98_336 exists only in the compact draft readout, so the dispatch gate
 // below cannot touch the serial numerator or the denominator band.
@@ -1329,7 +1330,8 @@ METAL_FUNC void qmv_fast_singlerow_affine2_g64(
       x0[i + 1] = static_cast<float>(xm[i + 1]);
       x0[i + 2] = static_cast<float>(xm[i + 2]);
       x0[i + 3] = static_cast<float>(xm[i + 3]);
-      sum += xm[i] + xm[i + 1] + xm[i + 2] + xm[i + 3];
+      sum +=
+          float(xm[i]) + float(xm[i + 1]) + float(xm[i + 2]) + float(xm[i + 3]);
     }
 
     for (int r = 0; r < rows_per_simd; r++) {
@@ -2279,10 +2281,9 @@ inline float mma8_hi(uint u) {
 }
 
 // Textual twin of `load_vector<T, float, 8, 4>`'s `sum` on the same aligned
-// 8-run that the reference lane owns: the parenthesised 4-tuple is evaluated
-// on T exactly as in the reference, then the two trees are added in fp32. The
-// bias term of the affine form therefore reuses the reference's own
-// elementary values, not a re-derived sum.
+// 8-run that the reference lane owns: each value widens to fp32 before the
+// 4-tuple add, as in the reference. The bias term of the affine form
+// therefore reuses the reference's own sum, not a re-derived one.
 template <typename T>
 inline float mma8_runsum4(uint4 r) {
   thread T xt[8];
@@ -2295,8 +2296,8 @@ inline float mma8_runsum4(uint4 r) {
   xt[6] = mma8_u16<T>::cast(ushort(r.w & 0xFFFFu));
   xt[7] = mma8_u16<T>::cast(ushort(r.w >> 16));
   float sum = 0;
-  sum += xt[0] + xt[1] + xt[2] + xt[3];
-  sum += xt[4] + xt[5] + xt[6] + xt[7];
+  sum += float(xt[0]) + float(xt[1]) + float(xt[2]) + float(xt[3]);
+  sum += float(xt[4]) + float(xt[5]) + float(xt[6]) + float(xt[7]);
   return sum;
 }
 
@@ -3383,8 +3384,8 @@ template <
     // a g64 group and sums them before the single `s * C + rs * b` close. Every
     // elementary term is the reference's own -- the products x * q are exact in
     // fp32 (a bf16 x carries 8 significant bits, a code 4), scales and biases
-    // widen exactly, `mma8_runsum4` reproduces `load_vector`'s bf16 4-tuple sum
-    // order on the same aligned 8-run, and the group closes are chained in
+    // widen exactly, `mma8_runsum4` reproduces `load_vector`'s fp32 4-tuple sum
+    // on the same aligned 8-run, and the group closes are chained in
     // ascending k -- so the ONLY numeric deviation is fp32 reassociation inside
     // the 64-wide group dot (plus the two-halves add of the KS = 2 split). This
     // is the first non-bit-exact QMV tier here; measured against the stock M = 1

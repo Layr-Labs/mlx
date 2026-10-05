@@ -148,6 +148,7 @@ def:
         - "mlx/backend/metal/kernels/quantized_nax.h"
         - "mlx/backend/metal/kernels/quantized.h"
         - "python/tests/test_fast_sdpa.py"
+        - "python/tests/test_quantized.py"
     - title: "Declared-mutable inputs for Metal custom kernels"
       description: |
         `metal_kernel_with_mutable_inputs` lets a caller declare which custom-kernel inputs will

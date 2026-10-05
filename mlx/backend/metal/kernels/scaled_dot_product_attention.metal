@@ -46,16 +46,16 @@ using namespace metal;
 // D512-2PASS. The 2-pass split-K kernels ONLY, with no single-pass twin.
 //
 // `sdpa_vector` holds q, k and o in registers at D / 32 floats each and is
-// launched at the Metal maximum 1024 threads per threadgroup
-// (scaled_dot_product_attention.cpp:461). At D = 512 that is 48 live floats
-// per thread against 1024 threads, an occupancy claim the 2-pass kernel does
-// not make (it runs 32 x gqa_factor threads with 32 live floats), and the
-// host routes every D = 512 call to the 2-pass form for exactly that reason.
-// Instantiating the single-pass twin would only add a pipeline nothing can
-// dispatch.
+// launched at the Metal maximum 1024 threads per threadgroup (`group_dims` in
+// `sdpa_vector`, scaled_dot_product_attention.cpp). At D = 512 that is 48
+// live floats per thread against 1024 threads, an occupancy claim the 2-pass
+// kernel does not make (it runs 32 x gqa_factor threads with 32 live floats),
+// and the host routes every D = 512 call to the 2-pass form for exactly that
+// reason. Instantiating the single-pass twin would only add a pipeline
+// nothing can dispatch.
 #define instantiate_sdpa_vector_2pass(type, qk_dim, value_dim)  \
   instantiate_kernel(                                          \
-      "sdpa_vector_2pass_1_" #type "_" #qk_dim "_" #value_dim, \
+      "sdpa_vector_2pass_fp32partials_1_" #type "_" #qk_dim "_" #value_dim, \
       sdpa_vector_2pass_1,                                     \
       type,                                                    \
       qk_dim,                                                  \

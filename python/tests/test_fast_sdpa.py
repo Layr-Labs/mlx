@@ -368,6 +368,7 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
             [(16, 2), (4, 4)], [7, 1000, 8192], [mx.float32, mx.float16]
         ):
             with self.subTest(Nq=Nq, Nkv=Nkv, L=L, dtype=dtype):
+                tol = 1e-4 if dtype == mx.float32 else 2e-3
                 q = 5e-1 * mx.random.normal(shape=(1, Nq, 1, D), dtype=dtype)
                 k = 5e-1 * mx.random.normal(shape=(1, Nkv, L, D), dtype=dtype)
                 v = 5e-1 * mx.random.normal(shape=(1, Nkv, L, D), dtype=dtype)
@@ -376,7 +377,6 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     out = mx.fast.scaled_dot_product_attention(
                         q, k, v, scale=scale, mask=m
                     )
-                    tol = 1e-4 if dtype == mx.float32 else 2e-3
                     self.assertTrue(mx.allclose(ref, out, atol=tol, rtol=tol))
 
     @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
@@ -388,14 +388,15 @@ import mlx.core as mx
 from test_fast_sdpa import mlx_ref_attn
 
 D = 512
+scale = D**-0.5
 mx.random.seed(0)
 for L in [8192, 8201]:
     for dtype, tol in [(mx.float32, 1e-4), (mx.float16, 2e-3)]:
         q = 5e-1 * mx.random.normal(shape=(1, 16, 1, D), dtype=dtype)
         k = 5e-1 * mx.random.normal(shape=(1, 2, L, D), dtype=dtype)
         v = 5e-1 * mx.random.normal(shape=(1, 2, L, D), dtype=dtype)
-        ref = mlx_ref_attn(q, k, v, D**-0.5)
-        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=D**-0.5)
+        ref = mlx_ref_attn(q, k, v, scale)
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
         assert mx.allclose(ref, out, atol=tol, rtol=tol), (L, dtype)
 """
         env = dict(os.environ, DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP="1")

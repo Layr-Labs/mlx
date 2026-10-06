@@ -7,6 +7,7 @@
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/gptoss_mxfp4_policy.h"
 #include "mlx/backend/metal/kernels.h"
+#include "mlx/backend/metal/matmul.h"
 #include "mlx/backend/metal/reduce.h"
 #include "mlx/backend/metal/unary.h"
 #include "mlx/backend/metal/utils.h"
@@ -71,6 +72,9 @@ inline array ensure_row_contiguous_matrix(
     const array& x,
     metal::Device& d,
     const Stream& s) {
+  if (x.flags().row_contiguous) {
+    return x;
+  }
   if (x.ndim() < 2) {
     if (x.strides()[0] == 1) {
       return x;
@@ -1517,7 +1521,6 @@ void gather_qmm_rhs_nax(
   int bn = 64, bk = 64;
   int wm = 2, wn = 2;
 
-  const bool align_M = (M % bm) == 0;
   const bool align_N = (N % bn) == 0;
   const bool align_K = (K % bk) == 0;
 
@@ -1546,7 +1549,6 @@ void gather_qmm_rhs_nax(
       wn);
 
   metal::MTLFCList func_consts = {
-      {&align_M, MTL::DataType::DataTypeBool, 200},
       {&align_N, MTL::DataType::DataTypeBool, 201},
       {&align_K, MTL::DataType::DataTypeBool, 202},
   };
@@ -1557,12 +1559,12 @@ void gather_qmm_rhs_nax(
   concatenate(
       hash_name,
       kname,
-      "_align_M_",
-      align_M ? 't' : 'n',
       "_align_N_",
       align_N ? 't' : 'n',
       "_align_K_",
       align_K ? 't' : 'n');
+
+  array offsets = gather_mm_offsets(indices, E, M, d, s);
 
   // Get and set the kernel
   auto& compute_encoder = metal::get_command_encoder(s);
@@ -1584,7 +1586,8 @@ void gather_qmm_rhs_nax(
   compute_encoder.set_compute_pipeline_state(kernel);
 
   MTL::Size group_dims(32, wn, wm);
-  MTL::Size grid_dims((N + bn - 1) / bn, (M + bm - 1) / bm, 1);
+  MTL::Size grid_dims(
+      (N + bn - 1) / bn, std::min(M, (M + bm - 1) / bm + E - 1), 1);
 
   int c = 0;
   compute_encoder.set_input_array(x, c++);
@@ -1593,11 +1596,12 @@ void gather_qmm_rhs_nax(
   if (biases) {
     compute_encoder.set_input_array(*biases, c++);
   }
-  compute_encoder.set_input_array(indices, c++);
+  compute_encoder.set_input_array(offsets, c++);
   compute_encoder.set_output_array(out, c++);
   compute_encoder.set_bytes(M, c++);
   compute_encoder.set_bytes(N, c++);
   compute_encoder.set_bytes(K, c++);
+  compute_encoder.set_bytes(E, c++);
 
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
@@ -1666,8 +1670,8 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   // sorted indices violate the non-decreasing invariant its binary search
   // relies on. A zero count is unambiguous here: the selector's assignment
   // gate guarantees M is one of 4096/8192/16384, so a valid build always
-  // emits at least one tile. Drain the stream and re-route retracted calls
-  // to the order-agnostic legacy path rather than running the tile kernel.
+  // emits at least one tile. Drain the stream and send retracted calls to
+  // the unsorted gather route rather than running the tile kernel.
   //
   // MLX_GATHER_QMM_EXPERT_SLICES=trust skips this drain entirely: the tile
   // grid below is already over-dispatched (max_tile_count threadgroups;
@@ -1710,7 +1714,10 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   return Gemma4ExpertQMMRoute::hit;
 }
 
-void gather_qmm_rhs(
+// Returns false when the indices are found to be unsorted. The row-tile
+// kernels below read per-expert offsets and give a correct result only for
+// sorted indices, so the caller must then use the unsorted gather route.
+bool gather_qmm_rhs(
     const array& x_,
     const array& w_,
     const array& scales_,
@@ -1737,7 +1744,7 @@ void gather_qmm_rhs(
       route_input.nax_available = true;
       d.record_armed_gemma4_expert_qmm(classify_gemma4_expert_qmm(route_input));
     }
-    return gather_qmm_rhs_nax(
+    gather_qmm_rhs_nax(
         /* const array& x_ = */ x_,
         /* const array& w_ = */ w_,
         /* const array& scales_ = */ scales_,
@@ -1753,6 +1760,7 @@ void gather_qmm_rhs(
         /* metal::Device& d = */ d,
         /* const Stream& s = */ s,
         /* const std::string mode = */ mode);
+    return true;
   }
 
   // Start by normalizing the indices
@@ -1845,15 +1853,17 @@ void gather_qmm_rhs(
         if (d.gemma4_expert_qmm_diagnostics_armed()) {
           d.record_armed_gemma4_expert_qmm(route);
         }
-        return;
+        return true;
       }
       // A retracted build attributes to its own counter bucket
       // (fallback_sortedness_retracted); missing AOT kernels keep the
-      // metallib bucket. In both cases the legacy route below produces the
-      // correct result.
+      // metallib bucket.
     }
     if (d.gemma4_expert_qmm_diagnostics_armed()) {
       d.record_armed_gemma4_expert_qmm(route);
+    }
+    if (route == Gemma4ExpertQMMRoute::fallback_sortedness_retracted) {
+      return false;
     }
   }
 
@@ -1861,6 +1871,7 @@ void gather_qmm_rhs(
   // remain the global behavior for every non-exact call.
 
   // TODO: Tune the block sizes
+  int E = w.size() / w.shape(-1) / w.shape(-2);
   int bm = 16, bn = 32, bk = 32;
   int wm = 1, wn = 2;
 
@@ -1877,7 +1888,6 @@ void gather_qmm_rhs(
     wn = tile.wn;
   }
 
-  const bool align_M = (M % bm) == 0;
   const bool align_N = (N % bn) == 0;
   const bool align_K = (K % bk) == 0;
 
@@ -1905,7 +1915,6 @@ void gather_qmm_rhs(
       wn);
 
   metal::MTLFCList func_consts = {
-      {&align_M, MTL::DataType::DataTypeBool, 200},
       {&align_N, MTL::DataType::DataTypeBool, 201},
       {&align_K, MTL::DataType::DataTypeBool, 202},
   };
@@ -1916,12 +1925,12 @@ void gather_qmm_rhs(
   concatenate(
       hash_name,
       kname,
-      "_align_M_",
-      align_M ? 't' : 'n',
       "_align_N_",
       align_N ? 't' : 'n',
       "_align_K_",
       align_K ? 't' : 'n');
+
+  array offsets = gather_mm_offsets(indices, E, M, d, s);
 
   // Get and set the kernel
   auto& compute_encoder = metal::get_command_encoder(s);
@@ -1943,7 +1952,8 @@ void gather_qmm_rhs(
   compute_encoder.set_compute_pipeline_state(kernel);
 
   MTL::Size group_dims(32, wn, wm);
-  MTL::Size grid_dims((N + bn - 1) / bn, (M + bm - 1) / bm, 1);
+  MTL::Size grid_dims(
+      (N + bn - 1) / bn, std::min(M, (M + bm - 1) / bm + E - 1), 1);
 
   int c = 0;
   compute_encoder.set_input_array(x, c++);
@@ -1952,13 +1962,15 @@ void gather_qmm_rhs(
   if (biases) {
     compute_encoder.set_input_array(*biases, c++);
   }
-  compute_encoder.set_input_array(indices, c++);
+  compute_encoder.set_input_array(offsets, c++);
   compute_encoder.set_output_array(out, c++);
   compute_encoder.set_bytes(M, c++);
   compute_encoder.set_bytes(N, c++);
   compute_encoder.set_bytes(K, c++);
+  compute_encoder.set_bytes(E, c++);
 
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+  return true;
 }
 
 void dispatch_qmv(
@@ -2142,24 +2154,25 @@ void GatherQMM::eval_gpu(const std::vector<array>& inputs, array& out) {
   }
 
   // We are walking x in order and w is also in order so we can batch up the
-  // matmuls and reuse reading x and w.
-  if (takes_sorted_rhs_route(M, B, E, right_sorted_)) {
-    gather_qmm_rhs(
-        x,
-        w,
-        scales,
-        biases,
-        rhs_indices,
-        out,
-        transpose_,
-        group_size_,
-        bits_,
-        x.size() / K,
-        N,
-        K,
-        d,
-        s,
-        mode);
+  // matmuls and reuse reading x and w. When gather_qmm_rhs finds the indices
+  // unsorted, it returns false and the unsorted routes below run instead.
+  if (takes_sorted_rhs_route(M, B, E, right_sorted_) &&
+      gather_qmm_rhs(
+          x,
+          w,
+          scales,
+          biases,
+          rhs_indices,
+          out,
+          transpose_,
+          group_size_,
+          bits_,
+          x.size() / K,
+          N,
+          K,
+          d,
+          s,
+          mode)) {
     return;
   }
 

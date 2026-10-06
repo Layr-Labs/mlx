@@ -211,41 +211,42 @@ template <
         // (complex64) never instantiate the branch.
         bool synthesized = false;
         if constexpr (kCausalBiasSynthEligible) {
-          if (addmm_params->fdc == 1 &&
-              addmm_params->ldc == params->N + 1 && params->M <= params->N &&
-              c_bstride_zero) {
-          // CAUSAL-CLOAD (concept receipt: solver i34-9, submission d0ccbe3c).
-          // A row stride of N + 1 on a bf16 addmm source operand cannot arise
-          // from any contiguous or broadcast operand of the declared output
-          // width; it is the deliberate signature of the composed-prefill
-          // causal bias view, and of nothing else. Synthesize that operand's
-          // two constants instead of loading them: widened bfloat16 lowest
-          // finite (0xFF7F) strictly above the causal diagonal placed at
-          // N - M, widened bfloat16 negative zero on and below it. The addend
-          // enters through the same TransformAdd, per accumulator element, with
-          // the same widening as the loaded operand it replaces, so every
-          // stored word is bit-identical. The padded backing store keeps every
-          // non-synthesizing branch load-correct at this stride.
-          const int diag = params->N - params->M;
-          const int row0 = c_row + mma_op.sm;
-          const int col0 = c_col + mma_op.sn;
-          const AccumType mask_add =
-              static_cast<AccumType>(as_type<float>(0xFF7F0000u));
-          const AccumType pass_add = static_cast<AccumType>(-0.0f);
-          STEEL_PRAGMA_UNROLL
-          for (short i = 0; i < mma_t::TM; i++) {
+          if (addmm_params->fdc == 1 && addmm_params->ldc == params->N + 1 &&
+              params->M <= params->N && c_bstride_zero) {
+            // CAUSAL-CLOAD (concept receipt: solver i34-9, submission
+            // d0ccbe3c). A row stride of N + 1 on a bf16 addmm source operand
+            // cannot arise from any contiguous or broadcast operand of the
+            // declared output width; it is the deliberate signature of the
+            // composed-prefill causal bias view, and of nothing else.
+            // Synthesize that operand's two constants instead of loading them:
+            // widened bfloat16 lowest finite (0xFF7F) strictly above the causal
+            // diagonal placed at N - M, widened bfloat16 negative zero on and
+            // below it. The addend enters through the same TransformAdd, per
+            // accumulator element, with the same widening as the loaded operand
+            // it replaces, so every stored word is bit-identical. The padded
+            // backing store keeps every non-synthesizing branch load-correct at
+            // this stride.
+            const int diag = params->N - params->M;
+            const int row0 = c_row + mma_op.sm;
+            const int col0 = c_col + mma_op.sn;
+            const AccumType mask_add =
+                static_cast<AccumType>(as_type<float>(0xFF7F0000u));
+            const AccumType pass_add = static_cast<AccumType>(-0.0f);
             STEEL_PRAGMA_UNROLL
-            for (short j = 0; j < mma_t::TN; j++) {
-              thread auto& accum = mma_op.Ctile.frag_at(i, j);
-              const int row = row0 + i * mma_t::TM_stride;
-              const int col = col0 + j * mma_t::TN_stride;
+            for (short i = 0; i < mma_t::TM; i++) {
               STEEL_PRAGMA_UNROLL
-              for (short k = 0; k < decltype(mma_op.Ctile)::kElemsPerFrag; k++) {
-                accum[k] = epilogue_op_add.apply(
-                    accum[k], (col + k) - row <= diag ? pass_add : mask_add);
+              for (short j = 0; j < mma_t::TN; j++) {
+                thread auto& accum = mma_op.Ctile.frag_at(i, j);
+                const int row = row0 + i * mma_t::TM_stride;
+                const int col = col0 + j * mma_t::TN_stride;
+                STEEL_PRAGMA_UNROLL
+                for (short k = 0; k < decltype(mma_op.Ctile)::kElemsPerFrag;
+                     k++) {
+                  accum[k] = epilogue_op_add.apply(
+                      accum[k], (col + k) - row <= diag ? pass_add : mask_add);
+                }
               }
             }
-          }
             synthesized = true;
           }
         }

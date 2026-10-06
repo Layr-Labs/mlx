@@ -1753,8 +1753,7 @@ template <
     // gather_qmm_rhs is dispatched only for right-sorted indices. If this
     // segment's expert matches the tile endpoint, sortedness proves that the
     // remaining suffix is one segment and the per-row probe can stop here.
-    if (kGatherRhsSortedEndpointElide &&
-        indices[y_row + tgp_bm - 1] == index) {
+    if (kGatherRhsSortedEndpointElide && indices[y_row + tgp_bm - 1] == index) {
       n = tgp_bm;
     } else {
       for (; n < tgp_bm; n++) {
@@ -1823,17 +1822,15 @@ template <
               volatile int compiler_barrier;
 
               if constexpr (transpose) {
-                Btile.template load<T, BK_padded, 1>(
-                    Ws + tn * BK_padded + kk1);
+                Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
               } else {
-                Btile.template load<T, BN_padded, 1>(
-                    Ws + tn + kk1 * BN_padded);
+                Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
               }
 
               STEEL_PRAGMA_UNROLL
               for (short mm = 0; mm < TM; mm++) {
                 const short fr = short(mm * Dtile.kFragRows);
-                if (fr < seg_hi && short(fr + Dtile.kFragRows) > seg_lo) {
+                if (fr<seg_hi&& short(fr + Dtile.kFragRows)> seg_lo) {
                   gather_rhs_load_frag_row(mm, Atile, xn + kk1, K);
                   gather_rhs_mma_frag_row(
                       mm,
@@ -1861,11 +1858,9 @@ template <
               }
 
               if constexpr (transpose) {
-                Btile.template load<T, BK_padded, 1>(
-                    Ws + tn * BK_padded + kk1);
+                Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
               } else {
-                Btile.template load<T, BN_padded, 1>(
-                    Ws + tn + kk1 * BN_padded);
+                Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
               }
 
               tile_matmad_nax(
@@ -1903,11 +1898,9 @@ template <
               Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
 
               if constexpr (transpose) {
-                Btile.template load<T, BK_padded, 1>(
-                    Ws + tn * BK_padded + kk1);
+                Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
               } else {
-                Btile.template load<T, BN_padded, 1>(
-                    Ws + tn + kk1 * BN_padded);
+                Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
               }
 
               tile_matmad_nax(
@@ -1936,10 +1929,7 @@ template <
             }
           } else {
             Dtile.store_slice(
-                y + tm * N + tn,
-                N,
-                short2(0, seg_lo),
-                short2(sgp_sn, seg_hi));
+                y + tm * N + tn, N, short2(0, seg_lo), short2(sgp_sn, seg_hi));
           }
         }
       });

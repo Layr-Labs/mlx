@@ -80,12 +80,12 @@ template <typename T, int D, int V = D>
 
   out += o_offset * V + simd_gid * v_per_thread;
 
-  // Read the query and 0 the output accumulator
-  #pragma unroll
+// Read the query and 0 the output accumulator
+#pragma unroll
   for (int i = 0; i < qk_per_thread; i++) {
     q[i] = static_cast<U>(scale) * queries[i];
   }
-  #pragma unroll
+#pragma unroll
   for (int i = 0; i < v_per_thread; i++) {
     o[i] = 0;
   }
@@ -108,15 +108,15 @@ template <typename T, int D, int V = D>
       use_key = (fmask[0] >= Limits<T>::finite_min);
     }
     if (use_key) {
-      // Read the key
-      #pragma unroll
+// Read the key
+#pragma unroll
       for (int j = 0; j < qk_per_thread; j++) {
         k[j] = keys[j];
       }
 
       // Compute the i-th score
       U score = 0;
-      #pragma unroll
+#pragma unroll
       for (int j = 0; j < qk_per_thread; j++) {
         score += q[j] * k[j];
       }
@@ -133,8 +133,8 @@ template <typename T, int D, int V = D>
       max_score = new_max;
       sum_exp_score = sum_exp_score * factor + exp_score;
 
-      // Update the output accumulator
-      #pragma unroll
+// Update the output accumulator
+#pragma unroll
       for (int j = 0; j < v_per_thread; j++) {
         o[j] = o[j] * factor + exp_score * values[j];
       }
@@ -164,8 +164,8 @@ template <typename T, int D, int V = D>
   U factor = fast::exp(max_score - new_max);
   sum_exp_score = simd_sum(sum_exp_scores[simd_lid] * factor);
 
-  // Now we need to aggregate all the outputs
-  #pragma unroll
+// Now we need to aggregate all the outputs
+#pragma unroll
   for (int i = 0; i < v_per_thread; i++) {
     outputs[simd_lid * BD + simd_gid] = o[i];
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -176,7 +176,7 @@ template <typename T, int D, int V = D>
 
   // And write the output
   if (simd_lid == 0) {
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < v_per_thread; i++) {
       out[i] = static_cast<T>(o[i]);
     }
@@ -254,8 +254,8 @@ template <typename T, int D, int V = D>
   sums += o_offset * blocks + block_idx;
   maxs += o_offset * blocks + block_idx;
 
-  // Read the query
-  #pragma unroll
+// Read the query
+#pragma unroll
   for (int i = 0; i < qk_per_thread; i++) {
     q[i] = static_cast<U>(scale) * queries[i];
   }
@@ -280,7 +280,7 @@ template <typename T, int D, int V = D>
     if (use_key) {
       // Compute the i-th score
       U score = 0;
-      #pragma unroll
+#pragma unroll
       for (int i = 0; i < qk_per_thread; i++) {
         score += q[i] * keys[i];
       }
@@ -298,8 +298,8 @@ template <typename T, int D, int V = D>
       max_score = new_max;
       sum_exp_score = sum_exp_score * factor + exp_score;
 
-      // Update the output accumulator
-      #pragma unroll
+// Update the output accumulator
+#pragma unroll
       for (int i = 0; i < v_per_thread; i++) {
         o[i] = o[i] * factor + exp_score * values[i];
       }
@@ -322,7 +322,7 @@ template <typename T, int D, int V = D>
     maxs[0] = max_score;
   }
 
-  #pragma unroll
+#pragma unroll
   for (int i = 0; i < v_per_thread; i++) {
     out[i] = o[i];
   }
@@ -571,8 +571,8 @@ template <typename T, int D>
   for (int b = 0; b < blocks / BN; ++b) {
     U factor = fast::exp(maxs[simd_gid] - max_score);
 
-    // Update the output accumulator
-    #pragma unroll
+// Update the output accumulator
+#pragma unroll
     for (int i = 0; i < elem_per_thread; i++) {
       o[i] += factor * static_cast<U>(partials[i]);
     }
@@ -581,8 +581,8 @@ template <typename T, int D>
     partials += BN * D;
   }
 
-  // Use shared memory to transpose and reduce the final block
-  #pragma unroll
+// Use shared memory to transpose and reduce the final block
+#pragma unroll
   for (int i = 0; i < elem_per_thread; i++) {
     outputs[simd_lid * BD + simd_gid] = o[i];
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -593,7 +593,7 @@ template <typename T, int D>
 
   // And write the output
   if (simd_lid == 0) {
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < elem_per_thread; i++) {
       out[i] = static_cast<T>(o[i]);
     }

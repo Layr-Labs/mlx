@@ -327,15 +327,11 @@ inline U qdot_affine4_registered_word(
   const uint packed0 = packed_word & 0xffffu;
   const uint packed1 = packed_word >> 16;
   U accum =
-      (x_thread[0] * (packed0 & 0x000f) +
-       x_thread[1] * (packed0 & 0x00f0) +
-       x_thread[2] * (packed0 & 0x0f00) +
-       x_thread[3] * (packed0 & 0xf000));
+      (x_thread[0] * (packed0 & 0x000f) + x_thread[1] * (packed0 & 0x00f0) +
+       x_thread[2] * (packed0 & 0x0f00) + x_thread[3] * (packed0 & 0xf000));
   accum +=
-      (x_thread[4] * (packed1 & 0x000f) +
-       x_thread[5] * (packed1 & 0x00f0) +
-       x_thread[6] * (packed1 & 0x0f00) +
-       x_thread[7] * (packed1 & 0xf000));
+      (x_thread[4] * (packed1 & 0x000f) + x_thread[5] * (packed1 & 0x00f0) +
+       x_thread[6] * (packed1 & 0x0f00) + x_thread[7] * (packed1 & 0xf000));
   return scale * accum + sum * bias;
 }
 
@@ -358,30 +354,23 @@ inline void qdot_affine4_pair(
   const uint packed0 = packedWord & 0xffffu;
   const uint packed1 = packedWord >> 16;
   U accum0 =
-      (x0[0] * (packed0 & 0x000f) +
-       x0[1] * (packed0 & 0x00f0) +
-       x0[2] * (packed0 & 0x0f00) +
-       x0[3] * (packed0 & 0xf000));
+      (x0[0] * (packed0 & 0x000f) + x0[1] * (packed0 & 0x00f0) +
+       x0[2] * (packed0 & 0x0f00) + x0[3] * (packed0 & 0xf000));
   U accum1 =
-      (x1[0] * (packed0 & 0x000f) +
-       x1[1] * (packed0 & 0x00f0) +
-       x1[2] * (packed0 & 0x0f00) +
-       x1[3] * (packed0 & 0xf000));
+      (x1[0] * (packed0 & 0x000f) + x1[1] * (packed0 & 0x00f0) +
+       x1[2] * (packed0 & 0x0f00) + x1[3] * (packed0 & 0xf000));
   accum0 +=
-      (x0[4] * (packed1 & 0x000f) +
-       x0[5] * (packed1 & 0x00f0) +
-       x0[6] * (packed1 & 0x0f00) +
-       x0[7] * (packed1 & 0xf000));
+      (x0[4] * (packed1 & 0x000f) + x0[5] * (packed1 & 0x00f0) +
+       x0[6] * (packed1 & 0x0f00) + x0[7] * (packed1 & 0xf000));
   accum1 +=
-      (x1[4] * (packed1 & 0x000f) +
-       x1[5] * (packed1 & 0x00f0) +
-       x1[6] * (packed1 & 0x0f00) +
-       x1[7] * (packed1 & 0xf000));
+      (x1[4] * (packed1 & 0x000f) + x1[5] * (packed1 & 0x00f0) +
+       x1[6] * (packed1 & 0x0f00) + x1[7] * (packed1 & 0xf000));
   out0 = scale * accum0 + sum0 * bias;
   out1 = scale * accum1 + sum1 * bias;
 }
 
-// Two independent affine-4 dot products over one register-held packed 32-bit word.
+// Two independent affine-4 dot products over one register-held packed 32-bit
+// word.
 template <typename U, int values_per_thread>
 inline void qdot_affine4_pair_word(
     uint packedWord,
@@ -397,25 +386,17 @@ inline void qdot_affine4_pair_word(
   const uint packed0 = packedWord & 0xffffu;
   const uint packed1 = packedWord >> 16;
   U accum0 =
-      (x0[0] * (packed0 & 0x000f) +
-       x0[1] * (packed0 & 0x00f0) +
-       x0[2] * (packed0 & 0x0f00) +
-       x0[3] * (packed0 & 0xf000));
+      (x0[0] * (packed0 & 0x000f) + x0[1] * (packed0 & 0x00f0) +
+       x0[2] * (packed0 & 0x0f00) + x0[3] * (packed0 & 0xf000));
   U accum1 =
-      (x1[0] * (packed0 & 0x000f) +
-       x1[1] * (packed0 & 0x00f0) +
-       x1[2] * (packed0 & 0x0f00) +
-       x1[3] * (packed0 & 0xf000));
+      (x1[0] * (packed0 & 0x000f) + x1[1] * (packed0 & 0x00f0) +
+       x1[2] * (packed0 & 0x0f00) + x1[3] * (packed0 & 0xf000));
   accum0 +=
-      (x0[4] * (packed1 & 0x000f) +
-       x0[5] * (packed1 & 0x00f0) +
-       x0[6] * (packed1 & 0x0f00) +
-       x0[7] * (packed1 & 0xf000));
+      (x0[4] * (packed1 & 0x000f) + x0[5] * (packed1 & 0x00f0) +
+       x0[6] * (packed1 & 0x0f00) + x0[7] * (packed1 & 0xf000));
   accum1 +=
-      (x1[4] * (packed1 & 0x000f) +
-       x1[5] * (packed1 & 0x00f0) +
-       x1[6] * (packed1 & 0x0f00) +
-       x1[7] * (packed1 & 0xf000));
+      (x1[4] * (packed1 & 0x000f) + x1[5] * (packed1 & 0x00f0) +
+       x1[6] * (packed1 & 0x0f00) + x1[7] * (packed1 & 0xf000));
   out0 = scale * accum0 + sum0 * bias;
   out1 = scale * accum1 + sum1 * bias;
 }
@@ -1098,16 +1079,13 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64(
 
     for (int r = 0; r < rows_per_simd; r++) {
       const int row = out_row + r;
-      const device uint8_t* wb =
-          reinterpret_cast<const device uint8_t*>(w) +
+      const device uint8_t* wb = reinterpret_cast<const device uint8_t*>(w) +
           row * in_vec_size_w + k / 2 + simd_lid * bytes_per_lane;
-      const device uint16_t* ws =
-          reinterpret_cast<const device uint16_t*>(wb);
+      const device uint16_t* ws = reinterpret_cast<const device uint16_t*>(wb);
       for (int i = 0; i < 4; i++) {
         packed[r][i] = ws[i];
       }
-      const int group_index =
-          row * in_vec_size_g + k / 64 + simd_lid / 4;
+      const int group_index = row * in_vec_size_g + k / 64 + simd_lid / 4;
       scale_local[r] = scales[group_index];
       bias_local[r] = biases[group_index];
     }
@@ -1115,16 +1093,18 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64(
     thread float x0[values_per_thread];
     const device T* xm0 =
         x + first_m * in_vec_size + k + simd_lid * values_per_thread;
-    const float sum0 =
-        load_vector<T, float, values_per_thread, 4>(xm0, x0);
+    const float sum0 = load_vector<T, float, values_per_thread, 4>(xm0, x0);
     if (has_pair) {
       thread float x1[values_per_thread];
       const device T* xm1 = xm0 + in_vec_size;
-      const float sum1 =
-          load_vector<T, float, values_per_thread, 4>(xm1, x1);
+      const float sum1 = load_vector<T, float, values_per_thread, 4>(xm1, x1);
       for (int r = 0; r < rows_per_simd; r++) {
         pair_result[r] += qdot_affine4_loaded_pair(
-            packed[r], x0, x1, scale_local[r], bias_local[r],
+            packed[r],
+            x0,
+            x1,
+            scale_local[r],
+            bias_local[r],
             float2(sum0, sum1));
       }
     } else {
@@ -1236,15 +1216,15 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64_wide(
       }
       for (int r = 0; r < rows_per_simd; r++) {
         if (DIRECT_NIBBLES) {
-          partial[r] += (a0 * (packed[r][i] & 0x000f) +
-                         a1 * ((packed[r][i] >> 4) & 0x000f) +
-                         a2 * ((packed[r][i] >> 8) & 0x000f) +
-                         a3 * ((packed[r][i] >> 12) & 0x000f));
+          partial[r] +=
+              (a0 * (packed[r][i] & 0x000f) +
+               a1 * ((packed[r][i] >> 4) & 0x000f) +
+               a2 * ((packed[r][i] >> 8) & 0x000f) +
+               a3 * ((packed[r][i] >> 12) & 0x000f));
         } else {
-          partial[r] += (a0 * (packed[r][i] & 0x000f) +
-                         a1 * (packed[r][i] & 0x00f0) +
-                         a2 * (packed[r][i] & 0x0f00) +
-                         a3 * (packed[r][i] & 0xf000));
+          partial[r] +=
+              (a0 * (packed[r][i] & 0x000f) + a1 * (packed[r][i] & 0x00f0) +
+               a2 * (packed[r][i] & 0x0f00) + a3 * (packed[r][i] & 0xf000));
         }
       }
     }
@@ -1257,8 +1237,7 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64_wide(
     for (int m = 0; m < NA; m++) {
       const float reduced = simd_sum(acc[r][m]);
       if (simd_lid == 0) {
-        y[(first_m + m) * out_vec_size + out_row + r] =
-            static_cast<T>(reduced);
+        y[(first_m + m) * out_vec_size + out_row + r] = static_cast<T>(reduced);
       }
     }
   }
@@ -1295,9 +1274,9 @@ METAL_FUNC void qmv_fast_singlerow_affine2_g64(
   constexpr int rows_per_simd = 4;
   constexpr int values_per_thread = 32;
   constexpr int block_size = values_per_thread * SIMD_SIZE;
-  constexpr int bytes_per_lane = 8;  // 32 values x 2 bits = 8 bytes
-  const int in_vec_size_w = in_vec_size / 4;   // weight bytes per output row
-  const int in_vec_size_g = in_vec_size / 64;  // scale groups per output row
+  constexpr int bytes_per_lane = 8; // 32 values x 2 bits = 8 bytes
+  const int in_vec_size_w = in_vec_size / 4; // weight bytes per output row
+  const int in_vec_size_g = in_vec_size / 64; // scale groups per output row
 
   const int out_row = int(tid.y) * 8 + int(simd_gid) * rows_per_simd;
 
@@ -1336,7 +1315,7 @@ METAL_FUNC void qmv_fast_singlerow_affine2_g64(
 
     for (int r = 0; r < rows_per_simd; r++) {
       float accum = 0.0f;
-      #pragma unroll
+#pragma unroll
       for (int j = 0; j < 32; j++) {
         accum += x0[j] * float((packed[r] >> (2 * j)) & 0x03ul);
       }
@@ -1366,7 +1345,8 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64_m(
     uint3 tid,
     uint simd_gid,
     uint simd_lid) {
-  static_assert(M >= 3 && M <= 9, "wide multi-row QMV dispatch covers M in [3, 9]");
+  static_assert(
+      M >= 3 && M <= 9, "wide multi-row QMV dispatch covers M in [3, 9]");
   static_assert(M % IPG != 1, "a one-input tail group is not instantiated");
   constexpr int TAIL = M % IPG;
   const int first_m = int(tid.x) * IPG;
@@ -1376,13 +1356,31 @@ METAL_FUNC void qmv_fast_crossrow_affine4_g64_m(
   const int out_row = int(tid.y) * 8 + int(simd_gid) * 4;
   if (TAIL == 0 || M - first_m >= IPG) {
     qmv_fast_crossrow_affine4_g64_wide<T, IPG, DIRECT_NIBBLES>(
-        w, scales, biases, x, y, in_vec_size, out_vec_size,
-        first_m, out_row, simd_lid);
+        w,
+        scales,
+        biases,
+        x,
+        y,
+        in_vec_size,
+        out_vec_size,
+        first_m,
+        out_row,
+        simd_lid);
   } else {
     qmv_fast_crossrow_affine4_g64_wide<
-        T, (TAIL >= 2 ? TAIL : 2), DIRECT_NIBBLES>(
-        w, scales, biases, x, y, in_vec_size, out_vec_size,
-        first_m, out_row, simd_lid);
+        T,
+        (TAIL >= 2 ? TAIL : 2),
+        DIRECT_NIBBLES>(
+        w,
+        scales,
+        biases,
+        x,
+        y,
+        in_vec_size,
+        out_vec_size,
+        first_m,
+        out_row,
+        simd_lid);
   }
 }
 
@@ -1632,7 +1630,15 @@ METAL_FUNC void qmv_affine4_g64_pair_impl(
       float dot0;
       float dot1;
       qdot_affine4_pair_word<float, values_per_thread>(
-          packed[row], x0_thread, x1_thread, scale_local[row], bias_local[row], sum0, sum1, dot0, dot1);
+          packed[row],
+          x0_thread,
+          x1_thread,
+          scale_local[row],
+          bias_local[row],
+          sum0,
+          sum1,
+          dot0,
+          dot1);
       result0[row] += dot0;
       result1[row] += dot1;
     }
@@ -1648,8 +1654,7 @@ METAL_FUNC void qmv_affine4_g64_pair_impl(
   // 64.  The final block therefore contains an integral number of complete
   // eight-value lane packets (32 lanes for K=2816, 24 for expert down_proj
   // K=704); no active lane needs the generic dynamic safe-tail loops.
-  const uint active_tail_lanes =
-      uint((in_vec_size - k) / values_per_thread);
+  const uint active_tail_lanes = uint((in_vec_size - k) / values_per_thread);
   if (simd_lid < active_tail_lanes) {
     for (int row = 0; row < results_per_simdgroup; row++) {
       packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
@@ -1657,15 +1662,21 @@ METAL_FUNC void qmv_affine4_g64_pair_impl(
       bias_local[row] = biases[row * in_vec_size_g];
     }
 
-    float sum0 =
-        load_vector<T, float, values_per_thread, 4>(x0, x0_thread);
-    float sum1 =
-        load_vector<T, float, values_per_thread, 4>(x1, x1_thread);
+    float sum0 = load_vector<T, float, values_per_thread, 4>(x0, x0_thread);
+    float sum1 = load_vector<T, float, values_per_thread, 4>(x1, x1_thread);
     for (int row = 0; row < results_per_simdgroup; row++) {
       float dot0;
       float dot1;
       qdot_affine4_pair_word<float, values_per_thread>(
-          packed[row], x0_thread, x1_thread, scale_local[row], bias_local[row], sum0, sum1, dot0, dot1);
+          packed[row],
+          x0_thread,
+          x1_thread,
+          scale_local[row],
+          bias_local[row],
+          sum0,
+          sum1,
+          dot0,
+          dot1);
       result0[row] += dot0;
       result1[row] += dot1;
     }
@@ -1758,8 +1769,7 @@ METAL_FUNC void qmv_affine4_g64_quad_stream_impl(
   int k = 0;
   for (; k <= in_vec_size - block_size; k += block_size) {
     for (int row = 0; row < results_per_simdgroup; row++) {
-      packed[row] =
-          *((const device uint*)(ws + row * in_vec_size_w));
+      packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
       scale_local[row] = scales[row * in_vec_size_g];
       bias_local[row] = biases[row * in_vec_size_g];
     }
@@ -1800,32 +1810,31 @@ METAL_FUNC void qmv_affine4_g64_quad_stream_impl(
       values_per_thread);
   if (remaining > 0) {
     for (int row = 0; row < results_per_simdgroup; row++) {
-      packed[row] =
-          *((const device uint*)(ws + row * in_vec_size_w));
+      packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
       scale_local[row] = scales[row * in_vec_size_g];
       bias_local[row] = biases[row * in_vec_size_g];
     }
 
-    float sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x0, x_thread, remaining);
+    float sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x0, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result0[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
     }
-    sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x1, x_thread, remaining);
+    sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x1, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result1[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
     }
-    sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x2, x_thread, remaining);
+    sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x2, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result2[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
     }
-    sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x3, x_thread, remaining);
+    sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x3, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result3[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
@@ -1900,8 +1909,7 @@ METAL_FUNC void qmv_affine4_g64_triple_stream_impl(
   int k = 0;
   for (; k <= in_vec_size - block_size; k += block_size) {
     for (int row = 0; row < results_per_simdgroup; row++) {
-      packed[row] =
-          *((const device uint*)(ws + row * in_vec_size_w));
+      packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
       scale_local[row] = scales[row * in_vec_size_g];
       bias_local[row] = biases[row * in_vec_size_g];
     }
@@ -1936,26 +1944,25 @@ METAL_FUNC void qmv_affine4_g64_triple_stream_impl(
       values_per_thread);
   if (remaining > 0) {
     for (int row = 0; row < results_per_simdgroup; row++) {
-      packed[row] =
-          *((const device uint*)(ws + row * in_vec_size_w));
+      packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
       scale_local[row] = scales[row * in_vec_size_g];
       bias_local[row] = biases[row * in_vec_size_g];
     }
 
-    float sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x0, x_thread, remaining);
+    float sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x0, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result0[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
     }
-    sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x1, x_thread, remaining);
+    sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x1, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result1[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
     }
-    sum =
-        load_vector_safe<T, float, values_per_thread, 4>(x2, x_thread, remaining);
+    sum = load_vector_safe<T, float, values_per_thread, 4>(
+        x2, x_thread, remaining);
     for (int row = 0; row < results_per_simdgroup; row++) {
       result2[row] += qdot_affine4_registered_word<float, values_per_thread>(
           packed[row], x_thread, scale_local[row], bias_local[row], sum);
@@ -2178,8 +2185,7 @@ METAL_FUNC void qmv_affine8_g64_quad_stream_impl(
   // four-value lane packets.  In particular down_proj K=2112 leaves exactly
   // 16 active lanes; use the fixed unrolled load instead of four dynamic
   // safe-tail loops while preserving each lane's qdot and simd_sum order.
-  const uint active_tail_lanes =
-      uint((in_vec_size - k) / values_per_thread);
+  const uint active_tail_lanes = uint((in_vec_size - k) / values_per_thread);
   if (simd_lid < active_tail_lanes) {
     for (int row = 0; row < results_per_simdgroup; row++) {
       packed[row] = *((const device uint*)(ws + row * in_vec_size_w));
@@ -2301,8 +2307,8 @@ inline float mma8_runsum4(uint4 r) {
   return sum;
 }
 
-#define MMA8_SETB(BB, W, HI)                       \
-  BB.thread_elements()[0] = mma8_##HI<T>(r0.W);    \
+#define MMA8_SETB(BB, W, HI)                    \
+  BB.thread_elements()[0] = mma8_##HI<T>(r0.W); \
   BB.thread_elements()[1] = mma8_##HI<T>(r1.W);
 
 #define MMA8_STEP(BB, J)                                          \
@@ -3198,7 +3204,15 @@ template <
     // M == 1 coarse draft readout (draft-rerank scheme): the ONE 2-bit shape
     // in the scored path; proposal-only by construction (see kernel header).
     qmv_fast_singlerow_affine2_g64<T>(
-        w, scales, biases, x, y, in_vec_size, out_vec_size, tid, simd_gid,
+        w,
+        scales,
+        biases,
+        x,
+        y,
+        in_vec_size,
+        out_vec_size,
+        tid,
+        simd_gid,
         simd_lid);
     return;
   }
@@ -3210,56 +3224,120 @@ template <
       switch (ntg.x) {
         case 2:
           qmv_fast_crossrow_affine4_g64<T, 2>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 3:
           qmv_fast_crossrow_affine4_g64_m<T, 3, 3, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 4:
           qmv_fast_crossrow_affine4_g64_m<T, 4, 4, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 5:
           qmv_fast_crossrow_affine4_g64_m<T, 5, 3, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 6:
           qmv_fast_crossrow_affine4_g64_m<T, 6, 3, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 7:
           qmv_fast_crossrow_affine4_g64_m<T, 7, 4, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 8:
           // 3+3+2, not 4+4. M = 8 is the only hot width whose EVEN split needs
           // two simultaneous vec<float,4> accumulators in every active worker;
-          // M = 9 uses three-lane vectors and profiles CHEAPER despite more work
-          // (319 / 437 / 216 us for M = 7 / 8 / 9 in the public cross-row study)
-          // — a register cliff, not work scaling.
-          // Exact: these lanes carry INDEPENDENT input rows and are never reduced
-          // across (simd_sum reduces along K WITHIN a row), so moving a row from
-          // lane 3 of a four-wide vector to lane 0 of a two-wide one cannot
-          // reorder its scalar chain. Template admits it: M in [3,9], 8 % 3 == 2
-          // (no one-row tail), IPG 3 inside the wide helper's [2,4].
-          // Receipts: 85d5bca3 2.91143, yzxoi 2.92675.
-          // SYNERGY with the streak gate above, which is why they ship together:
-          // gate 2 reaches the width-8 verify SOONER, so this kernel fires MORE.
+          // M = 9 uses three-lane vectors and profiles CHEAPER despite more
+          // work (319 / 437 / 216 us for M = 7 / 8 / 9 in the public cross-row
+          // study) — a register cliff, not work scaling. Exact: these lanes
+          // carry INDEPENDENT input rows and are never reduced across (simd_sum
+          // reduces along K WITHIN a row), so moving a row from lane 3 of a
+          // four-wide vector to lane 0 of a two-wide one cannot reorder its
+          // scalar chain. Template admits it: M in [3,9], 8 % 3 == 2 (no
+          // one-row tail), IPG 3 inside the wide helper's [2,4]. Receipts:
+          // 85d5bca3 2.91143, yzxoi 2.92675. SYNERGY with the streak gate
+          // above, which is why they ship together: gate 2 reaches the width-8
+          // verify SOONER, so this kernel fires MORE.
           qmv_fast_crossrow_affine4_g64_m<T, 8, 4, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 9:
           qmv_fast_crossrow_affine4_g64_m<T, 9, 3, true>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         default:
           break;
@@ -3268,43 +3346,107 @@ template <
       switch (ntg.x) {
         case 2:
           qmv_fast_crossrow_affine4_g64<T, 2>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 3:
           qmv_fast_crossrow_affine4_g64<T, 3>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 4:
           qmv_fast_crossrow_affine4_g64<T, 4>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 5:
           qmv_fast_crossrow_affine4_g64<T, 5>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 6:
           qmv_fast_crossrow_affine4_g64<T, 6>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 7:
           qmv_fast_crossrow_affine4_g64<T, 7>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 8:
           qmv_fast_crossrow_affine4_g64<T, 8>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         case 9:
           qmv_fast_crossrow_affine4_g64<T, 9>(
-              w, scales, biases, x, y, in_vec_size, out_vec_size,
-              tid, simd_gid, simd_lid);
+              w,
+              scales,
+              biases,
+              x,
+              y,
+              in_vec_size,
+              out_vec_size,
+              tid,
+              simd_gid,
+              simd_lid);
           return;
         default:
           break;
@@ -3370,9 +3512,8 @@ template <
         b_strides,
         tid);
   }
-  if (!batched && group_size == 64 && bits == 4 && ntg.x == 8 &&
-      ntg.z == 1 && in_vec_size % 64 == 0 && out_vec_size >= 8 &&
-      out_vec_size % 8 == 0) {
+  if (!batched && group_size == 64 && bits == 4 && ntg.x == 8 && ntg.z == 1 &&
+      in_vec_size % 64 == 0 && out_vec_size >= 8 && out_vec_size % 8 == 0) {
     // The ruled decode cohort presents eight input rows to ordinary QMV.
     // MMA-QKV S1 -- GROUP-EXACT-MMA tier. It replaces, for the 4-bit affine
     // g64 dense decode projections wide enough to fill the machine (q/k/v:
@@ -3388,24 +3529,25 @@ template <
     // on the same aligned 8-run, and the group closes are chained in
     // ascending k -- so the ONLY numeric deviation is fp32 reassociation inside
     // the 64-wide group dot (plus the two-halves add of the KS = 2 split). This
-    // is the first non-bit-exact QMV tier here; measured against the stock M = 1
-    // road over 50 random cohorts per plane at K = 2816, the deviation is at
+    // is the first non-bit-exact QMV tier here; measured against the stock M =
+    // 1 road over 50 random cohorts per plane at K = 2816, the deviation is at
     // most 1 bf16 ulp for every output above the 2^-10 * row-max magnitude gate
     // (non-zero fraction ~1.4e-4, 0 argmax flips over 400 rows per plane), it
     // is run-to-run bitwise deterministic, and the body measured 0.41-0.51x the
-    // quad_stream body net of the dispatch floor on an M4 Max. Outputs cancelled
-    // below ~2^-8 of their term mass can show a second relative ulp; they are
-    // numerically negligible and never argmax candidates. KILL SWITCH: set
-    // `kGemma4QmvMma8Affine4` to false and this branch vanishes at compile time,
-    // restoring the quad_stream and pair tiers below byte for byte -- nothing
-    // beneath this block was edited. Raising `kGemma4QmvMma8Affine4FloorN`
-    // returns individual planes the same way. (MSL forbids a program-scope
-    // `constexpr`, so the two switches live at the top of the tier they guard.)
+    // quad_stream body net of the dispatch floor on an M4 Max. Outputs
+    // cancelled below ~2^-8 of their term mass can show a second relative ulp;
+    // they are numerically negligible and never argmax candidates. KILL SWITCH:
+    // set `kGemma4QmvMma8Affine4` to false and this branch vanishes at compile
+    // time, restoring the quad_stream and pair tiers below byte for byte --
+    // nothing beneath this block was edited. Raising
+    // `kGemma4QmvMma8Affine4FloorN` returns individual planes the same way.
+    // (MSL forbids a program-scope `constexpr`, so the two switches live at the
+    // top of the tier they guard.)
     constexpr bool kGemma4QmvMma8Affine4 = true;
     constexpr int kGemma4QmvMma8Affine4FloorN = 1024;
     if (kGemma4QmvMma8Affine4 && sizeof(T) == 2 && ntg.z == 1 &&
-        in_vec_size % 64 == 0 &&
-        out_vec_size >= kGemma4QmvMma8Affine4FloorN && out_vec_size % 8 == 0) {
+        in_vec_size % 64 == 0 && out_vec_size >= kGemma4QmvMma8Affine4FloorN &&
+        out_vec_size % 8 == 0) {
       // Seven of the eight host x-groups retire before any load; the eighth
       // produces all eight cohort columns of its eight output rows.
       if (tid.x != 0) {
@@ -3491,9 +3633,8 @@ template <
         simd_lid);
     return;
   }
-  if (!batched && group_size == 64 && bits == 8 && ntg.x == 8 &&
-      ntg.z == 1 && in_vec_size % 64 == 0 && out_vec_size >= 8 &&
-      out_vec_size % 8 == 0) {
+  if (!batched && group_size == 64 && bits == 8 && ntg.x == 8 && ntg.z == 1 &&
+      in_vec_size % 64 == 0 && out_vec_size >= 8 && out_vec_size % 8 == 0) {
     // Dense decode projections use byte weights.
     if (out_vec_size >= 1024) {
       // WIDE-N tier -- the dense MLP of all 30 layers: gate_proj and up_proj
@@ -4264,8 +4405,7 @@ METAL_FUNC void gather_qmv_gemma4_down_tile(
   const device uint32_t* tile_w = w + expert * w_stride;
   const device T* tile_scales = scales + expert * s_stride;
   const device T* tile_biases = biases + expert * b_stride;
-  const device T* tile_x0 =
-      x + lhs_indices[assignment * lhs_stride] * x_stride;
+  const device T* tile_x0 = x + lhs_indices[assignment * lhs_stride] * x_stride;
   device T* tile_y0 = y + assignment * out_vec_size;
   const bool has_pair = expert_prefix_bounds
       ? (((route_word >> 14) & 0x3fu) + 1u) > 1u
@@ -4337,9 +4477,9 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   int M = x_shape[x_batch_ndims];
-  const bool gemma4_pair_geometry =
-      group_size == 64 && bits == 4 && M == 1 && batch_ndims == 1 &&
-      batch_shape[0] == 64 && x_batch_ndims == 1 && w_batch_ndims == 1 &&
+  const bool gemma4_pair_geometry = group_size == 64 && bits == 4 && M == 1 &&
+      batch_ndims == 1 && batch_shape[0] == 64 && x_batch_ndims == 1 &&
+      w_batch_ndims == 1 &&
       ((in_vec_size == 2816 && out_vec_size == 704) ||
        (in_vec_size == 704 && out_vec_size == 2816));
   if (gemma4_pair_geometry) {
@@ -4371,8 +4511,7 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
       return;
     }
     const uint assignment = tid.z;
-    const uint32_t route_word =
-        rhs_indices[assignment * (uint)rhs_strides[0]];
+    const uint32_t route_word = rhs_indices[assignment * (uint)rhs_strides[0]];
     const bool expert_prefix_bounds = (route_word & 0x80000000u) != 0u;
     const uint32_t expert =
         expert_prefix_bounds ? (route_word & 0xffu) : route_word;
@@ -4477,22 +4616,36 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
 
     // Singleton experts and odd-run tails still need one ordinary QMV, but
     // their one-dimensional offsets are already resolved by this guard.
-    const uint32_t single_lhs =
-        lhs_indices[assignment * (uint)lhs_strides[0]];
+    const uint32_t single_lhs = lhs_indices[assignment * (uint)lhs_strides[0]];
     const device T* single_x = x + single_lhs * x_strides[0];
     const device uint32_t* single_w = w + expert * w_strides[0];
     const device T* single_scales = scales + expert * s_strides[0];
     const device T* single_biases = biases + expert * b_strides[0];
     device T* single_y = y + assignment * (uint)out_vec_size;
     if (in_vec_size == 2816) {
-      qmv_affine4_g64_singles_impl<
-          T, group_size, bits, 2816, true, false>(
-          single_w, single_scales, single_biases, single_x, single_y,
-          in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+      qmv_affine4_g64_singles_impl<T, group_size, bits, 2816, true, false>(
+          single_w,
+          single_scales,
+          single_biases,
+          single_x,
+          single_y,
+          in_vec_size,
+          out_vec_size,
+          tid,
+          simd_gid,
+          simd_lid);
     } else {
       qmv_impl<T, group_size, bits>(
-          single_w, single_scales, single_biases, single_x, single_y,
-          in_vec_size, out_vec_size, tid, simd_gid, simd_lid);
+          single_w,
+          single_scales,
+          single_biases,
+          single_x,
+          single_y,
+          in_vec_size,
+          out_vec_size,
+          tid,
+          simd_gid,
+          simd_lid);
     }
     return;
   }

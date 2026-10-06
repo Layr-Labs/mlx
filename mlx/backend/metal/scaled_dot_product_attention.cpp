@@ -52,8 +52,7 @@ inline bool env_flag_on(const char* name, bool default_on) {
 }
 
 inline bool d512_vector_sdpa_enabled() {
-  static bool enabled =
-      env_flag_on("DARKBLOOM_GEMMA4_D512_DECODE_2PASS", true);
+  static bool enabled = env_flag_on("DARKBLOOM_GEMMA4_D512_DECODE_2PASS", true);
   return enabled;
 }
 

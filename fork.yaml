@@ -53,7 +53,9 @@ def:
         them. `classify_gemma4_expert_qmm` is a pure route table admitting exactly the shapes
         the kernel is built for; availability is all-or-nothing on a source-matched metallib so
         an older library fails the route closed; `trust` skips the descriptor-retract readback
-        when the caller guarantees sorted indices. Diagnostics counters
+        when the caller guarantees sorted indices. A retracted call runs the unsorted gather
+        route, because the sorted `gather_qmm_rhs` kernels read per-expert offsets and give a
+        correct result only for sorted indices. Diagnostics counters
         (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
         mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
         quantized-vector bias-sum operand is promoted to the accumulator type before summation
@@ -128,8 +130,9 @@ def:
           epilogue identifies the composed-prefill causal-bias operand by its layout
           (bf16, `ldc == N + 1`, `M <= N`, zero batch strides) and computes its two constant
           values instead of loading them. The stored words do not change.
-        - `affine_gather_qmm_rhs_nax`: a simdgroup skips the A loads and MMAs for fragment
-          rows outside the current expert segment.
+        - NAX `qmm_t` and `affine_gather_qmm_rhs_nax`: when `BM >= WM * WN * 16`, the
+          simdgroups of a tile are laid out as row strips, so each A fragment is read once.
+          Each output element keeps the same accumulation order.
         - `quantized.h`: affine 4-bit and 8-bit QMV kernels for the Gemma 4 decode shapes
           (paired and multi-stream expert kernels, cross-row kernels, an 8x8 simdgroup-MMA
           kernel for 8-row decode, and a tiled down-projection gather).
@@ -307,6 +310,33 @@ def:
         - "python/tests/test_vmap.py"
         - "tests/load_tests.cpp"
         - "tests/ops_tests.cpp"
+    - title: "Upstream gather_mm and gather_qmm row-tile scheduling (ml-explore/mlx #4567, #4572)"
+      description: |
+        **Not fork work.** Cherry-picks of upstream commits `a2a09fd5`
+        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)) and `90089440`
+        ([ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572)). The sorted
+        `gather_mm` and `gather_qmm` kernels schedule row tiles from per-expert offsets, so
+        one tile holds rows of one expert and does one matmul pass. A small kernel
+        (`gather_mm_offsets`) computes the offsets from the sorted `rhs_indices`.
+
+        The `gather_qmm` change is in `quantized.h`, `quantized_nax.h`, `fp_quantized.h`,
+        `fp_quantized_nax.h` and `quantized.cpp`, which are listed in the sections that
+        describe the fork work in those files. `utils.h` (`schedule_row_tile`) is listed in
+        the v0.32.2 section. Two differences from upstream `90089440` remain in the ported
+        kernels, because the fork base does not have the related upstream changes: the
+        floating-point kernels have no global-scale input, and the NAX kernels keep the
+        fork's bound for the last K tile. The section disappears once the fork rebases onto
+        an upstream commit at or past `90089440`.
+      globs:
+        - ".gitignore"
+        - "benchmarks/python/swiglu_bench.py"
+        - "benchmarks/python/swiglu_qmm_bench.py"
+        - "mlx/backend/metal/matmul.cpp"
+        - "mlx/backend/metal/matmul.h"
+        - "mlx/backend/metal/kernels/CMakeLists.txt"
+        - "mlx/backend/metal/kernels/gather_mm_offsets.metal"
+        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather.h"
+        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build and

@@ -53,7 +53,9 @@ def:
         them. `classify_gemma4_expert_qmm` is a pure route table admitting exactly the shapes
         the kernel is built for; availability is all-or-nothing on a source-matched metallib so
         an older library fails the route closed; `trust` skips the descriptor-retract readback
-        when the caller guarantees sorted indices. Diagnostics counters
+        when the caller guarantees sorted indices. A retracted call runs the unsorted gather
+        route, because the sorted `gather_qmm_rhs` kernels read per-expert offsets and give a
+        correct result only for sorted indices. Diagnostics counters
         (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
         mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
         quantized-vector bias-sum operand is promoted to the accumulator type before summation

@@ -232,10 +232,12 @@ class RingImpl {
     int64_t wire_offset[2];
     int64_t wire_end[2];
     for (int lr = 0; lr < 2; lr++) {
-      wire_offset[lr] = lr * n_wires * n_bytes_per_wire +
+      // 64-bit from the first factor: lr * n_wires would otherwise be an
+      // int product before it meets the byte count.
+      wire_offset[lr] = static_cast<int64_t>(lr) * n_wires * n_bytes_per_wire +
           static_cast<int64_t>(lw) * n_bytes_per_wire;
-      int64_t region_end =
-          std::min(n_bytes, (lr + 1) * n_wires * n_bytes_per_wire);
+      int64_t region_end = std::min(
+          n_bytes, static_cast<int64_t>(lr + 1) * n_wires * n_bytes_per_wire);
       wire_end[lr] = std::min(region_end, wire_offset[lr] + n_bytes_per_wire);
     }
     int64_t send_offset[2] = {rank_ * n_bytes, rank_ * n_bytes};

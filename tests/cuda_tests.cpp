@@ -160,3 +160,20 @@ TEST_CASE("test fused sdpa at head dims 256 and 512") {
     }
   }
 }
+
+TEST_CASE("test quantized matmul over a few rows") {
+  // Rows 2..7 run the tiled kernel (one weight read for all rows) where the
+  // GPU has it; each row must match a dequantized reference, batched x too.
+  for (int bits : {4, 8}) {
+    auto w = random::normal({384, 512}, bfloat16);
+    auto q = quantize(w, 64, bits);
+    auto w_dq = astype(dequantize(q[0], q[1], q[2], 64, bits), float32);
+    for (Shape x_shape : {Shape{1, 512}, Shape{2, 512}, Shape{5, 512},
+                          Shape{7, 512}, Shape{2, 3, 512}}) {
+      auto x = random::normal(x_shape, bfloat16);
+      auto out = quantized_matmul(x, q[0], q[1], q[2], true, 64, bits);
+      auto expected = matmul(astype(x, float32), transpose(w_dq));
+      CHECK(allclose(astype(out, float32), expected, 2e-2, 2e-1).item<bool>());
+    }
+  }
+}

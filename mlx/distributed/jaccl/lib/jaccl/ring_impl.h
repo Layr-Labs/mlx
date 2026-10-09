@@ -2,9 +2,13 @@
 
 #pragma once
 
+#include <atomic>
+#include <exception>
 #include <future>
+#include <memory>
 #include <span>
 
+#include "jaccl/progress_guard.h"
 #include "jaccl/rdma.h"
 #include "jaccl/threadpool.h"
 
@@ -368,6 +372,7 @@ class RingImpl {
       }
     };
 
+    ProgressGuard guard("ring reduce_scatter", *failed_);
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 forwards this rank's own input; later steps forward the partial
       // accumulated in the output by the previous step.
@@ -406,6 +411,7 @@ class RingImpl {
       while (in_flight > 0) {
         ibv_wc wc[WC_NUM];
         int n = poll_wire(lw, WC_NUM, wc);
+        guard.check(wc, n);
         for (int i = 0; i < n; i++) {
           int work_type = wc[i].wr_id >> 16;
           int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -504,6 +510,7 @@ class RingImpl {
     };
     set_limits();
 
+    ProgressGuard guard("ring all_reduce/all_gather", *failed_);
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 sends this rank's own input; later steps send the accumulated
       // partial from out_ptr.
@@ -537,6 +544,7 @@ class RingImpl {
       while (in_flight > 0) {
         ibv_wc wc[WC_NUM];
         int n = poll_wire(lw, WC_NUM, wc);
+        guard.check(wc, n);
         for (int i = 0; i < n; i++) {
           int work_type = wc[i].wr_id >> 16;
           int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -640,6 +648,7 @@ class RingImpl {
     }
 
     // Main loop
+    ProgressGuard guard("ring send", *failed_);
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -647,6 +656,7 @@ class RingImpl {
       // and send them.
       ibv_wc wc[WC_NUM];
       int n = conns[lw].poll(WC_NUM, wc);
+      guard.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
 
@@ -713,6 +723,7 @@ class RingImpl {
     }
 
     // Main loop
+    ProgressGuard guard("ring recv", *failed_);
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -720,6 +731,7 @@ class RingImpl {
       // data to fetch post another recv.
       ibv_wc wc[WC_NUM];
       int n = conns[lw].poll(WC_NUM, wc);
+      guard.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
 
@@ -785,33 +797,76 @@ class RingImpl {
 
   // Run fn(lw) for each wire, the first n_wires - 1 on the pool and the last
   // inline, then wait for the pool calls before returning.
+  //
+  // A wire that throws sets failed_, which stops the other wires. When all
+  // wires returned the group is closed and the first error is thrown.
   template <typename Fn>
   void dispatch_wires(int n_wires, Fn&& fn) {
-    if (n_wires <= 1 || pool_ == nullptr) {
-      for (int lw = 0; lw < n_wires; lw++) {
+    require_open(*failed_);
+
+    auto run = [&](int lw) {
+      try {
         fn(lw);
+      } catch (...) {
+        failed_->store(true);
+        throw;
       }
-      return;
-    }
+    };
 
-    std::vector<std::future<void>> futures;
-    futures.reserve(n_wires - 1);
-    for (int lw = 0; lw < n_wires - 1; lw++) {
-      futures.emplace_back(pool_->enqueue(fn, lw));
-    }
+    std::exception_ptr error;
+    std::exception_ptr stopped;
+    auto wait = [&](auto&& call) {
+      try {
+        call();
+      } catch (const WireStopped&) {
+        stopped = std::current_exception();
+      } catch (...) {
+        if (!error) {
+          error = std::current_exception();
+        }
+      }
+    };
 
-    // Wait for the pool calls even if the inline one throws, so they never
-    // outlive this frame.
-    try {
-      fn(n_wires - 1);
-    } catch (...) {
+    if (n_wires <= 1 || pool_ == nullptr) {
+      wait([&] {
+        for (int lw = 0; lw < n_wires; lw++) {
+          run(lw);
+        }
+      });
+    } else {
+      std::vector<std::future<void>> futures;
+      futures.reserve(n_wires - 1);
+      wait([&] {
+        for (int lw = 0; lw < n_wires - 1; lw++) {
+          futures.emplace_back(pool_->enqueue(run, lw));
+        }
+        run(n_wires - 1);
+      });
       for (auto& f : futures) {
-        f.wait();
+        wait([&] { f.get(); });
       }
-      throw;
     }
-    for (auto& f : futures) {
-      f.wait();
+
+    if (error || stopped) {
+      close();
+      std::rethrow_exception(error ? error : stopped);
+    }
+  }
+
+  // Cancel the posted work and unpin the buffers. No wire may be running.
+  void close() {
+    failed_->store(true);
+    for (auto& c : left_) {
+      c.release();
+    }
+    for (auto& c : right_) {
+      c.release();
+    }
+    for (auto& b : send_buffers_) {
+      b.deregister();
+    }
+    for (auto& b : recv_buffers_) {
+      b.deregister();
     }
   }
 
@@ -823,6 +878,8 @@ class RingImpl {
   std::span<SharedBuffer> send_buffers_;
   std::span<SharedBuffer> recv_buffers_;
   ThreadPool* pool_;
+  std::unique_ptr<std::atomic<bool>> failed_ =
+      std::make_unique<std::atomic<bool>>(false);
 };
 
 } // namespace jaccl

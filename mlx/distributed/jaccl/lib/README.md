@@ -102,6 +102,16 @@ variables:
   (rank 0 listener)
 - **JACCL_RING** / **MLX_JACCL_RING**: (Optional) Prefer ring topology over
   mesh
+- **JACCL_PROGRESS_TIMEOUT_MS** / **MLX_JACCL_PROGRESS_TIMEOUT_MS**: (Optional)
+  The longest time in milliseconds that a call waits for an RDMA completion.
+  The default is 120000. Zero or a negative value removes the limit.
+
+A call that gets no completion for this time, or that gets a failed work
+completion, fails with an exception. Before the caller sees the exception, the
+group destroys its queue pairs and completion queues and deregisters its
+buffers. Every later call on that group throws immediately. Set the limit
+above the longest time that a rank can wait for a peer, for example in `recv`
+while the peer computes.
 
 ### Device File Format
 

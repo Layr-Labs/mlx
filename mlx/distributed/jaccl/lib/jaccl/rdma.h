@@ -5,6 +5,7 @@
 #include <infiniband/verbs.h>
 
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <span>
 #include <sstream>
@@ -109,6 +110,14 @@ class SharedBuffer {
   SharedBuffer& operator=(const SharedBuffer&) = delete;
 
   void register_to_protection_domain(ibv_pd* protection_domain);
+
+  // Unpin the memory. The buffer cannot be posted after this call.
+  void deregister() {
+    for (auto& [pd, mr] : memory_regions_) {
+      ibv().dereg_mr(mr);
+    }
+    memory_regions_.clear();
+  }
 
   size_t size() const {
     return num_bytes_;
@@ -224,6 +233,27 @@ struct Connection {
   int poll(int num_completions, ibv_wc* work_completions) {
     return ibv_poll_cq(completion_queue, num_completions, work_completions);
   }
+
+  // Destroy the queue pair and the completion queue, which cancels the posted
+  // work. The connection cannot be used after this call.
+  void release() {
+    if (queue_pair != nullptr) {
+      if (int status = ibv().destroy_qp(queue_pair); status != 0) {
+        std::cerr << IBV_TAG << " Could not destroy a queue pair (" << status
+                  << ")" << std::endl;
+      } else {
+        queue_pair = nullptr;
+      }
+    }
+    if (completion_queue != nullptr) {
+      if (int status = ibv().destroy_cq(completion_queue); status != 0) {
+        std::cerr << IBV_TAG << " Could not destroy a completion queue ("
+                  << status << ")" << std::endl;
+      } else {
+        completion_queue = nullptr;
+      }
+    }
+  }
 };
 
 std::vector<Connection> create_connections(
@@ -246,6 +276,10 @@ inline int poll(
         c.completion_queue,
         num_completions - completions,
         work_completions + completions);
+    // Report a failed poll instead of adding it to the count.
+    if (n < 0) {
+      return n;
+    }
 
     completions += n;
   }
@@ -257,13 +291,15 @@ inline int poll(
     std::span<const Connection> connections_2,
     int num_completions,
     ibv_wc* work_completions) {
-  int completions = 0;
-  completions += poll(connections_1, num_completions, work_completions);
-  completions += poll(
+  int completions = poll(connections_1, num_completions, work_completions);
+  if (completions < 0) {
+    return completions;
+  }
+  int n = poll(
       connections_2,
       num_completions - completions,
       work_completions + completions);
-  return completions;
+  return n < 0 ? n : completions + n;
 }
 
 /**

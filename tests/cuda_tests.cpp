@@ -109,3 +109,54 @@ TEST_CASE("test clear cache trims CUDA pool") {
       cudaSuccess);
   CHECK_LT(final_reserved, allocated_reserved);
 }
+
+TEST_CASE("test fused sdpa at head dims 256 and 512") {
+  // 1..3 query rows take the vector kernel (one and two pass), prefill-sized
+  // blocks at head dim 256 take cuDNN on sm_120; each must match an fp32
+  // reference built from plain ops.
+  auto reference = [](array q, array k, array v, float scale, bool causal) {
+    int gqa = q.shape(1) / k.shape(1);
+    int qL = q.shape(2), kL = k.shape(2);
+    k = repeat(astype(k, float32), gqa, 1);
+    v = repeat(astype(v, float32), gqa, 1);
+    auto s = matmul(astype(q, float32) * scale, swapaxes(k, -1, -2));
+    if (causal) {
+      auto rows = reshape(arange(qL) + (kL - qL), {qL, 1});
+      auto cols = reshape(arange(kL), {1, kL});
+      s = where(rows >= cols, s, array(-INFINITY));
+    }
+    return matmul(softmax(s, -1), v);
+  };
+  int cc_major = 0;
+  REQUIRE_EQ(
+      cudaDeviceGetAttribute(
+          &cc_major, cudaDevAttrComputeCapabilityMajor, 0),
+      cudaSuccess);
+  for (int D : {256, 512}) {
+    for (int qL : {1, 3, 64}) {
+      if (qL == 64 && (D != 256 || cc_major < 12)) {
+        continue;
+      }
+      for (int kL : {qL == 64 ? 64 : 37, 1500}) {
+        for (bool causal : {false, true}) {
+          auto q = random::normal({1, 8, qL, D}, bfloat16);
+          // Keys and values as views into a longer cache, like a decode.
+          auto k = slice(
+              random::normal({1, 2, kL + 16, D}, bfloat16),
+              {0, 0, 0, 0},
+              {1, 2, kL, D});
+          auto v = slice(
+              random::normal({1, 2, kL + 16, D}, bfloat16),
+              {0, 0, 0, 0},
+              {1, 2, kL, D});
+          float scale = 1.0f / std::sqrt(static_cast<float>(D));
+          auto out = fast::scaled_dot_product_attention(
+              q, k, v, scale, causal ? "causal" : "", {}, {}, true);
+          auto expected = reference(q, k, v, scale, causal);
+          CHECK(allclose(astype(out, float32), expected, 2e-2, 2e-2)
+                    .item<bool>());
+        }
+      }
+    }
+  }
+}

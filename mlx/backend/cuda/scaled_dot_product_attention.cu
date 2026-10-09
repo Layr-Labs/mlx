@@ -21,6 +21,24 @@ namespace cg = cooperative_groups;
 
 #define PRAGMA_LOOP_UNROLL #pragma unroll
 
+// Reads this lane's N contiguous elements of a row as floats, with vector
+// loads when N is a power of two (head dim 96 has N = 3).
+template <int N, typename T>
+__device__ inline void load_lane_row(const T* row, int lane_idx, float* out) {
+  if constexpr ((N & (N - 1)) == 0) {
+    auto v = load_vector<N>(row, lane_idx);
+    PRAGMA_LOOP_UNROLL
+    for (int i = 0; i < N; i++) {
+      out[i] = static_cast<float>(v[i]);
+    }
+  } else {
+    PRAGMA_LOOP_UNROLL
+    for (int i = 0; i < N; i++) {
+      out[i] = static_cast<float>(row[N * lane_idx + i]);
+    }
+  }
+}
+
 struct AttnParams {
   int B;
   int H;
@@ -39,7 +57,7 @@ struct AttnParams {
 };
 
 template <typename T, bool do_causal, int D>
-__global__ void kernel_sdpav_1pass(
+__global__ void __launch_bounds__(1024) kernel_sdpav_1pass(
     const T* Q,
     const T* K,
     const T* V,
@@ -97,9 +115,10 @@ __global__ void kernel_sdpav_1pass(
       q_seq_idx * params.O_strides[2]; // Sequence
 
   // Read the query and 0 the output accumulator
+  load_lane_row<v_per_thread>(Q, lane_idx, q);
   PRAGMA_LOOP_UNROLL
   for (int i = 0; i < v_per_thread; i++) {
-    q[i] = scale_log2 * static_cast<U>(Q[v_per_thread * lane_idx + i]);
+    q[i] *= scale_log2;
   }
 
   PRAGMA_LOOP_UNROLL
@@ -123,10 +142,7 @@ __global__ void kernel_sdpav_1pass(
 
     if (use_key) {
       // Read the key
-      PRAGMA_LOOP_UNROLL
-      for (int j = 0; j < v_per_thread; j++) {
-        k[j] = K[v_per_thread * lane_idx + j];
-      }
+      load_lane_row<v_per_thread>(K, lane_idx, k);
 
       // Compute the i-th score
       U score = 0.f;
@@ -146,11 +162,11 @@ __global__ void kernel_sdpav_1pass(
       max_score = new_max;
       sum_exp_score = sum_exp_score * factor + exp_score;
 
-      // Update the output accumulator
+      // Update the output accumulator (the key's registers now hold V)
+      load_lane_row<v_per_thread>(V, lane_idx, k);
       PRAGMA_LOOP_UNROLL
       for (int j = 0; j < v_per_thread; j++) {
-        o[j] = o[j] * factor +
-            exp_score * static_cast<U>(V[v_per_thread * lane_idx + j]);
+        o[j] = o[j] * factor + exp_score * k[j];
       }
     }
 
@@ -262,9 +278,10 @@ __global__ void kernel_sdpav_2pass_1(
   maxs += p_offset;
 
   // Read the query and 0 the output accumulator
+  load_lane_row<v_per_thread>(Q, lane_idx, q);
   PRAGMA_LOOP_UNROLL
   for (int i = 0; i < v_per_thread; i++) {
-    q[i] = scale_log2 * static_cast<U>(Q[v_per_thread * lane_idx + i]);
+    q[i] *= scale_log2;
   }
 
   PRAGMA_LOOP_UNROLL
@@ -288,10 +305,7 @@ __global__ void kernel_sdpav_2pass_1(
 
     if (use_key) {
       // Read the key
-      PRAGMA_LOOP_UNROLL
-      for (int j = 0; j < v_per_thread; j++) {
-        k[j] = K[v_per_thread * lane_idx + j];
-      }
+      load_lane_row<v_per_thread>(K, lane_idx, k);
 
       // Compute the i-th score
       U score = 0.f;
@@ -311,11 +325,11 @@ __global__ void kernel_sdpav_2pass_1(
       max_score = new_max;
       sum_exp_score = sum_exp_score * factor + exp_score;
 
-      // Update the output accumulator
+      // Update the output accumulator (the key's registers now hold V)
+      load_lane_row<v_per_thread>(V, lane_idx, k);
       PRAGMA_LOOP_UNROLL
       for (int j = 0; j < v_per_thread; j++) {
-        o[j] = o[j] * factor +
-            exp_score * static_cast<U>(V[v_per_thread * lane_idx + j]);
+        o[j] = o[j] * factor + exp_score * k[j];
       }
     }
 
@@ -371,7 +385,7 @@ __global__ void kernel_sdpav_2pass_1(
 }
 
 template <typename T, bool do_causal, int D>
-__global__ void kernel_sdpav_2pass_2(
+__global__ void __launch_bounds__(1024) kernel_sdpav_2pass_2(
     const float* partials,
     const float* sums,
     const float* maxs,
@@ -459,6 +473,12 @@ void dispatch_headdim(int n, F&& f) {
       break;
     case 128:
       f(std::integral_constant<int, 128>{});
+      break;
+    case 256:
+      f(std::integral_constant<int, 256>{});
+      break;
+    case 512:
+      f(std::integral_constant<int, 512>{});
       break;
   }
 }
@@ -674,7 +694,8 @@ bool supports_sdpa_vector(
   const int key_sequence_length = k.shape(2);
 
   const bool sdpa_supported_head_dim = query_head_dim == value_head_dim &&
-      (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128);
+      (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128 ||
+       query_head_dim == 256 || query_head_dim == 512);
 
   const bool supported_vector_config =
       sdpa_supported_head_dim && query_sequence_length < 4;

@@ -30,6 +30,14 @@ jaccl_test(progress_guard_tests)
 add_test(NAME send_frame COMMAND send_frame_tests)
 
 # The guard reads its limit once in a process, so each mode is one test.
-foreach(mode checks disabled alias precedence negative not-a-number default)
+foreach(
+  mode
+  checks
+  disabled
+  alias
+  precedence
+  negative
+  not-a-number
+  default)
   add_test(NAME progress_guard_${mode} COMMAND progress_guard_tests ${mode})
 endforeach()

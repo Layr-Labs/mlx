@@ -332,6 +332,26 @@ class Config {
 }
 ```
 
+## Tests
+
+`tests/jaccl` in the MLX repository has tests that do not use RDMA hardware.
+They compile the mesh, ring and RDMA headers with a small stand-in for
+`<infiniband/verbs.h>` and simulate the verbs. They check that each send frame
+holds its payload and then only zero bytes, and that a call fails and the group
+is closed when a completion does not arrive or reports a failure. The directory
+is a separate CMake project, so the MLX build does not build it:
+
+```bash
+cmake -S tests/jaccl -B build/jaccl-tests
+cmake --build build/jaccl-tests
+ctest --test-dir build/jaccl-tests --output-on-failure
+```
+
+The tests use AddressSanitizer and UndefinedBehaviorSanitizer. Configure with
+`-DJACCL_TESTS_TSAN=ON` to use ThreadSanitizer. The guard tests measure time: a
+stalled call must fail between its limit of 250 ms and one second after it, so
+a machine under heavy load can make them fail.
+
 ## License
 
 JACCL is part of MLX and is released under the same license.

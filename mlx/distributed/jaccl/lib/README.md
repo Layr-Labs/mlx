@@ -109,9 +109,10 @@ variables:
 A call that gets no completion for this time, or that gets a failed work
 completion, fails with an exception. Before the caller sees the exception, the
 group destroys its queue pairs and completion queues and deregisters its
-buffers. Every later call on that group throws immediately. Set the limit
-above the longest time that a rank can wait for a peer, for example in `recv`
-while the peer computes.
+buffers. Every later call on that group throws immediately, and the group
+cannot be opened again in the same process. Set the limit above the longest
+time that a rank can wait for a peer, for example in `recv` while the peer
+computes.
 
 ### Device File Format
 

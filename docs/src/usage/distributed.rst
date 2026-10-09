@@ -378,6 +378,24 @@ concatenated in rank order.
         all_gather_factory=make_side_channel,
     )
 
+A peer that does not answer
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+JACCL waits for RDMA completions in a polling loop. When the peer stops or the
+link fails, no completion arrives. A JACCL call that gets no completion for
+longer than :envvar:`MLX_JACCL_PROGRESS_TIMEOUT_MS` (120 seconds by default)
+raises an error. A call that gets a failed completion raises an error
+immediately.
+
+After such an error the communication group is closed. JACCL destroys the queue
+pairs and the completion queues of the group and deregisters its buffers, and
+each later call on the group raises an error immediately. The group cannot be
+opened again. Start a new process to communicate again.
+
+The time that a rank waits includes the time that its peer computes, for
+example in :func:`mlx.core.distributed.recv`. Set the limit above the longest
+such wait, or set it to ``0`` to remove the limit.
+
 .. _nccl_section:
 
 Getting Started with NCCL
@@ -549,6 +567,10 @@ the following:
       ["rdma_en4", "rdma_en3", null, "rdma_en5"],
       ["rdma_en3", "rdma_en4", "rdma_en5", null]
    ]
+
+:envvar:`MLX_JACCL_PROGRESS_TIMEOUT_MS` is optional. It contains the longest time
+in milliseconds that a call waits for an RDMA completion before it raises an
+error and closes the group. The default is 120000 and 0 removes the limit.
 
 
 NCCL

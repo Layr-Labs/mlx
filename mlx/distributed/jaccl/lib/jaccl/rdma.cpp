@@ -123,6 +123,7 @@ Connection::Connection(Connection&& c) : Connection(nullptr) {
   std::swap(completion_queue, c.completion_queue);
   std::swap(queue_pair, c.queue_pair);
   std::swap(src, c.src);
+  std::swap(source_gid_index, c.source_gid_index);
 }
 
 Connection::~Connection() {
@@ -196,6 +197,7 @@ const Destination& Connection::info() {
       if (*(uint64_t*)&tmp.raw[0] == 0 && *(uint16_t*)&tmp.raw[8] == 0 &&
           *(uint16_t*)&tmp.raw[10] == 0xffff) {
         gid = tmp;
+        source_gid_index = i;
         found_gid = true;
         break;
       }
@@ -255,7 +257,9 @@ void Connection::queue_pair_rtr(const Destination& dst) {
     attr.ah_attr.is_global = 1;
     attr.ah_attr.grh.hop_limit = 1;
     attr.ah_attr.grh.dgid = dst.global_identifier;
-    attr.ah_attr.grh.sgid_index = 1;
+    // Send from the GID the peer was told about. Its position depends on
+    // which other addresses the interface has; it is not always index 1.
+    attr.ah_attr.grh.sgid_index = source_gid_index;
   }
 
   int mask = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |

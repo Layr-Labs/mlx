@@ -175,6 +175,8 @@ struct Connection {
   ibv_cq* completion_queue;
   ibv_qp* queue_pair;
   Destination src; // holds the local information
+  // Index in the port's GID table of the GID advertised in `src`.
+  int source_gid_index = 1;
 
   Connection(ibv_context* ctx_);
   Connection(Connection&& c);

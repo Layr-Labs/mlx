@@ -29,7 +29,8 @@ jaccl_test(progress_guard_tests)
 
 add_test(NAME send_frame COMMAND send_frame_tests)
 
-# The guard reads its limit once in a process, so each mode is one test.
+# The guard reads its limit and action once in a process, so each mode is one
+# test. teardown-exit and default-exit start this program again as children.
 foreach(
   mode
   checks
@@ -38,6 +39,8 @@ foreach(
   precedence
   negative
   not-a-number
-  default)
+  default
+  teardown-exit
+  default-exit)
   add_test(NAME progress_guard_${mode} COMMAND progress_guard_tests ${mode})
 endforeach()

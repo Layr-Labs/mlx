@@ -20,6 +20,10 @@ constexpr int SEND_WR = 1;
 constexpr int RECV_WR = 2;
 constexpr int MAX_SEND_WR = 32;
 constexpr int MAX_RECV_WR = 32;
+// Each completion queue has four times the entries its queue pair can have
+// outstanding. A queue sized exactly to the outstanding work has no headroom,
+// and a provider may drop a completion on a full queue without an error.
+constexpr int COMPLETION_QUEUE_DEPTH = 4 * (MAX_SEND_WR + MAX_RECV_WR);
 constexpr int BUFFER_SIZES = 8;
 constexpr int NUM_BUFFERS = 2;
 constexpr int FRAME_SIZE = 4096;

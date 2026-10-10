@@ -538,7 +538,8 @@ class MeshImpl {
 
  private:
   // One call into the group. It refuses a closed group, and it closes the
-  // group when the call ends with an exception.
+  // group when the call ends with an exception. Unless the failure action is
+  // Throw, it then leaves the process through teardown_exit().
   class Call : public ProgressGuard {
    public:
     Call(MeshImpl& mesh, const char* op)
@@ -551,6 +552,11 @@ class MeshImpl {
     ~Call() {
       if (std::uncaught_exceptions() > exceptions_) {
         mesh_.close();
+        if (failure_action() == FailureAction::TeardownExit) {
+          teardown_exit(
+              failure().empty() ? "[jaccl] A mesh call failed with an error."
+                                : failure().c_str());
+        }
       }
     }
 

@@ -1,15 +1,29 @@
 // Copyright © 2026 Apple Inc.
 
 // Tests of the progress guard with simulated verbs. Each call goes through
-// the real mesh and ring headers. The limit is read once in a process, so each
-// mode of this program sets the environment first and is one CTest test.
+// the real mesh and ring headers. The limit and the failure action are read
+// once in a process, so each mode of this program sets the environment first
+// and is one CTest test. The modes that check the exceptions select the
+// "throw" action; the teardown-exit modes run each case in a child process of
+// this program and check how it ended.
 
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+
+extern char** environ;
 
 #include "fixture.h"
 #include "jaccl/progress_guard.h"
@@ -744,6 +758,389 @@ void stall() {
   });
 }
 
+// Teardown exit. A child runs one failing call; its memory release hook
+// reports the ledger. The parent checks the exit status, the time from the
+// start of the call to the exit, and what the child printed.
+
+// What the release hook of a child expects to find already destroyed.
+int expected_pairs = 0, expected_regions = 0;
+bool at_least = false;
+std::atomic<int> releases{0};
+
+void report_release() {
+  const auto& l = fixture::ledger();
+  const int pairs = l.destroy_queue_pair_calls,
+            queues = l.destroy_completion_queue_calls,
+            regions = l.deregister_calls;
+  const bool ok = at_least ? pairs >= expected_pairs &&
+          queues >= expected_pairs && regions >= expected_regions
+                           : pairs == expected_pairs &&
+          queues == expected_pairs && regions == expected_regions;
+  std::printf(
+      "RELEASE %d %s pairs=%d queues=%d regions=%d expected=%d/%d\n",
+      ++releases,
+      ok ? "ok" : "mismatch",
+      pairs,
+      queues,
+      regions,
+      expected_pairs,
+      expected_regions);
+  std::fflush(stdout);
+}
+
+void hang() {
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+}
+
+void call_start() {
+  std::printf(
+      "CALL %lld\n",
+      static_cast<long long>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              Clock::now().time_since_epoch())
+              .count()));
+  std::fflush(stdout);
+}
+
+// The connections of one rank that hold a queue pair, and the regions of one
+// rank (both ranks register the same number).
+int live(const std::vector<jaccl::Connection>& links) {
+  int count = 0;
+  for (const auto& connection : links) {
+    count += connection.ctx != nullptr;
+  }
+  return count;
+}
+
+// Run the call; reaching the end means the process did not exit.
+template <typename Call>
+int child_call(Call call) {
+  call_start();
+  const Outcome outcome = attempt(call);
+  if (outcome.threw) {
+    std::printf("THREW %s\n", outcome.message.c_str());
+  } else {
+    std::printf("RETURNED\n");
+  }
+  return 0;
+}
+
+int child(const std::string& name) {
+  limit = jaccl::progress_timeout_ms();
+  if (name != "no-hook") {
+    jaccl::set_memory_release(name == "hung-hook" ? &hang : &report_release);
+  }
+  if (name == "mesh-recv" || name == "no-hook" || name == "hung-hook") {
+    fixture::MeshPair pair;
+    arm(pair.fabric);
+    expected_pairs = live(pair.links[1]);
+    expected_regions = fixture::ledger().regions / 2;
+    std::vector<char> out(100, 0x29);
+    return child_call([&] { pair.nodes[1]->recv(out.data(), 100, 0); });
+  }
+  if (name == "mesh-all-reduce") {
+    fixture::MeshPair pair;
+    arm(pair.fabric);
+    expected_pairs = live(pair.links[0]);
+    expected_regions = fixture::ledger().regions / 2;
+    Buffers b;
+    return child_call([&] {
+      pair.nodes[0]->all_reduce(b.in.data(), b.out.data(), 64, fixture::Add{});
+    });
+  }
+  if (name == "mesh-failed-completion") {
+    fixture::MeshPair pair;
+    arm(pair.fabric);
+    fixture::endpoint(pair.links[1][0]).fault.fail_receive = 0;
+    expected_pairs = live(pair.links[1]);
+    expected_regions = fixture::ledger().regions / 2;
+    std::vector<char> in(100, 0x53), out(100, 0x29);
+    std::thread sender(
+        [&] { attempt([&] { pair.nodes[0]->send(in.data(), 100, 1); }); });
+    sender.detach();
+    return child_call([&] { pair.nodes[1]->recv(out.data(), 100, 0); });
+  }
+  if (name == "ring-recv-2") {
+    fixture::RingPair pair(2);
+    arm(pair.fabric);
+    expected_pairs = live(pair.left[1]) + live(pair.right[1]);
+    expected_regions = fixture::ledger().regions / 2;
+    std::vector<char> out(100, 0x29);
+    return child_call([&] { pair.nodes[1]->recv(out.data(), 100, 0, 2); });
+  }
+  if (name == "two-groups") {
+    // Two groups fail at the same time on two threads: one exit, one release.
+    fixture::MeshPair first, second;
+    arm(first.fabric);
+    arm(second.fabric);
+    expected_pairs = live(first.links[1]);
+    expected_regions = fixture::ledger().regions / 4;
+    at_least = true;
+    std::vector<char> a(100, 0x29), b(100, 0x29);
+    std::thread other(
+        [&] { attempt([&] { second.nodes[1]->recv(b.data(), 100, 0); }); });
+    other.detach();
+    return child_call([&] { first.nodes[1]->recv(a.data(), 100, 0); });
+  }
+  std::printf("FAIL unknown child case %s\n", name.c_str());
+  return 2;
+}
+
+struct Ended {
+  int status = -1; // the exit status, or -1 when the child did not exit
+  int64_t ms = -1; // from the start of the call to the exit
+  std::string out, err;
+};
+
+std::string slurp(const std::string& path) {
+  std::ifstream file(path);
+  std::stringstream text;
+  text << file.rdbuf();
+  return text.str();
+}
+
+// Run this program as a child with `name` and only `variables` of the four
+// guard variables set.
+Ended run_child(
+    const char* program,
+    const std::string& name,
+    const std::map<std::string, std::string>& variables) {
+  std::vector<std::string> keep;
+  for (char** e = environ; *e != nullptr; ++e) {
+    std::string entry(*e);
+    bool guard = false;
+    for (const char* v :
+         {"JACCL_PROGRESS_TIMEOUT_MS=",
+          "MLX_JACCL_PROGRESS_TIMEOUT_MS=",
+          "JACCL_TIMEOUT_ACTION=",
+          "MLX_JACCL_TIMEOUT_ACTION="}) {
+      guard |= entry.rfind(v, 0) == 0;
+    }
+    if (!guard) {
+      keep.push_back(entry);
+    }
+  }
+  for (const auto& [key, value] : variables) {
+    keep.push_back(key + "=" + value);
+  }
+  // ThreadSanitizer sleeps 1 s in _exit by default; the timing checks measure
+  // the exit, so the children skip that sleep. Other sanitizers ignore it.
+  bool tsan_options = false;
+  for (auto& entry : keep) {
+    if (entry.rfind("TSAN_OPTIONS=", 0) == 0) {
+      entry += ":atexit_sleep_ms=0";
+      tsan_options = true;
+    }
+  }
+  if (!tsan_options) {
+    keep.push_back("TSAN_OPTIONS=atexit_sleep_ms=0");
+  }
+  std::vector<char*> envp;
+  for (auto& entry : keep) {
+    envp.push_back(entry.data());
+  }
+  envp.push_back(nullptr);
+
+  const char* dir = std::getenv("TMPDIR");
+  std::string base = std::string(dir ? dir : "/tmp") + "/jaccl-guard-child-" +
+      std::to_string(getpid()) + "-" + name;
+  const std::string out_path = base + ".out", err_path = base + ".err";
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addopen(
+      &actions, 1, out_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  posix_spawn_file_actions_addopen(
+      &actions, 2, err_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  std::string self(program), mode("child");
+  std::string which(name);
+  char* argv[] = {self.data(), mode.data(), which.data(), nullptr};
+  pid_t pid = 0;
+  const int spawned =
+      posix_spawn(&pid, program, &actions, nullptr, argv, envp.data());
+  posix_spawn_file_actions_destroy(&actions);
+  fixture::require(spawned == 0, "Could not start the child process");
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+  const auto end = Clock::now();
+  Ended ended;
+  ended.status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  ended.out = slurp(out_path);
+  ended.err = slurp(err_path);
+  std::remove(out_path.c_str());
+  std::remove(err_path.c_str());
+  const auto call = ended.out.find("CALL ");
+  if (call != std::string::npos) {
+    const auto started = Clock::time_point(
+        std::chrono::nanoseconds(
+            std::stoll(
+                ended.out.substr(call + 5, ended.out.find('\n', call)))));
+    ended.ms = std::chrono::duration_cast<milliseconds>(end - started).count();
+  }
+  return ended;
+}
+
+int count(const std::string& text, const std::string& part) {
+  int n = 0;
+  for (auto at = text.find(part); at != std::string::npos;
+       at = text.find(part, at + part.size())) {
+    n++;
+  }
+  return n;
+}
+
+[[noreturn]] void child_mismatch(const std::string& what, const Ended& e) {
+  std::ostringstream text;
+  text << what << " (status " << e.status << ", " << e.ms
+       << " ms; stdout: " << e.out << "; stderr: " << e.err << ")";
+  throw std::runtime_error(text.str());
+}
+
+// The child left through teardown_exit: status 75, the reason first, the
+// release hook once after the group was released (unless `hook` is false),
+// within [at, at + slack] ms of the start of the call.
+void expect_teardown_exit(
+    const Ended& e,
+    const std::string& reason,
+    int64_t at,
+    bool hook = true) {
+  if (e.status != jaccl::TEARDOWN_EXIT_STATUS) {
+    child_mismatch("the process did not exit with status 75", e);
+  }
+  if (count(e.err, reason) != 1 ||
+      count(
+          e.err,
+          "[jaccl] The group is released; releasing memory, then exiting "
+          "with status 75 (JACCL_TIMEOUT_ACTION=teardown-exit).") != 1) {
+    child_mismatch("the reason or the exit notice is missing", e);
+  }
+  if (hook) {
+    if (count(e.out, "RELEASE ") != 1 || count(e.out, "RELEASE 1 ok ") != 1 ||
+        count(e.err, "[jaccl] Memory released; exiting with status 75.") != 1) {
+      child_mismatch(
+          "the release hook did not run once after the group was released", e);
+    }
+  } else if (
+      count(e.out, "RELEASE ") != 0 ||
+      count(
+          e.err,
+          "[jaccl] No memory release registered; exiting with status 75.") !=
+          1) {
+    child_mismatch("a process without a release hook did not say so", e);
+  }
+  if (count(e.out, "THREW") != 0 || count(e.out, "RETURNED") != 0) {
+    child_mismatch("the failed call came back to the caller", e);
+  }
+  if (e.ms < at || e.ms > at + slack) {
+    child_mismatch("the exit is outside [at, at + slack] ms", e);
+  }
+  static bool shown = false;
+  if (!shown) {
+    std::cout << "INFO teardown exit:\n" << e.err;
+    shown = true;
+  }
+}
+
+// The child kept running: the call threw `reason` and nothing was released.
+void expect_throw(const Ended& e, const std::string& reason) {
+  if (e.status != 0 || count(e.out, "THREW " + reason) != 1 ||
+      count(e.out, "RELEASE ") != 0 ||
+      count(e.err, "exiting with status") != 0) {
+    child_mismatch("the call did not throw to the caller", e);
+  }
+}
+
+void teardown_exit_checks(const char* program) {
+  limit = 250;
+  const std::string limit_text = std::to_string(limit);
+  const std::string no_progress = "[jaccl] mesh recv: no completion for ";
+  using Env = std::map<std::string, std::string>;
+  const Env ms = {{"JACCL_PROGRESS_TIMEOUT_MS", limit_text}};
+  check("teardown exit is the default: a stalled mesh recv exits with 75", [&] {
+    expect_teardown_exit(
+        run_child(program, "mesh-recv", ms), no_progress, limit);
+  });
+  check("teardown exit by name: a stalled mesh all_reduce exits with 75", [&] {
+    Env env = ms;
+    env["JACCL_TIMEOUT_ACTION"] = "teardown-exit";
+    expect_teardown_exit(
+        run_child(program, "mesh-all-reduce", env),
+        "[jaccl] mesh all_reduce: no completion for ",
+        limit);
+  });
+  check(
+      "teardown exit: a stalled ring recv on 2 wires exits after both wires stopped",
+      [&] {
+        expect_teardown_exit(
+            run_child(program, "ring-recv-2", ms),
+            "[jaccl] ring recv: no completion for ",
+            limit);
+      });
+  check("teardown exit: a failed completion exits at once", [&] {
+    const Env env = {{"JACCL_PROGRESS_TIMEOUT_MS", "4000"}};
+    const Ended e = run_child(program, "mesh-failed-completion", env);
+    expect_teardown_exit(
+        e, "[jaccl] mesh recv: a work completion failed with status 5", 0);
+  });
+  check("teardown exit without a release hook still exits with 75", [&] {
+    expect_teardown_exit(
+        run_child(program, "no-hook", ms), no_progress, limit, false);
+  });
+  check(
+      "teardown exit: a release hook that never returns is cut off after 10 s",
+      [&] {
+        const Ended e = run_child(program, "hung-hook", ms);
+        if (e.status != jaccl::TEARDOWN_EXIT_STATUS ||
+            count(
+                e.err,
+                "[jaccl] The memory release did not finish in 10000 ms; "
+                "exiting.") != 1 ||
+            e.ms < limit + jaccl::TEARDOWN_RELEASE_LIMIT_MS ||
+            e.ms > limit + jaccl::TEARDOWN_RELEASE_LIMIT_MS + slack) {
+          child_mismatch("the release was not cut off at its limit", e);
+        }
+      });
+  check(
+      "teardown exit: two groups that fail together give one release and one exit",
+      [&] {
+        expect_teardown_exit(
+            run_child(program, "two-groups", ms), no_progress, limit);
+      });
+  check("an unknown action keeps the default (teardown exit)", [&] {
+    Env env = ms;
+    env["JACCL_TIMEOUT_ACTION"] = "abort";
+    expect_teardown_exit(
+        run_child(program, "mesh-recv", env), no_progress, limit);
+  });
+  check("JACCL_TIMEOUT_ACTION=throw is used before the alias", [&] {
+    Env env = ms;
+    env["JACCL_TIMEOUT_ACTION"] = "throw";
+    env["MLX_JACCL_TIMEOUT_ACTION"] = "teardown-exit";
+    expect_throw(run_child(program, "mesh-recv", env), no_progress);
+  });
+  check("MLX_JACCL_TIMEOUT_ACTION=throw is read when the name is unset", [&] {
+    Env env = ms;
+    env["MLX_JACCL_TIMEOUT_ACTION"] = "throw";
+    expect_throw(run_child(program, "mesh-recv", env), no_progress);
+  });
+}
+
+// No variable at all: the 30 s default limit and the teardown exit.
+void default_exit_check(const char* program) {
+  limit = 30000;
+  check(
+      "default: with no variable a stalled mesh recv exits with 75 after 30 s",
+      [&] {
+        const Ended e = run_child(program, "mesh-recv", {});
+        expect_teardown_exit(e, "[jaccl] mesh recv: no completion for ", limit);
+        if (count(e.err, "(JACCL_PROGRESS_TIMEOUT_MS is 30000)") != 1) {
+          child_mismatch("the reason does not name the 30 s limit", e);
+        }
+      });
+}
+
 } // namespace
 
 // One mode in each process:
@@ -753,14 +1150,25 @@ void stall() {
 //   precedence    JACCL_PROGRESS_TIMEOUT_MS is used before the alias
 //   negative      a negative value removes the limit
 //   not-a-number  a value that is not a number keeps the default
-//   default       no variable: the default
+//   default       no variable: the default limit (30 s) and action
+//   teardown-exit the failure action, each case in a child process
+//   default-exit  no variable: a stalled call exits with 75 after 30 s
+// All modes but the last three select JACCL_TIMEOUT_ACTION=throw.
 int main(int count, char** arguments) {
   const char* name = "JACCL_PROGRESS_TIMEOUT_MS";
   const char* alias = "MLX_JACCL_PROGRESS_TIMEOUT_MS";
-  const std::string mode = count == 2 ? arguments[1] : "";
+  const std::string mode = count >= 2 ? arguments[1] : "";
+  if (mode == "child" && count == 3) {
+    return child(arguments[2]);
+  }
   // The guard reads the variables when the first call starts.
   unsetenv(name);
   unsetenv(alias);
+  unsetenv("JACCL_TIMEOUT_ACTION");
+  unsetenv("MLX_JACCL_TIMEOUT_ACTION");
+  if (mode != "default" && mode != "teardown-exit" && mode != "default-exit") {
+    setenv("JACCL_TIMEOUT_ACTION", "throw", 1);
+  }
   if (mode == "checks") {
     setenv(name, "250", 1);
     value(250);
@@ -789,10 +1197,22 @@ int main(int count, char** arguments) {
     setenv(name, "30s", 1);
     value(jaccl::DEFAULT_PROGRESS_TIMEOUT_MS);
   } else if (mode == "default") {
-    value(jaccl::DEFAULT_PROGRESS_TIMEOUT_MS);
+    value(30000);
+    check(
+        "the default limit is 30 s and the default action teardown-exit", [&] {
+          fixture::require(
+              jaccl::DEFAULT_PROGRESS_TIMEOUT_MS == 30000 &&
+                  jaccl::failure_action() == jaccl::FailureAction::TeardownExit,
+              "unexpected default limit or action");
+        });
+  } else if (mode == "teardown-exit") {
+    teardown_exit_checks(arguments[0]);
+  } else if (mode == "default-exit") {
+    default_exit_check(arguments[0]);
   } else {
     std::cout << "FAIL usage: progress_guard_tests checks | disabled | alias | "
-                 "precedence | negative | not-a-number | default\n";
+                 "precedence | negative | not-a-number | default | "
+                 "teardown-exit | default-exit\n";
     return 2;
   }
   const auto& ledger = fixture::ledger();

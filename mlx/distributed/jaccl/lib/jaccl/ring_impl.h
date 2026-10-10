@@ -801,7 +801,9 @@ class RingImpl {
   // inline, then wait for the pool calls before returning.
   //
   // A wire that throws sets failed_, which stops the other wires. When all
-  // wires returned the group is closed and the first error is thrown.
+  // wires returned the group is closed and the first error is thrown, or,
+  // unless the failure action is Throw, the process leaves through
+  // teardown_exit().
   template <typename Fn>
   void dispatch_wires(int n_wires, Fn&& fn) {
     require_open(*failed_);
@@ -851,6 +853,9 @@ class RingImpl {
 
     if (error || stopped) {
       close();
+      if (failure_action() == FailureAction::TeardownExit) {
+        teardown_exit(describe(error ? error : stopped).c_str());
+      }
       std::rethrow_exception(error ? error : stopped);
     }
   }

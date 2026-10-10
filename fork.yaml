@@ -32,9 +32,10 @@ def:
 
     The fork also changes JACCL, the RDMA-over-Thunderbolt backend that runs one model across
     two Macs: it zeroes the unused tail of every send frame, and a progress guard fails a call
-    that gets no completion and closes its group. These two are not gated. The zeroing is
-    always on, and the guard is on with a 120 s limit that `JACCL_PROGRESS_TIMEOUT_MS=0`
-    removes.
+    that gets no completion, closes its group and by default releases the GPU memory and exits
+    the process with status 75. These two are not gated. The zeroing is always on, and the
+    guard is on with a 30 s limit that `JACCL_PROGRESS_TIMEOUT_MS=0` removes;
+    `JACCL_TIMEOUT_ACTION=throw` keeps the process alive and throws instead.
 
     Three sections are not fork work at all: the fork carries upstream's own v0.32.2 changes
     (applied in PR #10 rather than merged) and two sets of cherry-picked upstream fixes, and
@@ -193,15 +194,19 @@ def:
         (`progress_guard.h`) is called after every poll of every mesh and ring loop. A
         completion with a failure status, or a failed `ibv_poll_cq`, is an error at once; no
         completion for longer than `JACCL_PROGRESS_TIMEOUT_MS` /
-        `MLX_JACCL_PROGRESS_TIMEOUT_MS` (default 120000 ms; `0` or a negative value removes
+        `MLX_JACCL_PROGRESS_TIMEOUT_MS` (default 30000 ms; `0` or a negative value removes
         the limit) is an error. The clock is read once per 1024 polls that return nothing, so
-        the polling fast path gains a counter and no clock read. The call throws a `[jaccl]`
-        `std::runtime_error` rather than exiting the process. Before the caller sees it, the
-        group destroys its queue pairs and completion queues and deregisters its buffers; the
-        ring does so only after all wires have returned. Every later call on that group throws
-        immediately and the group cannot be reopened in the process. `dispatch_wires` also
-        reports the errors of the ring pool wires, which it used to drop. The completion-queue
-        size is unchanged.
+        the polling fast path gains a counter and no clock read. The failed call first
+        destroys the group's queue pairs and completion queues and deregisters its buffers;
+        the ring does so only after all wires have returned. Then, by default
+        (`JACCL_TIMEOUT_ACTION` / `MLX_JACCL_TIMEOUT_ACTION` = `teardown-exit`), it prints the
+        reason, runs the memory release hook that MLX's `jaccl.cpp` registers
+        (`set_wired_limit(0)`, then `clear_cache()`, at most 10 s) and leaves through
+        `std::_Exit(75)`, a restartable status. With `throw` it throws a `[jaccl]`
+        `std::runtime_error` instead; every later call on that group throws immediately and
+        the group cannot be reopened in the process. `dispatch_wires` also reports the errors
+        of the ring pool wires, which it used to drop. Each completion queue has four times
+        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`).
 
         Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection

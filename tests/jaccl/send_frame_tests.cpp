@@ -326,16 +326,20 @@ int main() {
       ring_collectives, "ring reduction/scatter full/partial/zero slices");
   passed &=
       group(ring_gather, "ring all_gather distinct rank data, one/two wires");
-  // The completion queues of the groups have MAX_SEND_WR + MAX_RECV_WR entries.
-  // Report how many of them this traffic used at the same time.
+  // The completion queues of the groups have COMPLETION_QUEUE_DEPTH entries,
+  // four times the work a queue pair can have outstanding. Report how many
+  // completions this traffic queued at the same time; it must stay within the
+  // outstanding bound, so that the headroom is real.
+  static_assert(COMPLETION_QUEUE_DEPTH == 4 * (MAX_SEND_WR + MAX_RECV_WR));
   const size_t depth = fixture::ledger().completion_high_water;
-  const size_t capacity = MAX_SEND_WR + MAX_RECV_WR;
-  if (depth <= capacity) {
+  const size_t outstanding = MAX_SEND_WR + MAX_RECV_WR;
+  if (depth <= outstanding) {
     std::cout << "PASS completion queue high-water mark " << depth << " of "
-              << capacity << " entries\n";
+              << COMPLETION_QUEUE_DEPTH << " entries (outstanding bound "
+              << outstanding << ")\n";
   } else {
     std::cout << "FAIL completion queue high-water mark " << depth
-              << " exceeds " << capacity << '\n';
+              << " exceeds the outstanding bound " << outstanding << '\n';
     passed = false;
   }
   const auto& ledger = fixture::ledger();

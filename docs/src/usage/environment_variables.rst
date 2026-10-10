@@ -66,13 +66,24 @@ sets them.
 .. envvar:: MLX_JACCL_PROGRESS_TIMEOUT_MS
 
    The longest time in milliseconds that a JACCL call waits for an RDMA
-   completion. The default is ``120000``. Set it to ``0`` or a negative value
+   completion. The default is ``30000``. Set it to ``0`` or a negative value
    to remove the limit. ``JACCL_PROGRESS_TIMEOUT_MS`` is accepted as a
    higher-priority alias. When no completion arrives for this time, the call
-   raises an error and the group is closed: its queue pairs and completion
-   queues are destroyed, its buffers are deregistered, and each later call on
-   the group raises an error immediately. See the :ref:`JACCL section
+   fails and the group is closed: its queue pairs and completion queues are
+   destroyed and its buffers are deregistered. What follows is set by
+   :envvar:`MLX_JACCL_TIMEOUT_ACTION`. See the :ref:`JACCL section
    <jaccl_section>`.
+
+.. envvar:: MLX_JACCL_TIMEOUT_ACTION
+
+   What a JACCL call does after it failed (no completion within
+   :envvar:`MLX_JACCL_PROGRESS_TIMEOUT_MS`, a failed completion, or a failed
+   poll) and closed its group. ``teardown-exit``, the default, sets the wired
+   limit to zero, clears the buffer cache and exits the process with status 75
+   without running static destructors. ``throw`` raises an error; each later
+   call on the group then raises an error immediately. Any other value keeps
+   the default. ``JACCL_TIMEOUT_ACTION`` is accepted as a higher-priority
+   alias.
 
 .. envvar:: MLX_WORLD_SIZE
 

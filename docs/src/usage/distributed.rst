@@ -378,6 +378,32 @@ concatenated in rank order.
         all_gather_factory=make_side_channel,
     )
 
+A peer that does not answer
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+JACCL waits for RDMA completions in a polling loop. When the peer stops or the
+link fails, no completion arrives. A JACCL call that gets no completion for
+longer than :envvar:`MLX_JACCL_PROGRESS_TIMEOUT_MS` (30 seconds by default)
+fails. A call that gets a failed completion fails immediately.
+
+A failed call closes the communication group: JACCL destroys the queue pairs
+and the completion queues of the group and deregisters its buffers. Then, by
+default, it releases the wired GPU memory of the process (it sets the wired
+limit to zero and clears the buffer cache) and exits the process with status
+75, so that a supervisor can restart it. This teardown exit is the default
+because a rank that dies with RDMA work outstanding can leave its memory wired
+until the machine restarts, and because the call often runs on a thread where
+an exception cannot reach the program.
+
+With :envvar:`MLX_JACCL_TIMEOUT_ACTION` set to ``throw`` the call raises an
+error instead and the process continues. Each later call on the closed group
+raises an error immediately, and the group cannot be opened again. Start a new
+process to communicate again.
+
+The time that a rank waits includes the time that its peer computes, for
+example in :func:`mlx.core.distributed.recv`. Set the limit above the longest
+such wait, or set it to ``0`` to remove the limit.
+
 .. _nccl_section:
 
 Getting Started with NCCL
@@ -549,6 +575,13 @@ the following:
       ["rdma_en4", "rdma_en3", null, "rdma_en5"],
       ["rdma_en3", "rdma_en4", "rdma_en5", null]
    ]
+
+:envvar:`MLX_JACCL_PROGRESS_TIMEOUT_MS` is optional. It contains the longest time
+in milliseconds that a call waits for an RDMA completion before it fails and
+closes the group. The default is 30000 and 0 removes the limit.
+:envvar:`MLX_JACCL_TIMEOUT_ACTION` is optional. It selects what a failed call
+does after it closed the group: ``teardown-exit`` (the default) releases the
+GPU memory and exits the process with status 75, ``throw`` raises an error.
 
 
 NCCL

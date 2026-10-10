@@ -30,9 +30,17 @@ def:
     Metal eval. Every change is meant to be additive and rebasable; each is gated by shape,
     device or environment checks so the upstream path stays the default elsewhere.
 
-    One section is not fork work at all: the fork carries upstream's own v0.32.2 changes
-    (applied in PR #10 rather than merged), and those files are listed as such so the page
-    stays honest about what Layr-Labs actually changed.
+    The fork also changes JACCL, the RDMA-over-Thunderbolt backend that runs one model across
+    two Macs: it zeroes the unused tail of every send frame, and a progress guard fails a call
+    that gets no completion, closes its group and by default releases the GPU memory and exits
+    the process with status 75. These two are not gated. The zeroing is always on, and the
+    guard is on with a 30 s limit that `JACCL_PROGRESS_TIMEOUT_MS=0` removes;
+    `JACCL_TIMEOUT_ACTION=throw` keeps the process alive and throws instead.
+
+    Three sections are not fork work at all: the fork carries upstream's own v0.32.2 changes
+    (applied in PR #10 rather than merged) and two sets of cherry-picked upstream fixes, and
+    those files are listed as such so the page stays honest about what Layr-Labs actually
+    changed.
   sub:
     - title: "Metal eval: use-after-free with mid-eval synchronization"
       description: |
@@ -169,6 +177,58 @@ def:
         - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
+    - title: "JACCL: zeroed send-frame tails, a progress guard and the advertised GID"
+      description: |
+        JACCL is the RDMA-over-Thunderbolt backend. Upstream has changed none of the three
+        things below.
+
+        Send frames: JACCL posts every frame at the full size of its scratch buffer, so a
+        payload shorter than the buffer went to the peer followed by the bytes of earlier
+        sends. `stage_send_frame` (`send_frame.h`) copies the payload and zeroes the rest of
+        the frame, and every mesh and ring send path stages through
+        `SharedBuffer::stage_send`. The posted sizes and the receive paths are unchanged.
+
+        Progress guard: the polling loops waited for completions without a limit and never
+        read `wc.status`, so a rank whose peer had died spun on a full core until it was
+        killed, and a failed completion was used as data. `ProgressGuard`
+        (`progress_guard.h`) is called after every poll of every mesh and ring loop. A
+        completion with a failure status, or a failed `ibv_poll_cq`, is an error at once; no
+        completion for longer than `JACCL_PROGRESS_TIMEOUT_MS` /
+        `MLX_JACCL_PROGRESS_TIMEOUT_MS` (default 30000 ms; `0` or a negative value removes
+        the limit) is an error. The clock is read once per 1024 polls that return nothing, so
+        the polling fast path gains a counter and no clock read. The failed call first
+        destroys the group's queue pairs and completion queues and deregisters its buffers;
+        the ring does so only after all wires have returned. Then, by default
+        (`JACCL_TIMEOUT_ACTION` / `MLX_JACCL_TIMEOUT_ACTION` = `teardown-exit`), it prints the
+        reason, runs the memory release hook that MLX's `jaccl.cpp` registers
+        (`set_wired_limit(0)`, then `clear_cache()`, at most 10 s) and leaves through
+        `std::_Exit(75)`, a restartable status. With `throw` it throws a `[jaccl]`
+        `std::runtime_error` instead; every later call on that group throws immediately and
+        the group cannot be reopened in the process. `dispatch_wires` also reports the errors
+        of the ring pool wires, which it used to drop. Each completion queue has four times
+        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`).
+
+        Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
+        `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
+        now remembers the index where the advertised GID was found and sends from it;
+        behaviour is unchanged where that index is 1.
+
+        `tests/jaccl` is a separate CMake project that the MLX build does not build. It
+        compiles the real mesh, ring and RDMA headers against simulated verbs and checks the
+        frame tails, the guard and the release path under ASan, UBSan and TSan. `ring_impl.h`
+        also carries the upstream ring `all_gather` fix described further down.
+      globs:
+        - "mlx/distributed/jaccl/lib/README.md"
+        - "mlx/distributed/jaccl/lib/jaccl/mesh_impl.h"
+        - "mlx/distributed/jaccl/lib/jaccl/progress_guard.h"
+        - "mlx/distributed/jaccl/lib/jaccl/rdma.cpp"
+        - "mlx/distributed/jaccl/lib/jaccl/rdma.h"
+        - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
+        - "mlx/distributed/jaccl/lib/jaccl/send_frame.h"
+        - "docs/src/usage/distributed.rst"
+        - "docs/src/usage/environment_variables.rst"
+        - "tests/jaccl/*"
+        - "tests/jaccl/fake_verbs/infiniband/verbs.h"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |
         **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
@@ -296,6 +356,15 @@ def:
         floating-point kernels have no global-scale input, and the NAX kernels keep the
         fork's bound for the last K tile. The section disappears once the fork rebases onto
         an upstream commit at or past `90089440`.
+
+        One upstream change in these NAX kernels is reverted on purpose: the simdgroup skip
+        of [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`,
+        which arrived with the v0.32.2 changes; `#4572` kept it as
+        `sg_active = sgp_sm > 0`). `fp_gather_qmm_rhs_nax` and `affine_gather_qmm_rhs_nax` run
+        the MMA in every simdgroup again. With the skip, mixture-of-experts serving on a
+        two-Mac JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB
+        wired until a reboot. Stores stay bounded by `sgp_sm`, so the output is unchanged.
+        Keep the revert at every rebase onto upstream.
       globs:
         - ".gitignore"
         - "benchmarks/python/swiglu_bench.py"
@@ -306,6 +375,35 @@ def:
         - "mlx/backend/metal/kernels/gather_mm_offsets.metal"
         - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather.h"
         - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
+    - title: "Upstream JACCL and distributed fixes (ml-explore/mlx #4443, #4557, #4558)"
+      description: |
+        **Not fork work.** Cherry-picks of upstream commits `7241f12e`
+        ([ml-explore/mlx#4443](https://github.com/ml-explore/mlx/pull/4443)), `42987b66`
+        ([ml-explore/mlx#4557](https://github.com/ml-explore/mlx/pull/4557)) and `8803e524`
+        ([ml-explore/mlx#4558](https://github.com/ml-explore/mlx/pull/4558)), applied without
+        changes. #4443: the JACCL ring `all_gather` gave both directions the same slice of each
+        rank's region, so the upper half of every peer's region was never transferred. The fix
+        is in `ring_impl.h`, which is listed in the JACCL section above, and comes with the
+        test `test_all_gather_rank_data`. #4557: `ReduceScatter::eval_cpu` asserted that it
+        had no inputs and then read `inputs[0]`, so a build with assertions stopped at every
+        `sum_scatter` (`mlx/backend/cpu/distributed.cpp`, listed in the v0.32.2 section).
+        #4558: a backend initialization that failed with `strict` off registered an empty
+        group, and a later `init` of that backend returned it, even with `strict` on. Its test
+        `test_strict_init_after_fallback` needs the `scoped_env` test helper, so that helper
+        alone is taken from `ec5f6ff7`
+        ([ml-explore/mlx#4474](https://github.com/ml-explore/mlx/pull/4474)) into
+        `python/tests/mlx_tests.py`, also listed in the v0.32.2 section.
+
+        Upstream `f4232c7f`
+        ([ml-explore/mlx#4607](https://github.com/ml-explore/mlx/pull/4607), a second cable
+        for the JACCL mesh) is not ported: it is a feature that restructures the mesh into one
+        `MeshImpl` per wire and moves `dispatch_wires`, so the progress guard above has to be
+        reworked for it first. The section disappears once the fork rebases onto an upstream
+        commit at or past `8803e524`.
+      globs:
+        - "mlx/distributed/distributed.cpp"
+        - "python/tests/mlx_distributed_tests.py"
+        - "python/tests/ring_test_distributed.py"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build and

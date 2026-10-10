@@ -351,6 +351,15 @@ def:
         floating-point kernels have no global-scale input, and the NAX kernels keep the
         fork's bound for the last K tile. The section disappears once the fork rebases onto
         an upstream commit at or past `90089440`.
+
+        One upstream change in these NAX kernels is reverted on purpose: the simdgroup skip
+        of [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`,
+        which arrived with the v0.32.2 changes; `#4572` kept it as
+        `sg_active = sgp_sm > 0`). `fp_gather_qmm_rhs_nax` and `affine_gather_qmm_rhs_nax` run
+        the MMA in every simdgroup again. With the skip, mixture-of-experts serving on a
+        two-Mac JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB
+        wired until a reboot. Stores stay bounded by `sgp_sm`, so the output is unchanged.
+        Keep the revert at every rebase onto upstream.
       globs:
         - ".gitignore"
         - "benchmarks/python/swiglu_bench.py"

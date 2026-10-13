@@ -334,14 +334,24 @@ bool supports_sdpa_cudnn(
     return false;
   }
 
+  // A graph is built per shape, so a few query rows over a growing kv cache
+  // (speculative verify) rebuild it every step, at a cost of milliseconds.
+  // Those widths take the vector kernel or the unfused fallback instead.
+  if (q.shape(2) > 1 && q.shape(2) < 16) {
+    return false;
+  }
+
   // cuDNN does not support bottom right mask when T_q > T_kv.
   if (do_causal && (q.shape(2) > k.shape(2))) {
     return false;
   }
 
-  // D_qk and D_v must be a multiple of 8 with maximum value 128.
-  if ((q.shape(-1) % 8 != 0) || (q.shape(-1) > 128) || (v.shape(-1) % 8 != 0) ||
-      (v.shape(-1) > 128)) {
+  // D_qk and D_v must be a multiple of 8 with maximum value 128, or 256 on
+  // Blackwell consumer GPUs (sm_120, verified with cuDNN 9.27).
+  int max_head_dim =
+      cu::device(s.device).compute_capability_major() >= 12 ? 256 : 128;
+  if ((q.shape(-1) % 8 != 0) || (q.shape(-1) > max_head_dim) ||
+      (v.shape(-1) % 8 != 0) || (v.shape(-1) > max_head_dim)) {
     return false;
   }
 

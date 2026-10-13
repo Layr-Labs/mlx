@@ -77,9 +77,9 @@ inline void* unified_malloc(size_t size) {
 
 inline void unified_free(void* data) {
   if (supports_managed_memory()) {
-    CHECK_CUDA_ERROR(cudaFree(data));
+    cudaFree(data);
   } else {
-    CHECK_CUDA_ERROR(cudaFreeHost(data));
+    cudaFreeHost(data);
   }
 }
 
@@ -326,9 +326,9 @@ void CudaAllocator::free_async(CudaBuffer& buf, cudaStream_t stream) {
       if (!stream) {
         stream = free_streams_[buf.device];
       }
-      CHECK_CUDA_ERROR(cudaFreeAsync(buf.data, stream));
+      cudaFreeAsync(buf.data, stream);
     } else {
-      CHECK_CUDA_ERROR(cudaFree(buf.data));
+      cudaFree(buf.data);
     }
   }
 }
@@ -372,8 +372,17 @@ size_t CudaAllocator::set_cache_limit(size_t limit) {
 }
 
 void CudaAllocator::clear_cache() {
-  std::lock_guard lk(mutex_);
-  buffer_cache_.clear();
+  {
+    std::lock_guard lk(mutex_);
+    buffer_cache_.clear();
+  }
+  for (size_t i = 0; i < mem_pools_.size(); ++i) {
+    if (mem_pools_[i]) {
+      cu::device(static_cast<int>(i)).make_current();
+      CHECK_CUDA_ERROR(cudaStreamSynchronize(free_streams_[i]));
+      CHECK_CUDA_ERROR(cudaMemPoolTrimTo(mem_pools_[i], 0));
+    }
+  }
 }
 
 CudaAllocator& allocator() {

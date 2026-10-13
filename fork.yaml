@@ -169,6 +169,103 @@ def:
         - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
+    - title: "CUDA C++ tests from upstream"
+      description: |
+        `tests/cuda_tests.cpp` is the upstream file at `ml-explore/mlx@64ea011` (upstream
+        added it in `e0a92d9`, #4457, and changed it in `229f5b4`, #4490). CUDA builds add it
+        to the test binary and link `CUDA::cudart`, as upstream does. The fork adds test
+        cases to it in the sections below. The Windows-only cases compile only under `_WIN32`.
+      globs:
+        - "tests/cuda_tests.cpp"
+        - "tests/CMakeLists.txt"
+    - title: "CUDA exit-time abort (upstream backports)"
+      description: |
+        A CUDA process aborted at exit (`cudaStreamSynchronize(stream_) failed: driver
+        shutting down`, SIGABRT). The exit handlers destroyed the static `CommandEncoder`
+        maps after the CUDA runtime started to unload, and the destructor threw. Cherry-picks
+        of `ml-explore/mlx` `24c699e` (#4480: leak the global encoder map), the CUDA hunks of
+        `9eb3e3a` (#4514: CUDA destructors and frees do not throw; its default-stream changes
+        are not taken) and `64ea011` (#4576: leak the main-thread encoder map; the same change
+        for the CPU and Metal encoders).
+      globs:
+        - "mlx/backend/cuda/device.cpp"
+        - "mlx/backend/cuda/cuda_utils.h"
+        - "mlx/backend/cuda/allocator.cpp"
+        - "mlx/backend/cuda/event.cu"
+        - "mlx/backend/cpu/encoder.cpp"
+        - "mlx/backend/metal/device.cpp"
+    - title: "CUDA completion-worker busy loop (upstream backport)"
+      description: |
+        The CUDA completion worker reset its batch counter on each loop, so after the first
+        signaled batch its wait predicate stayed true and the thread spun on a CPU core.
+        Cherry-pick of `ml-explore/mlx` `ce916db` (#4452).
+      globs:
+        - "mlx/backend/cuda/worker.cpp"
+    - title: "CUDA clear_cache trims the memory pools (upstream backport)"
+      description: |
+        `CudaAllocator::clear_cache` freed the cached buffers, but the default CUDA memory pool
+        kept the memory reserved. It now synchronizes each free stream and calls
+        `cudaMemPoolTrimTo(pool, 0)`. The `clear_cache` hunk of `ml-explore/mlx` `e0a92d9`
+        (#4457) only; the Windows WDDM budget of that commit is not taken. The upstream test
+        "test clear cache trims CUDA pool" checks it.
+      globs:
+        - "mlx/backend/cuda/allocator.cpp"
+    - title: "CUDA LRU cache thrashing check counts consecutive misses"
+      description: |
+        The CUDA LRU caches (cuDNN conv plans, CUDA graphs, cuDNN SDPA forward and backward,
+        cuFFT plans) threw a thrashing error
+        after 2x capacity misses over the life of the process, so a long-running server
+        that sees many shapes failed every new shape. A hit now resets the count.
+        Cherry-pick of `ml-explore/mlx` `9ab7999` (#4661), the upstream form of the mlx-serve
+        patch `mlx-cuda-lru-consecutive-misses`. The test case of that patch is not taken: it
+        calls `env::get_var`, which `libmlx.so` does not export.
+      globs:
+        - "mlx/backend/cuda/lru_cache.h"
+        - "docs/src/usage/environment_variables.rst"
+    - title: "CUDA fused SDPA at head dims 256 and 512 (mlx-serve)"
+      description: |
+        The CUDA vector SDPA kernel took head dims 64, 96 and 128 only, and cuDNN stopped at
+        128, so Gemma 4 (256, 512) and Qwen 3.5 (256) ran the unfused fallback. The vector
+        kernel now takes 256 and 512 (one 16-byte load per lane row,
+        `__launch_bounds__(1024)`); cuDNN takes 256 on sm_120 and later. At all head dims,
+        not only 256 and 512, cuDNN no longer takes 2 to 15 query rows, because its per-shape
+        graph is rebuilt on each speculative-verify step: at head dims 64, 96 and 128, 2 to 3
+        rows now take the vector kernel and 4 to 15 rows the unfused fallback. The mlx-serve
+        patch `mlx-cuda-sdpa-head-dim-256-512` (`ddalcu/mlx-serve@b6aaf69`)
+        unchanged. Upstream has no equivalent change.
+      globs:
+        - "mlx/backend/cuda/scaled_dot_product_attention.cpp"
+        - "mlx/backend/cuda/scaled_dot_product_attention.cu"
+        - "tests/cuda_tests.cpp"
+    - title: "CUDA quantized matmul reads the weights once (mlx-serve)"
+      description: |
+        With `qmm_sm80` available, 2 to 7 rows ran `qmv`, which reads the full weight matrix
+        once per row. `qmv` now runs for one row only, as on sm90. An `x` of shape `[B, M, K]`
+        against a 2D weight is folded to `[B*M, K]`, so batched decode reads the weights once.
+        Numerics change: 2 to 7 rows, and `[B, 1, K]` with B = 2 to 7, now run `qmm_sm80`,
+        which sums in a different order than `qmv`. These rows are no longer bitwise equal to
+        the same row computed alone (the 1-row path still runs `qmv`). CUDA goldens or
+        exactness references taken on the base must be made again. The mode is not checked,
+        so on sm_120/121 the fp modes (mxfp4, nvfp4, mxfp8) at 2 to 7 rows also move from
+        `fp_qmv` to `qmm_sm80`; this is not tested or timed. The mlx-serve patch
+        `mlx-cuda-qmm-read-weights-once` (`ddalcu/mlx-serve@b6aaf69`) unchanged, then
+        clang-formatted, plus an early return for an empty output (the fold made `[0, M, K]`
+        divide by zero). Upstream has no equivalent change.
+      globs:
+        - "mlx/backend/cuda/quantized/quantized.cpp"
+        - "tests/cuda_tests.cpp"
+    - title: "Export InTracing and RetainGraph from a shared libmlx"
+      description: |
+        `detail::in_tracing()` and `detail::retain_graph()` are inline and read
+        `InTracing::trace_stack()` and `RetainGraph::tracing_counter`. libmlx builds with hidden
+        visibility, so a shared libmlx did not export them, and the Layr-Labs mlx-c (which
+        calls both helpers) gave a shared libmlxc with undefined symbols. Only
+        `BUILD_SHARED_LIBS=ON` shows it; the static SwiftPM `Cmlx` build never did. Both
+        structs are now `MLX_API`. Upstream main (`243bdf0`) does not export them. The code is
+        the mlx-shim stage patch `patches/mlx/0001-export-intracing-retaingraph.patch`
+        unchanged, so the stage guard detects it.
+      globs:
+        - "mlx/transforms_impl.h"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |
         **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
@@ -178,6 +275,7 @@ def:
         templates, `AGENTS.md` / `CLAUDE.md`, docs). Listed here so the page does not credit
         Layr-Labs with upstream's changes; the section disappears once the fork rebases onto
         an upstream commit at or past v0.32.2.
+        Some of these files carry later fork changes too. The sections above name them.
       globs:
         - ".pre-commit-config.yaml"
         - "AGENTS.md"

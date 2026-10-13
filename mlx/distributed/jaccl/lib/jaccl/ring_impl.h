@@ -376,11 +376,9 @@ class RingImpl {
         }
         for (int lr = 0; lr < MAX_DIR; lr++) {
           int64_t offset = wire_offset[lr] + send_count[lr] * N;
-          std::copy(
-              send_base + send_base_offset[lr] + offset,
-              send_base + send_base_offset[lr] +
-                  std::max(offset, std::min(offset + N, wire_end[lr])),
-              send_buffer(sz, buff, lr, lw).template begin<T>());
+          const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+          send_buffer(sz, buff, lr, lw).stage_send(
+              elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
           send_count[lr]++;
           send_to(sz, buff, lr, lw);
         }
@@ -403,11 +401,9 @@ class RingImpl {
           if (work_type == SEND_WR) {
             if (send_count[lr] < n_steps) {
               int64_t offset = wire_offset[lr] + send_count[lr] * N;
-              std::copy(
-                  send_base + send_base_offset[lr] + offset,
-                  send_base + send_base_offset[lr] +
-                      std::max(offset, std::min(offset + N, wire_end[lr])),
-                  send_buffer(sz, buff, lr, lw).template begin<T>());
+              const int64_t elems = std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+              send_buffer(sz, buff, lr, lw).stage_send(
+                  elems > 0 ? send_base + send_base_offset[lr] + offset : nullptr, elems);
               send_count[lr]++;
               send_to(sz, buff, lr, lw);
               in_flight++;
@@ -502,11 +498,9 @@ class RingImpl {
         }
         for (int lr = 0; lr < MAX_DIR; lr++) {
           int64_t offset = wire_offset[lr] + send_count[lr] * N;
-          std::copy(
-              send_base + send_offset[lr] + offset,
-              send_base + send_offset[lr] +
-                  std::max(offset, std::min(offset + N, send_limits[lr])),
-              send_buffer(sz, buff, lr, lw).template begin<T>());
+          const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+          send_buffer(sz, buff, lr, lw).stage_send(
+              elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
           send_count[lr]++;
           send_to(sz, buff, lr, lw);
         }
@@ -530,11 +524,9 @@ class RingImpl {
 
           if (work_type == SEND_WR && send_count[lr] < n_steps) {
             int64_t offset = wire_offset[lr] + send_count[lr] * N;
-            std::copy(
-                send_base + send_offset[lr] + offset,
-                send_base + send_offset[lr] +
-                    std::max(offset, std::min(offset + N, send_limits[lr])),
-                send_buffer(sz, buff, lr, lw).template begin<T>());
+            const int64_t elems = std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+            send_buffer(sz, buff, lr, lw).stage_send(
+                elems > 0 ? send_base + send_offset[lr] + offset : nullptr, elems);
             send_to(sz, buff, lr, lw);
             in_flight++;
             send_count[lr]++;
@@ -613,10 +605,8 @@ class RingImpl {
     // Prefill the pipeline
     int buff = 0;
     while (read_offset < limit && buff < PIPELINE) {
-      std::copy(
-          in_ptr + read_offset,
-          in_ptr + std::min(read_offset + N, limit),
-          send_buffer(sz, buff, dir, lw).begin<char>());
+      send_buffer(sz, buff, dir, lw).stage_send(
+          in_ptr + read_offset, std::min(N, limit - read_offset));
       send_to(sz, buff, dir, lw);
 
       buff++;
@@ -638,10 +628,8 @@ class RingImpl {
         in_flight--;
 
         if (read_offset < limit) {
-          std::copy(
-              in_ptr + read_offset,
-              in_ptr + std::min(read_offset + N, limit),
-              send_buffer(sz, buff, dir, lw).begin<char>());
+          send_buffer(sz, buff, dir, lw).stage_send(
+              in_ptr + read_offset, std::min(N, limit - read_offset));
           send_to(sz, buff, dir, lw);
 
           read_offset += N;

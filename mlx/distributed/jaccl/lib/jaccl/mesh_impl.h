@@ -73,10 +73,8 @@ class MeshImpl {
       int64_t elems = std::min(N, total - read_offset);
       std::copy(
           in + read_offset, in + read_offset + elems, local_staging(buff));
-      std::copy(
-          in + read_offset,
-          in + read_offset + elems,
-          send_buffer(sz, buff).begin<T>());
+      send_buffer(sz, buff).stage_send(
+          in + read_offset, elems);
       recv_end[rank_]++;
       post_send_all(sz, buff);
 
@@ -111,10 +109,8 @@ class MeshImpl {
           completed_send_count[buff]++;
           if (completed_send_count[buff] == num_peers) {
             int64_t elems = std::min(N, total - read_offset);
-            std::copy(
-                in + read_offset,
-                in + read_offset + elems,
-                send_buffer(sz, buff).begin<T>());
+            send_buffer(sz, buff).stage_send(
+                in + read_offset, elems);
             post_send_all(sz, buff);
 
             completed_send_count[buff] = 0;
@@ -228,10 +224,8 @@ class MeshImpl {
     int buff = 0;
     while (read_offset < total && buff < PIPELINE) {
       post_recv_all(sz, buff);
-      std::copy(
-          our_data + read_offset,
-          our_data + std::min(read_offset + N, total),
-          send_buffer(sz, buff).begin<char>());
+      send_buffer(sz, buff).stage_send(
+          our_data + read_offset, std::min(N, total - read_offset));
       post_send_all(sz, buff);
 
       buff++;
@@ -256,10 +250,8 @@ class MeshImpl {
         if (work_type == SEND_WR && read_offset < total) {
           completed_send_count[buff]++;
           if (completed_send_count[buff] == num_peers) {
-            std::copy(
-                our_data + read_offset,
-                our_data + std::min(read_offset + N, total),
-                send_buffer(sz, buff).begin<char>());
+            send_buffer(sz, buff).stage_send(
+                our_data + read_offset, std::min(N, total - read_offset));
             post_send_all(sz, buff);
 
             completed_send_count[buff] = 0;
@@ -329,8 +321,8 @@ class MeshImpl {
           continue;
         }
         const T* src = in + static_cast<int64_t>(p) * count + read_offset;
-        std::copy(
-            src, src + elems, scatter_send_buffer(sz, buff, p).begin<T>());
+        scatter_send_buffer(sz, buff, p).stage_send(
+            src, elems);
       }
       scatter_post_send_all(sz, buff);
 
@@ -363,10 +355,8 @@ class MeshImpl {
                 continue;
               }
               const T* src = in + static_cast<int64_t>(p) * count + read_offset;
-              std::copy(
-                  src,
-                  src + elems,
-                  scatter_send_buffer(sz, buff, p).begin<T>());
+              scatter_send_buffer(sz, buff, p).stage_send(
+                  src, elems);
             }
             scatter_post_send_all(sz, buff);
 
@@ -453,10 +443,8 @@ class MeshImpl {
     // Prefill the pipeline
     int buff = 0;
     while (read_offset < n_bytes && buff < PIPELINE) {
-      std::copy(
-          in_ptr + read_offset,
-          in_ptr + std::min(read_offset + N, n_bytes),
-          send_buffer(sz, buff).begin<char>());
+      send_buffer(sz, buff).stage_send(
+          in_ptr + read_offset, std::min(N, n_bytes - read_offset));
       send_to(sz, dst, buff);
 
       buff++;
@@ -479,10 +467,8 @@ class MeshImpl {
         in_flight--;
 
         if (read_offset < n_bytes) {
-          std::copy(
-              in_ptr + read_offset,
-              in_ptr + std::min(read_offset + N, n_bytes),
-              send_buffer(sz, buff).begin<char>());
+          send_buffer(sz, buff).stage_send(
+              in_ptr + read_offset, std::min(N, n_bytes - read_offset));
           send_to(sz, dst, buff);
 
           read_offset += N;

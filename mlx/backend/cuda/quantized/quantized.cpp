@@ -21,6 +21,9 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   array x = ensure_row_contiguous(inputs[0], encoder, s);
   const array& w = inputs[1];
   out.set_data(cu::malloc_async(out.nbytes(), encoder));
+  if (out.size() == 0) {
+    return;
+  }
   // A 2D weight is shared by every batch of x: fold the batches into rows so
   // the kernels read the weights once for all of them (batched decode feeds
   // [B, 1, K]).

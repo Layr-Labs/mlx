@@ -21,7 +21,7 @@ MLX_API std::vector<array> vmap_replace(
 // Create an InTracing object during tracing operations to signify to the rest
 // of the codebase that we are during tracing so evals should not throw away
 // the graph.
-struct InTracing {
+struct MLX_API InTracing {
   explicit InTracing(bool dynamic = false, bool grad = false) {
     grad_counter += grad;
     trace_stack().push_back({dynamic, grad});
@@ -64,7 +64,7 @@ struct InExportTracing {
   static int& counter();
 };
 
-struct RetainGraph {
+struct MLX_API RetainGraph {
   RetainGraph() {
     tracing_counter++;
   }

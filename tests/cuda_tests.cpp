@@ -129,8 +129,7 @@ TEST_CASE("test fused sdpa at head dims 256 and 512") {
   };
   int cc_major = 0;
   REQUIRE_EQ(
-      cudaDeviceGetAttribute(
-          &cc_major, cudaDevAttrComputeCapabilityMajor, 0),
+      cudaDeviceGetAttribute(&cc_major, cudaDevAttrComputeCapabilityMajor, 0),
       cudaSuccess);
   for (int D : {256, 512}) {
     for (int qL : {1, 3, 64}) {
@@ -168,8 +167,12 @@ TEST_CASE("test quantized matmul over a few rows") {
     auto w = random::normal({384, 512}, bfloat16);
     auto q = quantize(w, 64, bits);
     auto w_dq = astype(dequantize(q[0], q[1], q[2], 64, bits), float32);
-    for (Shape x_shape : {Shape{1, 512}, Shape{2, 512}, Shape{5, 512},
-                          Shape{7, 512}, Shape{2, 3, 512}}) {
+    for (Shape x_shape :
+         {Shape{1, 512},
+          Shape{2, 512},
+          Shape{5, 512},
+          Shape{7, 512},
+          Shape{2, 3, 512}}) {
       auto x = random::normal(x_shape, bfloat16);
       auto out = quantized_matmul(x, q[0], q[1], q[2], true, 64, bits);
       auto expected = matmul(astype(x, float32), transpose(w_dq));

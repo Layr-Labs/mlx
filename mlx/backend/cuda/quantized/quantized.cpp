@@ -27,7 +27,8 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   array y = out;
   if (w.ndim() == 2 && x.ndim() > 2) {
     x = reshape_in_eval(x, {int(x.size() / x.shape(-1)), x.shape(-1)}, s);
-    y = reshape_in_eval(out, {int(out.size() / out.shape(-1)), out.shape(-1)}, s);
+    y = reshape_in_eval(
+        out, {int(out.size() / out.shape(-1)), out.shape(-1)}, s);
   }
   const array& scales = inputs[2];
   std::optional<array> biases;

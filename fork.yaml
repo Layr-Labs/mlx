@@ -212,7 +212,8 @@ def:
         - "mlx/backend/cuda/allocator.cpp"
     - title: "CUDA LRU cache thrashing check counts consecutive misses"
       description: |
-        The CUDA LRU caches (cuDNN plans, CUDA graphs, cuDNN SDPA) threw a thrashing error
+        The CUDA LRU caches (cuDNN conv plans, CUDA graphs, cuDNN SDPA forward and backward,
+        cuFFT plans) threw a thrashing error
         after 2x capacity misses over the life of the process, so a long-running server
         that sees many shapes failed every new shape. A hit now resets the count.
         Cherry-pick of `ml-explore/mlx` `9ab7999` (#4661), the upstream form of the mlx-serve
@@ -226,9 +227,11 @@ def:
         The CUDA vector SDPA kernel took head dims 64, 96 and 128 only, and cuDNN stopped at
         128, so Gemma 4 (256, 512) and Qwen 3.5 (256) ran the unfused fallback. The vector
         kernel now takes 256 and 512 (one 16-byte load per lane row,
-        `__launch_bounds__(1024)`); cuDNN takes 256 on sm_120 and later; cuDNN does not take
-        2 to 15 query rows, because its per-shape graph is rebuilt on each speculative-verify
-        step. The mlx-serve patch `mlx-cuda-sdpa-head-dim-256-512` (`ddalcu/mlx-serve@b6aaf69`)
+        `__launch_bounds__(1024)`); cuDNN takes 256 on sm_120 and later. At all head dims,
+        not only 256 and 512, cuDNN no longer takes 2 to 15 query rows, because its per-shape
+        graph is rebuilt on each speculative-verify step: at head dims 64, 96 and 128, 2 to 3
+        rows now take the vector kernel and 4 to 15 rows the unfused fallback. The mlx-serve
+        patch `mlx-cuda-sdpa-head-dim-256-512` (`ddalcu/mlx-serve@b6aaf69`)
         unchanged. Upstream has no equivalent change.
       globs:
         - "mlx/backend/cuda/scaled_dot_product_attention.cpp"
@@ -239,11 +242,30 @@ def:
         With `qmm_sm80` available, 2 to 7 rows ran `qmv`, which reads the full weight matrix
         once per row. `qmv` now runs for one row only, as on sm90. An `x` of shape `[B, M, K]`
         against a 2D weight is folded to `[B*M, K]`, so batched decode reads the weights once.
-        The mlx-serve patch `mlx-cuda-qmm-read-weights-once` (`ddalcu/mlx-serve@b6aaf69`)
-        unchanged. Upstream has no equivalent change.
+        Numerics change: 2 to 7 rows, and `[B, 1, K]` with B = 2 to 7, now run `qmm_sm80`,
+        which sums in a different order than `qmv`. These rows are no longer bitwise equal to
+        the same row computed alone (the 1-row path still runs `qmv`). CUDA goldens or
+        exactness references taken on the base must be made again. The mode is not checked,
+        so on sm_120/121 the fp modes (mxfp4, nvfp4, mxfp8) at 2 to 7 rows also move from
+        `fp_qmv` to `qmm_sm80`; this is not tested or timed. The mlx-serve patch
+        `mlx-cuda-qmm-read-weights-once` (`ddalcu/mlx-serve@b6aaf69`) unchanged, then
+        clang-formatted, plus an early return for an empty output (the fold made `[0, M, K]`
+        divide by zero). Upstream has no equivalent change.
       globs:
         - "mlx/backend/cuda/quantized/quantized.cpp"
         - "tests/cuda_tests.cpp"
+    - title: "Export InTracing and RetainGraph from a shared libmlx"
+      description: |
+        `detail::in_tracing()` and `detail::retain_graph()` are inline and read
+        `InTracing::trace_stack()` and `RetainGraph::tracing_counter`. libmlx builds with hidden
+        visibility, so a shared libmlx did not export them, and the Layr-Labs mlx-c (which
+        calls both helpers) gave a shared libmlxc with undefined symbols. Only
+        `BUILD_SHARED_LIBS=ON` shows it; the static SwiftPM `Cmlx` build never did. Both
+        structs are now `MLX_API`. Upstream main (`243bdf0`) does not export them. The code is
+        the mlx-shim stage patch `patches/mlx/0001-export-intracing-retaingraph.patch`
+        unchanged, so the stage guard detects it.
+      globs:
+        - "mlx/transforms_impl.h"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |
         **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official

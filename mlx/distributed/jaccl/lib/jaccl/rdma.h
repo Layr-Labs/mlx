@@ -5,12 +5,14 @@
 #include <infiniband/verbs.h>
 
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <span>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
+#include "jaccl/send_frame.h"
 #include "jaccl/tcp.h"
 
 constexpr const char* IBV_TAG = "[jaccl]";
@@ -18,6 +20,10 @@ constexpr int SEND_WR = 1;
 constexpr int RECV_WR = 2;
 constexpr int MAX_SEND_WR = 32;
 constexpr int MAX_RECV_WR = 32;
+// Each completion queue has four times the entries its queue pair can have
+// outstanding. A queue sized exactly to the outstanding work has no headroom,
+// and a provider may drop a completion on a full queue without an error.
+constexpr int COMPLETION_QUEUE_DEPTH = 4 * (MAX_SEND_WR + MAX_RECV_WR);
 constexpr int BUFFER_SIZES = 8;
 constexpr int NUM_BUFFERS = 2;
 constexpr int FRAME_SIZE = 4096;
@@ -109,6 +115,14 @@ class SharedBuffer {
 
   void register_to_protection_domain(ibv_pd* protection_domain);
 
+  // Unpin the memory. The buffer cannot be posted after this call.
+  void deregister() {
+    for (auto& [pd, mr] : memory_regions_) {
+      ibv().dereg_mr(mr);
+    }
+    memory_regions_.clear();
+  }
+
   size_t size() const {
     return num_bytes_;
   }
@@ -123,6 +137,12 @@ class SharedBuffer {
     entry.length = size();
     entry.lkey = local_key(protection_domain);
     return entry;
+  }
+
+  template <typename T>
+  void stage_send(const T* source, int64_t count) {
+    stage_send_frame(
+        std::span<char>(static_cast<char*>(data_), size()), source, count);
   }
 
   template <typename T>
@@ -159,6 +179,8 @@ struct Connection {
   ibv_cq* completion_queue;
   ibv_qp* queue_pair;
   Destination src; // holds the local information
+  // Index in the port's GID table of the GID advertised in `src`.
+  int source_gid_index = 1;
 
   Connection(ibv_context* ctx_);
   Connection(Connection&& c);
@@ -217,6 +239,27 @@ struct Connection {
   int poll(int num_completions, ibv_wc* work_completions) {
     return ibv_poll_cq(completion_queue, num_completions, work_completions);
   }
+
+  // Destroy the queue pair and the completion queue, which cancels the posted
+  // work. The connection cannot be used after this call.
+  void release() {
+    if (queue_pair != nullptr) {
+      if (int status = ibv().destroy_qp(queue_pair); status != 0) {
+        std::cerr << IBV_TAG << " Could not destroy a queue pair (" << status
+                  << ")" << std::endl;
+      } else {
+        queue_pair = nullptr;
+      }
+    }
+    if (completion_queue != nullptr) {
+      if (int status = ibv().destroy_cq(completion_queue); status != 0) {
+        std::cerr << IBV_TAG << " Could not destroy a completion queue ("
+                  << status << ")" << std::endl;
+      } else {
+        completion_queue = nullptr;
+      }
+    }
+  }
 };
 
 std::vector<Connection> create_connections(
@@ -239,6 +282,10 @@ inline int poll(
         c.completion_queue,
         num_completions - completions,
         work_completions + completions);
+    // Report a failed poll instead of adding it to the count.
+    if (n < 0) {
+      return n;
+    }
 
     completions += n;
   }
@@ -250,13 +297,15 @@ inline int poll(
     std::span<const Connection> connections_2,
     int num_completions,
     ibv_wc* work_completions) {
-  int completions = 0;
-  completions += poll(connections_1, num_completions, work_completions);
-  completions += poll(
+  int completions = poll(connections_1, num_completions, work_completions);
+  if (completions < 0) {
+    return completions;
+  }
+  int n = poll(
       connections_2,
       num_completions - completions,
       work_completions + completions);
-  return completions;
+  return n < 0 ? n : completions + n;
 }
 
 /**

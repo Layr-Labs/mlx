@@ -510,6 +510,35 @@ void CommandEncoder::wait_event(Event event, uint64_t value) {
   wait_events_.push_back(std::move(event));
 }
 
+namespace {
+// Per-thread commit limits; zero selects the device default.
+thread_local int thread_max_ops_per_buffer = 0;
+thread_local int thread_max_mb_per_buffer = 0;
+} // namespace
+
+std::tuple<int, int> Device::get_max_ops_mb_per_buffer() const {
+  return std::make_tuple(
+      thread_max_ops_per_buffer > 0 ? thread_max_ops_per_buffer
+                                    : max_ops_per_buffer_,
+      thread_max_mb_per_buffer > 0 ? thread_max_mb_per_buffer
+                                   : max_mb_per_buffer_);
+}
+
+void set_thread_command_buffer_limits(
+    int max_ops,
+    int max_mb,
+    int* previous_ops,
+    int* previous_mb) {
+  if (previous_ops != nullptr) {
+    *previous_ops = thread_max_ops_per_buffer;
+  }
+  if (previous_mb != nullptr) {
+    *previous_mb = thread_max_mb_per_buffer;
+  }
+  thread_max_ops_per_buffer = std::max(0, max_ops);
+  thread_max_mb_per_buffer = std::max(0, max_mb);
+}
+
 bool CommandEncoder::needs_commit() const {
   auto [max_ops, max_mb] = device_.get_max_ops_mb_per_buffer();
   return (buffer_ops_ > max_ops) || ((buffer_sizes_ >> 20) > max_mb);
@@ -1052,6 +1081,15 @@ void gemma4_expert_qmm_diagnostics_snapshot(
   }
 }
 } // namespace
+
+extern "C" void mlx_metal_set_thread_command_buffer_limits(
+    int max_ops,
+    int max_mb,
+    int* previous_ops,
+    int* previous_mb) {
+  mlx::core::metal::set_thread_command_buffer_limits(
+      max_ops, max_mb, previous_ops, previous_mb);
+}
 
 extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot(
     mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics) {

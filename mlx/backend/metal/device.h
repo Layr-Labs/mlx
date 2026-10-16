@@ -10,6 +10,7 @@
 #include <unordered_set>
 
 #include "mlx/array.h"
+#include "mlx/backend/common/command_buffer_limits.h"
 #include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/common/metal_kernel.h"
 #include "mlx/backend/metal/resident.h"
@@ -162,9 +163,9 @@ class MLX_API Device {
   int get_architecture_gen() const {
     return arch_gen_;
   }
-  std::tuple<int, int> get_max_ops_mb_per_buffer() const {
-    return std::make_tuple(max_ops_per_buffer_, max_mb_per_buffer_);
-  }
+  // The device defaults, or the calling thread's limits where set
+  // (mlx_metal_set_thread_command_buffer_limits).
+  std::tuple<int, int> get_max_ops_mb_per_buffer() const;
 
   MTL::Library* get_library(
       const std::string& name,

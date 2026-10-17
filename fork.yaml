@@ -206,7 +206,9 @@ def:
         `std::runtime_error` instead; every later call on that group throws immediately and
         the group cannot be reopened in the process. `dispatch_wires` also reports the errors
         of the ring pool wires, which it used to drop. Each completion queue has four times
-        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`).
+        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`, used by
+        `mesh.cpp` and `ring.cpp` when they create the queues). MLX's `jaccl.cpp` registers
+        the release hook each time it wraps a new JACCL group.
 
         Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
@@ -218,11 +220,14 @@ def:
         frame tails, the guard and the release path under ASan, UBSan and TSan. `ring_impl.h`
         also carries the upstream ring `all_gather` fix described further down.
       globs:
+        - "mlx/distributed/jaccl/jaccl.cpp"
         - "mlx/distributed/jaccl/lib/README.md"
+        - "mlx/distributed/jaccl/lib/jaccl/mesh.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/mesh_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/progress_guard.h"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.h"
+        - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/send_frame.h"
         - "docs/src/usage/distributed.rst"

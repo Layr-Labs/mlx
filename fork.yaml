@@ -169,15 +169,29 @@ def:
         - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
+    - title: "Quantized NAX partial-tile bounds"
+      description: |
+        Sorted gathered matrix products use the remaining reduction width for a
+        partial activation tile. Safe affine and floating-quantized weight loaders
+        check row and packed-column bounds before reading weights or scales, then
+        zero invalid lanes. This prevents finite tails from reading the next row,
+        including a following NaN row. Exact Python regressions cover affine,
+        MXFP4, MXFP8 and directly packed NVFP4 with FP16 and BF16 inputs.
+        Aligned dispatch and accumulation precision remain unchanged.
+      globs:
+        - "mlx/backend/metal/kernels/quantized_nax.h"
+        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+        - "python/tests/test_quantized.py"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |
         **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
         v0.32.2 by applying upstream's changes rather than merging them, so `git` sees them as
-        fork commits even though every file below is byte-identical to upstream `v0.32.2`
+        fork commits even though the imported content matches upstream `v0.32.2`
         (CUDA backend, CPU SIMD, kernels, Python bindings and tests, repository CI and
         templates, `AGENTS.md` / `CLAUDE.md`, docs). Listed here so the page does not credit
         Layr-Labs with upstream's changes; the section disappears once the fork rebases onto
-        an upstream commit at or past v0.32.2.
+        an upstream commit at or past v0.32.2. Later fork changes to these paths
+        are described in their own sections, including quantized NAX tile bounds.
       globs:
         - ".pre-commit-config.yaml"
         - "AGENTS.md"

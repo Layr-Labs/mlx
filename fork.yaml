@@ -234,6 +234,19 @@ def:
         - "docs/src/usage/environment_variables.rst"
         - "tests/jaccl/*"
         - "tests/jaccl/fake_verbs/infiniband/verbs.h"
+    - title: "Two-rank sealed all-sum"
+      description: |
+        The embedding program installs an authenticated frame codec for a two-rank
+        floating-point all-sum. The CPU communication stream seals each partial,
+        gathers the frames, opens the peer frame and adds in rank order. Missing
+        codecs and authentication failures refuse evaluation without a plaintext
+        fallback. The distributed primitive retains its temporary arrays until
+        the queued work completes.
+      globs:
+        - "mlx/distributed/CMakeLists.txt"
+        - "mlx/distributed/primitives.h"
+        - "mlx/distributed/sealed.cpp"
+        - "mlx/distributed/sealed.h"
     - title: "Quantized NAX partial-tile bounds"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

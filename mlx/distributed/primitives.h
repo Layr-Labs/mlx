@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "mlx/distributed/distributed.h"
-#include "mlx/distributed/sealed.h"
 #include <atomic>
+#include "mlx/distributed/distributed.h"
 #include "mlx/distributed/distributed_impl.h"
+#include "mlx/distributed/sealed.h"
 #include "mlx/primitives.h"
 
 namespace mlx::core::distributed {

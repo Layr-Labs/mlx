@@ -24,8 +24,19 @@ namespace mlx::core::distributed {
 // open: the peer's frame -> plaintext (n bytes) for `counter` from `peer`.
 // Both return 0 on success. `counter` advances by one per sealed all-sum, in
 // evaluation order, identically on both ranks.
-using SealFn = int (*)(void* ctx, const void* plaintext, size_t n, void* frame, uint64_t counter);
-using OpenFn = int (*)(void* ctx, const void* frame, size_t n, void* plaintext, uint64_t counter, int peer);
+using SealFn = int (*)(
+    void* ctx,
+    const void* plaintext,
+    size_t n,
+    void* frame,
+    uint64_t counter);
+using OpenFn = int (*)(
+    void* ctx,
+    const void* frame,
+    size_t n,
+    void* plaintext,
+    uint64_t counter,
+    int peer);
 
 struct SealCodec {
   SealFn seal = nullptr;
@@ -42,6 +53,9 @@ MLX_API std::optional<SealCodec> seal_codec();
 // The sum of two ranks' arrays, crossing the link sealed. Two ranks only;
 // float32, bfloat16 and float16; the sum is taken in rank order (rank 0 +
 // rank 1) so both ranks hold the same bits.
-MLX_API array all_sum_sealed(const array& x, std::optional<Group> group = std::nullopt, StreamOrDevice s = {});
+MLX_API array all_sum_sealed(
+    const array& x,
+    std::optional<Group> group = std::nullopt,
+    StreamOrDevice s = {});
 
 } // namespace mlx::core::distributed

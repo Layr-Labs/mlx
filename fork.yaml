@@ -169,7 +169,7 @@ def:
         - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
-    - title: "Quantized NAX partial-tile bounds"
+    - title: "Quantized NAX tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a
         partial activation tile. Safe affine and floating-quantized weight loaders
@@ -177,6 +177,9 @@ def:
         zero invalid lanes. This prevents finite tails from reading the next row,
         including a following NaN row. Exact Python regressions cover affine,
         MXFP4, MXFP8 and directly packed NVFP4 with FP16 and BF16 inputs.
+        The floating-point NAX loader has a distinct type name: its layout
+        differs from the non-NAX loader, and sharing a name corrupts MXFP4
+        results when the offline Metal linker combines both translation units.
         Aligned dispatch and accumulation precision remain unchanged.
       globs:
         - "mlx/backend/metal/kernels/quantized_nax.h"

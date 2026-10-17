@@ -1640,7 +1640,7 @@ class TestQuantized(mlx_tests.MLXTestCase):
                         mx.array(rows, dtype=dtype)[:, None, None], (len(indices), 1, k)
                     )
                     actual = mx.gather_qmm(
-                        x,
+                        mx.contiguous(x),
                         *packed,
                         rhs_indices=rhs,
                         transpose=True,

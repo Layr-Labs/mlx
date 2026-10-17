@@ -79,7 +79,7 @@ template <
     short tgp_size,
     short group_size,
     short bits>
-struct QuantizedBlockLoader {
+struct FPQuantizedNAXBlockLoader {
   MLX_MTL_CONST short pack_factor = get_pack_factor<8, bits>();
   MLX_MTL_CONST short bytes_per_pack = get_bytes_per_pack();
   MLX_MTL_CONST short BCOLS_PACKED = BCOLS / pack_factor;
@@ -107,7 +107,7 @@ struct QuantizedBlockLoader {
   const device uint8_t* src;
   const device uint8_t* scales;
 
-  QuantizedBlockLoader(
+  FPQuantizedNAXBlockLoader(
       const device uint8_t* src_,
       const device uint8_t* scales_,
       const int src_ld_,
@@ -222,7 +222,7 @@ METAL_FUNC void fp_qmm_t_impl(
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
 
   // Instantiate Loader
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       Wtype,
       BN,
       BK,
@@ -366,7 +366,7 @@ METAL_FUNC void fp_qmm_n_impl(
 
   constexpr int BN_padded = (BN + 16 / sizeof(T));
 
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       T,
       BK,
       BN,
@@ -815,7 +815,7 @@ template <
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
   constexpr int BN_padded = (BN + 16 / sizeof(Wtype));
 
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       Wtype,
       transpose ? BN : BK,
       transpose ? BK : BN,

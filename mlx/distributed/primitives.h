@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include <atomic>
 #include "mlx/distributed/distributed.h"
 #include "mlx/distributed/distributed_impl.h"
+#include "mlx/distributed/sealed.h"
 #include "mlx/primitives.h"
 
 namespace mlx::core::distributed {
@@ -65,6 +67,28 @@ class AllReduce : public DistPrimitive {
 
  private:
   ReduceType reduce_type_;
+};
+
+/// The sealed all-sum (`all_sum_sealed`, sealed.h): seal, all-gather the two
+/// frames, open the peer's, add in rank order. `counter_` advances per
+/// evaluation; both ranks evaluate the same graph in the same order.
+class SealedAllSum : public DistPrimitive {
+ public:
+  SealedAllSum(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedAllSum";
+  }
+
+ private:
+  SealCodec codec_;
+  static inline std::atomic<uint64_t> counter_{0};
 };
 
 class AllGather : public DistPrimitive {

@@ -18,7 +18,7 @@ MLX_MTL_CONST int SIMD_SIZE = 32;
 MLX_MTL_CONST int QUAD_SIZE = 4;
 
 template <int wsize = 8, int bits>
-inline constexpr short get_pack_factor() {
+inline constexpr short get_fp_pack_factor() {
   return wsize / bits;
 }
 
@@ -79,8 +79,8 @@ template <
     short tgp_size,
     short group_size,
     short bits>
-struct QuantizedBlockLoader {
-  MLX_MTL_CONST short pack_factor = get_pack_factor<8, bits>();
+struct FPQuantizedNAXBlockLoader {
+  MLX_MTL_CONST short pack_factor = get_fp_pack_factor<8, bits>();
   MLX_MTL_CONST short bytes_per_pack = get_bytes_per_pack();
   MLX_MTL_CONST short BCOLS_PACKED = BCOLS / pack_factor;
   MLX_MTL_CONST short n_reads =
@@ -107,7 +107,7 @@ struct QuantizedBlockLoader {
   const device uint8_t* src;
   const device uint8_t* scales;
 
-  QuantizedBlockLoader(
+  FPQuantizedNAXBlockLoader(
       const device uint8_t* src_,
       const device uint8_t* scales_,
       const int src_ld_,
@@ -149,14 +149,7 @@ struct QuantizedBlockLoader {
       return;
     }
 
-    if (reduction_dim == 1 && bi >= src_tile_dim.x) {
-      for (int i = 0; i < n_reads * pack_factor; i++) {
-        dst[i] = T(0);
-      }
-      return;
-    }
-
-    if (reduction_dim == 0 && bi >= src_tile_dim.y) {
+    if (bi >= src_tile_dim.y) {
       for (int i = 0; i < n_reads * pack_factor; i++) {
         dst[i] = T(0);
       }
@@ -165,10 +158,18 @@ struct QuantizedBlockLoader {
 
     int k = 0;
     for (int i = 0; i < n_steps_per_read; i++) {
-      T scale = dequantize_scale<T, group_size>(scales[i]);
+      const bool scale_in_bounds = (bj + k) * pack_factor < src_tile_dim.x;
+      T scale =
+          scale_in_bounds ? dequantize_scale<T, group_size>(scales[i]) : T(0);
       for (int j = 0; j < n_reads_per_scale; j++) {
-        dequantize<T, bits>(
-            src[k * bytes_per_pack], scale, dst + k * pack_factor);
+        if ((bj + k) * pack_factor < src_tile_dim.x) {
+          dequantize<T, bits>(
+              src[k * bytes_per_pack], scale, dst + k * pack_factor);
+        } else {
+          for (int p = 0; p < pack_factor; p++) {
+            dst[k * pack_factor + p] = T(0);
+          }
+        }
         k++;
       }
     }
@@ -215,13 +216,13 @@ METAL_FUNC void fp_qmm_t_impl(
 
   (void)lid;
 
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
 
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
 
   // Instantiate Loader
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       Wtype,
       BN,
       BK,
@@ -360,12 +361,12 @@ METAL_FUNC void fp_qmm_n_impl(
   (void)lid;
   (void)M;
 
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
 
   constexpr int BN_padded = (BN + 16 / sizeof(T));
 
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       T,
       BK,
       BN,
@@ -809,12 +810,12 @@ template <
     uint3 tid [[threadgroup_position_in_grid]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint simd_lane_id [[thread_index_in_simdgroup]]) {
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
   constexpr int BN_padded = (BN + 16 / sizeof(Wtype));
 
-  using loader_w_t = QuantizedBlockLoader<
+  using loader_w_t = FPQuantizedNAXBlockLoader<
       Wtype,
       transpose ? BN : BK,
       transpose ? BK : BN,
@@ -954,7 +955,7 @@ template <
 
           volatile int compiler_barrier;
 
-          const short psk = min(int(SK), max(0, (BK - kk1)));
+          const short psk = min(int(SK), max(0, (k_remain - kk1)));
           Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
 
           if constexpr (transpose) {

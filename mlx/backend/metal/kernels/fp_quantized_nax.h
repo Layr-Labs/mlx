@@ -18,7 +18,7 @@ MLX_MTL_CONST int SIMD_SIZE = 32;
 MLX_MTL_CONST int QUAD_SIZE = 4;
 
 template <int wsize = 8, int bits>
-inline constexpr short get_pack_factor() {
+inline constexpr short get_fp_pack_factor() {
   return wsize / bits;
 }
 
@@ -80,7 +80,7 @@ template <
     short group_size,
     short bits>
 struct FPQuantizedNAXBlockLoader {
-  MLX_MTL_CONST short pack_factor = get_pack_factor<8, bits>();
+  MLX_MTL_CONST short pack_factor = get_fp_pack_factor<8, bits>();
   MLX_MTL_CONST short bytes_per_pack = get_bytes_per_pack();
   MLX_MTL_CONST short BCOLS_PACKED = BCOLS / pack_factor;
   MLX_MTL_CONST short n_reads =
@@ -216,7 +216,7 @@ METAL_FUNC void fp_qmm_t_impl(
 
   (void)lid;
 
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
 
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
@@ -361,7 +361,7 @@ METAL_FUNC void fp_qmm_n_impl(
   (void)lid;
   (void)M;
 
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
 
   constexpr int BN_padded = (BN + 16 / sizeof(T));
@@ -810,7 +810,7 @@ template <
     uint3 tid [[threadgroup_position_in_grid]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint simd_lane_id [[thread_index_in_simdgroup]]) {
-  constexpr int pack_factor = get_pack_factor<8, bits>();
+  constexpr int pack_factor = get_fp_pack_factor<8, bits>();
   constexpr int bytes_per_pack = get_bytes_per_pack();
   constexpr int BK_padded = (BK + 16 / sizeof(Wtype));
   constexpr int BN_padded = (BN + 16 / sizeof(Wtype));

@@ -177,12 +177,16 @@ def:
         zero invalid lanes. This prevents finite tails from reading the next row,
         including a following NaN row. Exact Python regressions cover affine,
         MXFP4, MXFP8 and directly packed NVFP4 with FP16 and BF16 inputs.
-        The floating-point NAX loader has a distinct type name: its layout
-        differs from the non-NAX loader, and sharing a name corrupts MXFP4
-        results when the offline Metal linker combines both translation units.
+        Each affine/floating-point, legacy/NAX loader has a distinct type name.
+        Their layouts or bodies differ; sharing a name corrupts MXFP4 results
+        when the offline Metal linker combines the translation units. The
+        incompatible affine/FP pack-factor helpers and legacy/NAX vector loaders
+        also use distinct names.
         Aligned dispatch and accumulation precision remain unchanged.
       globs:
+        - "mlx/backend/metal/kernels/quantized.h"
         - "mlx/backend/metal/kernels/quantized_nax.h"
+        - "mlx/backend/metal/kernels/fp_quantized.h"
         - "mlx/backend/metal/kernels/fp_quantized_nax.h"
         - "python/tests/test_quantized.py"
     - title: "Upstream v0.32.2 sync carried in PR #10"

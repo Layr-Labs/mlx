@@ -108,15 +108,16 @@ void _qmm(
   constexpr int bytes_per_pack = get_bytes_per_pack(bits);
   constexpr int packs_in_group = group_size / pack_factor;
 
+  std::vector<float> sums(N);
   for (int m = 0; m < M; m++) {
     const uint8_t* w_local = (const uint8_t*)w;
     const T* scales_local = scales;
     const T* biases_local = biases;
 
-    std::fill(result, result + N, 0);
+    std::fill(sums.begin(), sums.end(), 0);
 
     for (int k = 0; k < K; k++) {
-      T* result_local = result;
+      float* result_local = sums.data();
       T xi = *x++;
 
       for (int n = 0; n < N; n += group_size) {
@@ -147,6 +148,7 @@ void _qmm(
       }
     }
 
+    std::copy(sums.begin(), sums.end(), result);
     result += N;
   }
 }
@@ -174,7 +176,7 @@ void _qmm_t(
 
     for (int n = 0; n < N; n++) {
       const T* x_local = x;
-      T sum = 0;
+      float sum = 0;
       for (int k = 0; k < K; k += group_size) {
         T scale = *scales_local++;
         T bias = *biases_local++;
@@ -458,14 +460,15 @@ void fp_qmm(
   constexpr int pack_factor = get_pack_factor(bits, 8);
   constexpr int packs_in_group = group_size / pack_factor;
 
+  std::vector<float> sums(N);
   for (int m = 0; m < M; m++) {
     const uint8_t* w_local = (const uint8_t*)w;
     const uint8_t* scales_local = scales;
 
-    std::fill(result, result + N, 0);
+    std::fill(sums.begin(), sums.end(), 0);
 
     for (int k = 0; k < K; k++) {
-      T* result_local = result;
+      float* result_local = sums.data();
       T xi = *x++;
 
       for (int n = 0; n < N; n += group_size) {
@@ -484,6 +487,7 @@ void fp_qmm(
         }
       }
     }
+    std::copy(sums.begin(), sums.end(), result);
     result += N;
   }
 }
@@ -506,11 +510,11 @@ void fp_qmm_t(
 
     for (int n = 0; n < N; n++) {
       const T* x_local = x;
-      T sum = 0;
+      float sum = 0;
       for (int k = 0; k < K; k += group_size) {
         T scale = dequantize_scale<T, group_size>(*scales_local++);
 
-        T gsum = 0;
+        float gsum = 0;
         for (int kw = 0; kw < packs_in_group; kw++) {
           if constexpr (bits == 4) {
             gsum += (*x_local++) * static_cast<T>(FP4_LUT[w_local[0] & 0xf]);

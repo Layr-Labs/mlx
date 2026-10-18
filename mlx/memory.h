@@ -7,8 +7,14 @@
 #include <limits>
 
 #include "mlx/api.h"
+#include "mlx/backend/common/process_allocation_cap.h"
 
 namespace mlx::core {
+
+using ProcessAllocationCapSnapshot = allocator::ProcessAllocationCapSnapshot;
+// One-way, pristine-allocator installation. Not a whole-process/host limit.
+MLX_API void install_process_allocation_cap(size_t bytes);
+MLX_API ProcessAllocationCapSnapshot get_process_allocation_cap_snapshot();
 
 struct MemorySnapshot {
   size_t active_memory;

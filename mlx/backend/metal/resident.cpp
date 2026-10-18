@@ -150,8 +150,20 @@ void ResidencySets::insert(MTL::Allocation* buf) {
   if (total_wired_ + bytes > capacity_) {
     return;
   }
-  uint32_t idx = add_to_set_locked(buf, it->second);
-  sets_[idx].set->commit();
+  try {
+    uint32_t idx = add_to_set_locked(buf, it->second);
+    sets_[idx].set->commit();
+  } catch (...) {
+    // Registration must not leave a pointer to a buffer the caller will
+    // release.
+    if (it->second.set_id != kNoSet) {
+      const uint32_t idx = it->second.set_id;
+      remove_from_set_locked(buf, it->second);
+      sets_[idx].set->commit();
+    }
+    buf_to_set_.erase(it);
+    throw;
+  }
 }
 
 void ResidencySets::erase(MTL::Allocation* buf) {

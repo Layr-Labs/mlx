@@ -76,3 +76,21 @@ If we time the computation fully on the GPU, we get 2.8 milliseconds. But if we
 run the computation with ``d1=mx.gpu`` and ``d2=mx.cpu``, then the time is only
 about 1.4 milliseconds, about twice as fast. These times were measured on an M1
 Max.
+
+Native allocation footprint bounds
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The C++ ``get_allocation_footprint_policy()`` returns a detached value that
+bounds one allocator buffer, including alignment and permitted cache reuse.
+On Metal, every positive request has a minimum footprint of one VM page
+before the cache-reuse allowance is added. This covers the page-backed
+fallback used by the optional process-allocation cap, including requests
+smaller than one page. A policy captured before cap installation remains
+valid afterward. Zero bytes still has a zero bound; arithmetic overflow is
+refused.
+
+For example, with 16,384-byte VM pages, requests from 1 through 16,384 bytes
+have an upper bound of 32,767 bytes. The bound is conservative; it is not a
+measurement of the buffer's actual backing. The cap accounts for its fixed
+heap separately. Per-buffer footprint bounds and the optional cap do not
+replace whole-process memory budgets or OS headroom checks.

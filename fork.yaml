@@ -106,12 +106,22 @@ def:
         overflow-checked) cache-reuse limit shared with `BufferCache`. Metal, CPU and CUDA
         allocators implement the same interface; the allocator's own behaviour stays the
         authority. These describe allocator accounting, not process RSS. (PR #15)
+        The public process-allocation cap API adds install-once Metal backing enforcement.
+        Reservations include pending allocations and the fixed heap. Owned page-aligned VM
+        regions use Metal no-copy buffers; credit returns after the deallocator unmaps them.
+        Foreign wrappers retain caller ownership. CPU/CUDA reject this optional API; soft
+        memory limits are unchanged. Residency insertion rolls back failed registration before
+        callers release buffers, including ordinary uncapped allocations. Standalone CPU and
+        real-Metal tests cover delayed release, churn, and injected construction failures.
       globs:
         - "mlx/memory.h"
         - "mlx/backend/common/allocation_footprint.h"
+        - "mlx/backend/common/process_allocation_cap.h"
+        - "tests/standalone/process_allocation_cap*.cpp"
         - "mlx/backend/common/buffer_cache.h"
         - "mlx/backend/metal/allocator.h"
         - "mlx/backend/metal/allocator.cpp"
+        - "mlx/backend/metal/resident.cpp"
         - "mlx/backend/cuda/allocator.h"
         - "mlx/backend/cuda/allocator.cpp"
         - "mlx/backend/no_gpu/allocator.cpp"
@@ -267,6 +277,17 @@ def:
         - "mlx/backend/metal/kernels/quantized_nax.h"
         - "mlx/backend/metal/kernels/fp_quantized.h"
         - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+        - "python/tests/test_quantized.py"
+    - title: "CPU quantized accumulation precision"
+      description: |
+        Scalar affine, MXFP4, MXFP8 and NVFP4 matrix products accumulate in FP32
+        and convert once when writing each output. Both matrix orientations and
+        the FP group sum preserve partial sums instead of rounding every addition
+        to BF16 or FP16. Exact CPU regressions compare constant products with
+        dequantized matmul, including sorted and unsorted gathered affine paths.
+        Quantization, packing, indexing and Metal kernels remain unchanged.
+      globs:
+        - "mlx/backend/cpu/quantized.cpp"
         - "python/tests/test_quantized.py"
     - title: "Upstream v0.32.2 sync carried in PR #10"
       description: |

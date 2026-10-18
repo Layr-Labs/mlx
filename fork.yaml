@@ -247,11 +247,12 @@ def:
         - "mlx/distributed/primitives.h"
         - "mlx/distributed/sealed.cpp"
         - "mlx/distributed/sealed.h"
-    - title: "Quantized NAX tile bounds and distinct loader symbols"
+    - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a
         partial activation tile. Safe affine and floating-quantized weight loaders
-        check row and packed-column bounds before reading weights or scales, then
+        check row and packed-column bounds on both legacy and NAX paths before
+        reading weights or scales, then
         zero invalid lanes. This prevents finite tails from reading the next row,
         including a following NaN row. Exact Python regressions cover affine,
         MXFP4, MXFP8 and directly packed NVFP4 with FP16 and BF16 inputs.

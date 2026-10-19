@@ -200,8 +200,8 @@ def:
       description: |
         Custom kernels refuse invalid axes, counts beyond UINT32_MAX and axes beyond
         the device limits before allocating outputs. A nonempty grid with complete
-        x-axis multiples of 1024 and group (1024,1,1) may retry an insufficient
-        pipeline with max_total_threads_per_threadgroup(1024) on its unique generated
+        x-axis multiples of the group width and groups (512,1,1) or (1024,1,1) may retry an insufficient
+        pipeline with max_total_threads_per_threadgroup(requestedWidth) on its unique generated
         declaration. The original capable pipeline is retained; retry compilation
         and the selected pipeline's actual capacity remain authoritative. Other
         geometries refuse without clamping. Shader math and dispatch axes do not change.

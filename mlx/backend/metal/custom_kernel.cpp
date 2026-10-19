@@ -87,8 +87,8 @@ void CustomKernel::eval_gpu(
       lib_name, compile_options_, [this] { return metal::utils() + source_; });
   auto kernel = d.get_kernel(name_, lib);
   auto max_tg_size = kernel->maxTotalThreadsPerThreadgroup();
-  const bool retry_geometry = tx == 1024 && ty == 1 && tz == 1 && gx >= tx &&
-      gx % tx == 0 && gy > 0 && gz > 0;
+  const bool retry_geometry = (tx == 512 || tx == 1024) && ty == 1 && tz == 1 &&
+      gx >= tx && gx % tx == 0 && gy > 0 && gz > 0;
   if (tg_size > max_tg_size && retry_geometry) {
     const std::string declaration = "[[kernel]] void " + name_ + "(";
     const auto position = source_.find(declaration);

@@ -110,6 +110,8 @@ def:
         when the policy was captured before cap installation. Standalone fresh-process
         ordinary and capped cases compare actual backing with detached and direct bounds
         at subpage and page boundaries; zero and overflow remain explicit controls.
+        Capped no-copy pages are first touched on the CPU so process physical
+        footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.
       globs:
         - "mlx/memory.h"
@@ -186,6 +188,18 @@ def:
         - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
+    - title: "Validated custom Metal threadgroups and bounded compiler retry"
+      description: |
+        Custom kernels refuse invalid axes, counts beyond UINT32_MAX and axes beyond
+        the device limits before allocating outputs. A nonempty grid with complete
+        x-axis multiples of 1024 and group (1024,1,1) may retry an insufficient
+        pipeline with max_total_threads_per_threadgroup(1024) on its unique generated
+        declaration. The original capable pipeline is retained; retry compilation
+        and the selected pipeline's actual capacity remain authoritative. Other
+        geometries refuse without clamping. Shader math and dispatch axes do not change.
+      globs:
+        - "python/tests/test_metal_threadgroup_bounds.py"
+        - "docs/src/dev/custom_metal_kernels.rst"
     - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

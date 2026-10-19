@@ -94,3 +94,9 @@ have an upper bound of 32,767 bytes. The bound is conservative; it is not a
 measurement of the buffer's actual backing. The cap accounts for its fixed
 heap separately. Per-buffer footprint bounds and the optional cap do not
 replace whole-process memory budgets or OS headroom checks.
+
+Capped no-copy backing is touched once per VM page from the CPU before it is
+wrapped as a Metal buffer. This makes the process physical footprint include
+pages first written by GPU work. It preserves the allocator cap and does not
+replace load admission or operating-system memory headroom. The fresh-process
+``gpu-footprint`` regression checks GPU-written backing; it requires Metal.

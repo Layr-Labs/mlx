@@ -34,6 +34,14 @@ class RingGroup : public Group {
     return size_;
   }
 
+  void begin_startup_wait_budget(int64_t timeout_ms) override {
+    ring_.begin_startup_wait_budget(timeout_ms);
+  }
+
+  void end_startup_wait_budget() override {
+    ring_.end_startup_wait_budget();
+  }
+
   void all_sum(const void* input, void* output, size_t n_bytes, int dtype)
       override;
 

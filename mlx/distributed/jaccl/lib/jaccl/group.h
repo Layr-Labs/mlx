@@ -3,7 +3,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <stdexcept>
 
 namespace jaccl {
 
@@ -16,6 +18,13 @@ class Group {
 
   virtual int rank() = 0;
   virtual int size() = 0;
+
+  virtual void begin_startup_wait_budget(int64_t) {
+    throw std::runtime_error("[jaccl] Startup wait budget is unsupported.");
+  }
+  virtual void end_startup_wait_budget() {
+    throw std::runtime_error("[jaccl] Startup wait budget is unsupported.");
+  }
 
   virtual void
   all_sum(const void* input, void* output, size_t n_bytes, int dtype) = 0;

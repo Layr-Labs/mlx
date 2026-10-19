@@ -216,6 +216,13 @@ Buffer MetalAllocator::malloc_capped(
         throw std::bad_alloc();
       }
       lease->attach(pages, [](void* p, size_t n) { return munmap(p, n) == 0; });
+      // Fault every page from the CPU before wrapping it. Pages a no-copy
+      // buffer first receives through the GPU are not charged to this
+      // process's physical footprint, which hides the model from the OS
+      // memory-pressure accounting and from Activity Monitor.
+      for (size_t offset = 0; offset < charge; offset += vm_page_size) {
+        static_cast<volatile char*>(pages)[offset] = 0;
+      }
       buffer = device_->newBuffer(
           pages, charge, resource_options, ^(void*, NS::UInteger) {
             lease->finish();

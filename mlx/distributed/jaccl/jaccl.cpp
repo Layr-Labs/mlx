@@ -80,6 +80,14 @@ class JACCLGroup : public GroupImpl {
     return group_->size();
   }
 
+  void begin_startup_wait_budget(int64_t timeout_ms) override {
+    group_->begin_startup_wait_budget(timeout_ms);
+  }
+
+  void end_startup_wait_budget() override {
+    group_->end_startup_wait_budget();
+  }
+
   void all_sum(const array& input, array& output, Stream stream) override {
     auto in_ptr = input.data<char>();
     auto out_ptr = output.data<char>();

@@ -26,6 +26,16 @@ endfunction()
 
 jaccl_test(send_frame_tests)
 jaccl_test(progress_guard_tests)
+jaccl_test(startup_wait_budget_tests)
+jaccl_test(startup_wait_budget_group_tests)
+jaccl_test(startup_wait_budget_api_tests)
+target_include_directories(startup_wait_budget_api_tests PRIVATE ../..)
+add_test(NAME startup_wait_budget_api COMMAND startup_wait_budget_api_tests)
+add_test(NAME startup_wait_budget_groups
+         COMMAND startup_wait_budget_group_tests)
+set_tests_properties(startup_wait_budget_groups
+                     PROPERTIES ENVIRONMENT "JACCL_TIMEOUT_ACTION=throw")
+add_test(NAME startup_wait_budget COMMAND startup_wait_budget_tests)
 
 add_test(NAME send_frame COMMAND send_frame_tests)
 

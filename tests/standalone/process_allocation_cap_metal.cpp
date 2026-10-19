@@ -1,4 +1,5 @@
 // Copyright © 2026 Eigen Labs.
+#include <mach/mach.h>
 #include <objc/runtime.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -383,12 +384,64 @@ void footprint_case(size_t page, bool capped) {
   refuses([] { get_allocation_size_upper_bound(SIZE_MAX); });
 }
 
+// Capped backing is owned no-copy VM. Pages first written by the GPU must
+// still be charged to this process, or the OS cannot see the model's memory.
+size_t physical_footprint() {
+  task_vm_info_data_t info{};
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  require(
+      task_info(
+          mach_task_self(),
+          TASK_VM_INFO,
+          reinterpret_cast<task_info_t>(&info),
+          &count) == KERN_SUCCESS,
+      "task footprint unavailable");
+  return static_cast<size_t>(info.phys_footprint);
+}
+
+bool footprint_growth_at_least(size_t before, size_t after, size_t expected) {
+  return after >= before && after - before >= expected;
+}
+
+void footprint_delta_case() {
+  require(
+      !footprint_growth_at_least(1024, 1023, 512),
+      "decrease wrapped into growth");
+  require(
+      !footprint_growth_at_least(1024, 1024, 1), "unchanged footprint grew");
+  require(!footprint_growth_at_least(1024, 1535, 512), "short growth passed");
+  require(footprint_growth_at_least(1024, 1536, 512), "exact growth failed");
+  require(
+      !footprint_growth_at_least(SIZE_MAX, 0, 1), "maximum baseline wrapped");
+}
+
+void gpu_footprint_case() {
+  const size_t bytes = size_t(512) << 20;
+  install_process_allocation_cap(size_t(2) << 30);
+  const auto before = physical_footprint();
+  {
+    auto filled =
+        full({int(bytes / sizeof(float))}, 1.0f, float32, Device::gpu);
+    eval(filled);
+    synchronize(default_stream(Device::gpu));
+    const auto after = physical_footprint();
+    require(
+        footprint_growth_at_least(before, after, bytes - (bytes >> 4)),
+        "GPU-written capped backing missing from process footprint");
+  }
+  clear_cache();
+}
+
 int main(int argc, char** argv) {
   try {
     require(argc == 2, "one fresh-process case required");
     const std::string mode = argv[1];
     const size_t page = static_cast<size_t>(getpagesize());
-    if (mode == "footprint" || mode == "footprint-ordinary") {
+    if (mode == "footprint-delta") {
+      footprint_delta_case();
+    } else if (mode == "gpu-footprint") {
+      gpu_footprint_case();
+    } else if (mode == "footprint" || mode == "footprint-ordinary") {
       footprint_case(page, mode == "footprint");
     } else if (mode == "concurrent") {
       concurrent_case(page);

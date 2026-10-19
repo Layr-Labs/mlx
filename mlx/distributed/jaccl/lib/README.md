@@ -372,3 +372,41 @@ The name JACCL (pronounced Jackal) stands for Jack and Angelos’ Collective
 Communication Library and it is an obvious pun to Nvidia’s NCCL but also
 tribute to Jack Beasley who led the development of RDMA over Thunderbolt at
 Apple.
+
+### One-shot startup readiness budget
+
+MLX callers can use `Group::begin_startup_wait_budget(int64_t timeout_ms) const`
+and `Group::end_startup_wait_budget() const` on an initialized JACCL group.
+The standalone JACCL group exposes the same operations. Other MLX backends
+and unsupported JACCL group implementations throw; there is no fallback.
+
+Begin accepts 1..900000 ms and checks the monotonic deadline before publishing
+state. Each actual mesh or ring group owns one policy shared by its wires.
+The deadline starts at begin, includes time spent loading, and stays fixed
+across calls and completions. During startup it replaces the idle limit.
+Successful completions check expiry too; empty polls sample it every 1024
+polls. This bounds polling waits, not arbitrary computation or blocked system
+calls. Keep the embedding runtime's hard startup deadline and cancellation.
+
+Drain queued work and serialize scheduling around begin and end. A running
+call makes either transition fail. The caller must retain the group and must
+not move/destroy its implementation while calls run. This API does not make
+concurrent initialization or backend-cache clearing safe.
+
+Only an unused group can begin. Invalid arguments or deadline overflow leave
+it unused. Only an active, unexpired, open and idle group can end; duplicate
+end is refused. Expiry cannot be cleared by end, and begin can never renew or
+reopen a used budget. Expiry observed by polling follows the existing failure
+path: stop wires, close resources, then the configured throw or teardown-exit
+with status 75 and the memory release hook. Ending does not create a transport
+success, clear a failure, or reopen a group.
+
+After a successful end, later calls use the original environment/default idle
+policy (normally 30000 ms). Existing zero/negative environment handling stays
+unchanged, but the startup API always requires a positive finite budget.
+The API accepts a relative duration; an external absolute deadline must still
+be checked by the caller because dispatch/bridge time precedes core begin.
+
+`tests/jaccl/startup_wait_budget_tests.cpp` uses a controllable clock with the
+real policy/guard. The group tests exercise real mesh/ring dispatch and cleanup
+against simulated verbs. These CPU tests do not qualify native RDMA or loading.

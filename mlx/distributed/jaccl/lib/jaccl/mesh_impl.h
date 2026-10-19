@@ -34,6 +34,14 @@ class MeshImpl {
 
   MeshImpl() : rank_(0), size_(1) {}
 
+  void begin_startup_wait_budget(int64_t timeout_ms) {
+    wait_budget_->begin(timeout_ms, *failed_);
+  }
+
+  void end_startup_wait_budget() {
+    wait_budget_->end(*failed_);
+  }
+
   template <typename T, typename ReduceOp>
   void all_reduce(const T* in, T* out, int64_t size, ReduceOp reduce_op) {
     // Fully connected all reduce with deterministic reduction order.
@@ -543,7 +551,7 @@ class MeshImpl {
   class Call : public ProgressGuard {
    public:
     Call(MeshImpl& mesh, const char* op)
-        : ProgressGuard(op, *mesh.failed_),
+        : ProgressGuard(op, *mesh.failed_, mesh.wait_budget_.get()),
           mesh_(mesh),
           exceptions_(std::uncaught_exceptions()) {
       require_open(*mesh.failed_);
@@ -666,6 +674,8 @@ class MeshImpl {
   std::span<SharedBuffer> buffers_;
   std::span<SharedBuffer> scatter_buffers_;
   std::unique_ptr<char[]> staging_mem_;
+  std::unique_ptr<StartupWaitBudget> wait_budget_ =
+      std::make_unique<StartupWaitBudget>();
   std::unique_ptr<std::atomic<bool>> failed_ =
       std::make_unique<std::atomic<bool>>(false);
 };

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 
@@ -60,6 +61,20 @@ struct MLX_API Group {
    * rank in the current group is used.
    */
   Group split(int color, int key = -1) const;
+
+  /**
+   * Start one JACCL readiness budget of 1..900000 ms from the current
+   * monotonic time. Progress does not renew it. Other backends refuse.
+   * Drain queued work and serialize scheduling around begin/end; both require
+   * no running calls. The budget cannot restart after end or expiry.
+   */
+  void begin_startup_wait_budget(int64_t timeout_ms) const;
+
+  /**
+   * End an unexpired budget and restore the original idle timeout for later
+   * calls. Refuses unused, ended, expired or failed groups; never reopens one.
+   */
+  void end_startup_wait_budget() const;
 
   const std::shared_ptr<detail::GroupImpl>& raw_group() const {
     return group_;

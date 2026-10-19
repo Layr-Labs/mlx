@@ -21,6 +21,15 @@ class GroupImpl {
   virtual int size() = 0;
   virtual std::shared_ptr<GroupImpl> split(int color, int key = -1) = 0;
 
+  virtual void begin_startup_wait_budget(int64_t) {
+    throw std::runtime_error(
+        "[distributed] Startup wait budgets require a JACCL group.");
+  }
+  virtual void end_startup_wait_budget() {
+    throw std::runtime_error(
+        "[distributed] Startup wait budgets require a JACCL group.");
+  }
+
   // Actual communication operations
   virtual void all_sum(const array& input, array& output, Stream stream) = 0;
   virtual void all_gather(const array& input, array& output, Stream stream) = 0;

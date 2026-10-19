@@ -51,7 +51,7 @@ class ThreadgroupBoundsTests(unittest.TestCase):
                     mx.eval(outputs)
 
     def test_legal_launch_keeps_threads_and_values(self):
-        for group in [32, 256, 1024]:
+        for group in [32, 256, 512, 1024]:
             kernel = mx.fast.metal_kernel(
                 name="thread_count_and_math",
                 input_names=["a"],

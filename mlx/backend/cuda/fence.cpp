@@ -24,6 +24,10 @@ void Fence::wait(Stream s, const array&) {
   cast<FenceImpl>().event.wait();
 }
 
+bool Fence::wait_in_consumer(Stream, const array&, int) {
+  return false;
+}
+
 void Fence::update(Stream s, const array& a, bool cross_device) {
   auto& f = cast<FenceImpl>();
   if (cross_device) {

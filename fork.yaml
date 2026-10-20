@@ -304,6 +304,31 @@ def:
         - "mlx/backend/metal/kernels/fence.metal"
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
+    - title: "Fenced custom-kernel inputs"
+      description: |
+        Opt-in (`MLX_METAL_FENCED_INPUTS=1`, fast synch only). `metal_kernel_with_fenced_inputs`
+        declares inputs that can come from a CPU stream in the same eval, such as a CPU-stream
+        all-sum. The source calls `MLX_FENCED_INPUT_WAIT(name)` before it reads such an input.
+        MLX then gives the CPU fence and its count to the kernel instead of a `fence_wait`
+        dispatch, and thread 0 of each threadgroup spins on it. The kernel starts after every
+        pass and kernel encoded before it (`wait_for_all_pending` and a barrier), as the
+        `fence_wait` pass does, so the CPU work it waits for never waits for it. MLX keeps the
+        separate wait when the input is copied first, when another GPU stream feeds the CPU
+        in the same eval, and while exporting. The declaration is not part of the exported
+        schema. Synchronization only: results do not change.
+      globs:
+        - "mlx/fence.h"
+        - "mlx/transforms.cpp"
+        - "mlx/fast.h"
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/metal/fenced_input.h"
+        - "mlx/backend/no_gpu/fence.cpp"
+        - "mlx/backend/cuda/fence.cpp"
+        - "mlx/utils.h"
+        - "docs/src/usage/environment_variables.rst"
     - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

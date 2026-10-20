@@ -1,13 +1,15 @@
 // Copyright © 2024 Apple Inc.
 #include "mlx/fence.h"
 #include "mlx/backend/metal/device.h"
+#include "mlx/backend/metal/fenced_input.h"
+#include "mlx/fast_primitives.h"
 #include "mlx/scheduler.h"
 #include "mlx/utils.h"
 
 namespace mlx::core {
 
 struct FenceImpl {
-  FenceImpl(Stream stream) {
+  FenceImpl(Stream stream) : cpu_stream(stream.device == Device::cpu) {
     auto d = metal::device(stream.device).mtl_device();
     if (!d->supportsFamily(MTL::GPUFamilyMetal3)) {
       use_fast = false;
@@ -32,6 +34,7 @@ struct FenceImpl {
     }
   }
   bool use_fast{false};
+  bool cpu_stream;
   uint32_t count{0};
   // Threadgroups that fence_update_coherent counted in (mod 2^32).
   uint32_t arrivals{0};
@@ -43,6 +46,48 @@ struct FenceImpl {
         static_cast<MTL::Buffer*>(fence)->contents());
   }
 };
+
+namespace {
+
+std::vector<metal::FencedInput>& given_waits() {
+  static thread_local std::vector<metal::FencedInput> waits;
+  return waits;
+}
+
+void encode_wait(
+    Stream stream,
+    const array& x,
+    const std::shared_ptr<void>& fence,
+    uint32_t count) {
+  auto& f = *static_cast<FenceImpl*>(fence.get());
+  auto& d = metal::device(stream.device);
+  auto& compute_encoder = metal::get_command_encoder(stream);
+
+  // Register outputs to ensure that no kernels which depends on the
+  // output starts before this one is done
+  compute_encoder.register_output_array(x);
+  // The spin must not start ahead of GPU work encoded before it: without
+  // hazard tracking Metal may run this pass before an earlier pass still in
+  // flight, and when that pass is what the awaited CPU work depends on (a
+  // GPU -> CPU -> GPU chain, e.g. a CPU-stream collective) the GPU spins
+  // forever. Waiting on every pending pass costs nothing here: the CPU work
+  // this spin waits for already follows them.
+  compute_encoder.wait_for_all_pending();
+
+  auto kernel = d.get_kernel("fence_wait");
+  MTL::Size kernel_dims = MTL::Size(1, 1, 1);
+  compute_encoder.set_compute_pipeline_state(kernel);
+
+  auto buf = static_cast<MTL::Buffer*>(f.fence);
+  compute_encoder.set_buffer(buf, 0);
+  compute_encoder.set_bytes(count, 1);
+  compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
+
+  // The fence buffer must outlive the pass that spins on it.
+  compute_encoder.retain_until_completed(fence);
+}
+
+} // namespace
 
 Fence::Fence(Stream stream) {
   fence_ = std::make_shared<FenceImpl>(stream);
@@ -65,31 +110,7 @@ void Fence::wait(Stream stream, const array& x) {
     return;
   }
 
-  auto& d = metal::device(stream.device);
-  auto& compute_encoder = metal::get_command_encoder(stream);
-
-  // Register outputs to ensure that no kernels which depends on the
-  // output starts before this one is done
-  compute_encoder.register_output_array(x);
-  // The spin must not start ahead of GPU work encoded before it: without
-  // hazard tracking Metal may run this pass before an earlier pass still in
-  // flight, and when that pass is what the awaited CPU work depends on (a
-  // GPU -> CPU -> GPU chain, e.g. a CPU-stream collective) the GPU spins
-  // forever. Waiting on every pending pass costs nothing here: the CPU work
-  // this spin waits for already follows them.
-  compute_encoder.wait_for_all_pending();
-
-  auto kernel = d.get_kernel("fence_wait");
-  MTL::Size kernel_dims = MTL::Size(1, 1, 1);
-  compute_encoder.set_compute_pipeline_state(kernel);
-
-  auto buf = static_cast<MTL::Buffer*>(f.fence);
-  compute_encoder.set_buffer(buf, 0);
-  compute_encoder.set_bytes(f.count, 1);
-  compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
-
-  // The fence buffer must outlive the pass that spins on it.
-  compute_encoder.retain_until_completed(fence_);
+  encode_wait(stream, x, fence_, f.count);
 }
 
 void Fence::update(Stream stream, const array& x, bool cross_device) {
@@ -172,5 +193,46 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
   // The fence buffer must outlive the pass that writes it.
   compute_encoder.retain_until_completed(fence_);
 }
+
+bool Fence::wait_in_consumer(Stream stream, const array& consumer, int input) {
+  auto& f = *static_cast<FenceImpl*>(fence_.get());
+  if (!env::metal_fenced_inputs() || !f.use_fast || !f.cpu_stream ||
+      stream.device != Device::gpu) {
+    return false;
+  }
+  auto kernel = dynamic_cast<const fast::CustomKernel*>(&consumer.primitive());
+  if (!kernel || !kernel->fenced_input(input)) {
+    return false;
+  }
+  given_waits().push_back({&consumer.primitive(), input, fence_, f.count});
+  return true;
+}
+
+namespace metal {
+
+std::vector<FencedInput> take_fenced_inputs(const Primitive* consumer) {
+  auto& waits = given_waits();
+  std::vector<FencedInput> taken;
+  for (auto& w : waits) {
+    if (w.consumer == consumer) {
+      taken.push_back(std::move(w));
+    }
+  }
+  waits.clear();
+  return taken;
+}
+
+void bind_fenced_input(CommandEncoder& enc, const FencedInput& w, int index) {
+  auto& f = *static_cast<FenceImpl*>(w.fence.get());
+  enc.set_buffer(static_cast<MTL::Buffer*>(f.fence), index);
+  enc.set_bytes(w.count, index + 1);
+  enc.retain_until_completed(w.fence);
+}
+
+void encode_fence_wait(Stream stream, const array& x, const FencedInput& w) {
+  encode_wait(stream, x, w.fence, w.count);
+}
+
+} // namespace metal
 
 } // namespace mlx::core

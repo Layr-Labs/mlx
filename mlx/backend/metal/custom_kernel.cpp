@@ -2,6 +2,7 @@
 
 #include "mlx/backend/common/metal_kernel.h"
 #include "mlx/backend/gpu/copy.h"
+#include "mlx/backend/metal/fenced_input.h"
 #include "mlx/backend/metal/jit/includes.h"
 #include "mlx/backend/metal/utils.h"
 #include "mlx/fast_primitives.h"
@@ -52,6 +53,22 @@ void CustomKernel::eval_gpu(
     if (ensure_row_contiguous_ && !inputs[i].flags().row_contiguous) {
       throw std::invalid_argument(
           "Mutable kernel inputs cannot use an implicit contiguous copy.");
+    }
+  }
+
+  // Waits on fenced inputs that Fence::wait_in_consumer gave to this kernel.
+  // An input that is copied first is read before the kernel: wait for it now.
+  std::vector<metal::FencedInput> fenced;
+  if (!fenced_inputs_.empty()) {
+    fenced = metal::take_fenced_inputs(this);
+    for (auto it = fenced.begin(); it != fenced.end();) {
+      auto& in = inputs[it->input];
+      if (ensure_row_contiguous_ && !in.flags().row_contiguous) {
+        metal::encode_fence_wait(s, in, *it);
+        it = fenced.erase(it);
+      } else {
+        ++it;
+      }
     }
   }
 
@@ -159,6 +176,24 @@ void CustomKernel::eval_gpu(
   for (auto& out : outputs) {
     compute_encoder.set_output_array(out, index);
     index++;
+  }
+  for (int i : fenced_inputs_) {
+    auto it = std::find_if(
+        fenced.begin(), fenced.end(), [i](auto& f) { return f.input == i; });
+    if (it != fenced.end()) {
+      metal::bind_fenced_input(compute_encoder, *it, index);
+    } else {
+      // No CPU-stream producer in this eval: a count of 0 does not wait.
+      compute_encoder.set_input_array(checked_inputs[i], index);
+      compute_encoder.set_bytes(uint32_t(0), index + 1);
+    }
+    index += 2;
+  }
+  if (!fenced.empty()) {
+    // As Fence::wait: start after every pass and kernel encoded before, so
+    // the CPU work that the kernel waits for never waits for the kernel.
+    compute_encoder.wait_for_all_pending();
+    compute_encoder.barrier();
   }
 
   MTL::Size group_dims =

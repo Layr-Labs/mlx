@@ -120,6 +120,13 @@ Metal
    one dispatch instead of two: the coherent rewrite of the array and the
    fence timestamp. The default is ``0``.
 
+.. envvar:: MLX_METAL_FENCED_INPUTS
+
+   With ``MLX_METAL_FAST_SYNCH=1``, a custom kernel made with
+   ``metal_kernel_with_fenced_inputs`` waits itself for a fenced input that a
+   CPU stream makes in the same evaluation, and MLX does not encode a separate
+   fence wait for that input. The default is ``0``.
+
 Advanced tuning
 ---------------
 

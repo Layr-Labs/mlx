@@ -55,6 +55,52 @@ Stream resolve_metal_kernel_stream(StreamOrDevice s) {
   return Stream(-1, Device::gpu);
 }
 
+// MLX_FENCED_INPUT_WAIT(name): thread 0 of each threadgroup spins until the
+// CPU fence reaches the count, as fence_wait does. A count of 0 does not wait.
+constexpr const char* fenced_input_wait = R"(
+#pragma METAL internals : enable
+#ifndef __METAL_MEMORY_SCOPE_SYSTEM__
+#define __METAL_MEMORY_SCOPE_SYSTEM__ 3
+#endif
+inline void mlx_fenced_input_wait(
+    volatile coherent(system) device uint* fence,
+    uint count,
+    uint index) {
+  constexpr metal::thread_scope scope =
+      static_cast<metal::thread_scope>(__METAL_MEMORY_SCOPE_SYSTEM__);
+  if (count == 0) {
+    return;
+  }
+  if (index == 0) {
+    while (true) {
+      metal::atomic_thread_fence(
+          metal::mem_flags::mem_device, metal::memory_order_seq_cst, scope);
+      if (fence[0] >= count) {
+        break;
+      }
+    }
+  }
+  metal::threadgroup_barrier(metal::mem_flags::mem_device);
+  metal::atomic_thread_fence(
+      metal::mem_flags::mem_device, metal::memory_order_seq_cst, scope);
+}
+#define MLX_FENCED_INPUT_WAIT(name) mlx_fenced_input_wait( \
+    name##_fence, name##_fence_count, thread_index_in_threadgroup)
+)";
+
+constexpr const char* fenced_input_no_wait =
+    "\n#define MLX_FENCED_INPUT_WAIT(name) ((void)0)\n";
+
+bool fenced_inputs_enabled() {
+#ifdef __APPLE__
+  if (__builtin_available(macOS 15, iOS 18, *)) {
+    return env::metal_fenced_inputs() && env::metal_fast_synch() &&
+        !detail::in_export_tracing();
+  }
+#endif
+  return false;
+}
+
 std::string write_signature(
     std::string func_name,
     const std::string& header,
@@ -67,10 +113,13 @@ std::string write_signature(
     const std::vector<std::string>& attributes,
     const std::vector<std::tuple<bool, bool, bool>>& shape_infos,
     bool atomic_outputs,
-    const std::vector<int>& mutable_inputs) {
+    const std::vector<int>& mutable_inputs,
+    const char* fence_preamble,
+    const std::vector<int>& fenced_inputs) {
   std::string kernel_source;
   kernel_source.reserve(header.size() + source.size() + 16384);
   kernel_source += header;
+  kernel_source += fence_preamble;
   // Auto-generate a function signature based on `template_args`
   // and the dtype/shape of the arrays passed as `inputs`.
   if (!template_args.empty()) {
@@ -171,6 +220,14 @@ std::string write_signature(
     }
     index++;
   }
+  // Fenced inputs: the CPU fence and its count (attributes follow).
+  for (int i : fenced_inputs) {
+    const auto& name = input_names[i];
+    kernel_source += "  volatile coherent(system) device uint* " + name +
+        "_fence [[buffer(" + std::to_string(index++) + ")]],\n";
+    kernel_source += "  constant uint& " + name + "_fence_count [[buffer(" +
+        std::to_string(index++) + ")]],\n";
+  }
 
   index = 0;
   for (const auto& attr : attributes) {
@@ -261,6 +318,30 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     bool ensure_row_contiguous,
     bool atomic_outputs,
     const CompileOptions& compile_options) {
+  return metal_kernel_with_fenced_inputs(
+      name,
+      input_names,
+      output_names,
+      source,
+      mutable_input_names,
+      {},
+      header,
+      ensure_row_contiguous,
+      atomic_outputs,
+      compile_options);
+}
+
+CustomKernelFunction metal_kernel_with_fenced_inputs(
+    const std::string& name,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    const std::string& source,
+    const std::vector<std::string>& mutable_input_names,
+    const std::vector<std::string>& fenced_input_names,
+    const std::string& header,
+    bool ensure_row_contiguous,
+    bool atomic_outputs,
+    const CompileOptions& compile_options) {
   std::vector<int> mutable_inputs;
   for (const auto& mutable_name : mutable_input_names) {
     auto it = std::find(input_names.begin(), input_names.end(), mutable_name);
@@ -276,6 +357,38 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     mutable_inputs.push_back(index);
   }
   std::sort(mutable_inputs.begin(), mutable_inputs.end());
+  std::vector<int> fenced_inputs;
+  for (const auto& fenced_name : fenced_input_names) {
+    auto it = std::find(input_names.begin(), input_names.end(), fenced_name);
+    if (it == input_names.end() ||
+        std::count(input_names.begin(), input_names.end(), fenced_name) != 1) {
+      throw std::invalid_argument("Fenced input must name one kernel input.");
+    }
+    int index = static_cast<int>(it - input_names.begin());
+    if (std::find(fenced_inputs.begin(), fenced_inputs.end(), index) !=
+            fenced_inputs.end() ||
+        std::find(mutable_inputs.begin(), mutable_inputs.end(), index) !=
+            mutable_inputs.end()) {
+      throw std::invalid_argument(
+          "A fenced kernel input must be unique and not mutable.");
+    }
+    for (const auto& suffix : {"_fence", "_fence_count"}) {
+      auto param = fenced_name + suffix;
+      if (std::count(input_names.begin(), input_names.end(), param) ||
+          std::count(output_names.begin(), output_names.end(), param)) {
+        throw std::invalid_argument(
+            "Kernel argument name " + param + " is used by a fenced input.");
+      }
+    }
+    if (source.find("MLX_FENCED_INPUT_WAIT(" + fenced_name + ")") ==
+        std::string::npos) {
+      throw std::invalid_argument(
+          "The kernel source must call MLX_FENCED_INPUT_WAIT(" + fenced_name +
+          ") before it reads the fenced input.");
+    }
+    fenced_inputs.push_back(index);
+  }
+  std::sort(fenced_inputs.begin(), fenced_inputs.end());
   if (output_names.empty()) {
     throw std::invalid_argument(
         "[metal_kernel] Must specify at least one output.");
@@ -313,7 +426,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
 
   std::vector<std::string> attributes;
   for (const auto& [attr, dtype] : metal_attributes) {
-    if (source.find(attr) != std::string::npos) {
+    if (source.find(attr) != std::string::npos ||
+        (!fenced_inputs.empty() && attr == "thread_index_in_threadgroup")) {
       attributes.push_back("  " + dtype + " " + attr + " [[" + attr + "]]");
     }
   }
@@ -404,6 +518,10 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     for (int i : mutable_inputs) {
       cache_key += inputs[i].ndim() == 0 ? 'z' : 'n';
     }
+    const bool fenced = !fenced_inputs.empty() && fenced_inputs_enabled();
+    if (!fenced_inputs.empty()) {
+      cache_key += fenced ? 'f' : 'u';
+    }
     std::shared_ptr<const GeneratedSource> generated;
     {
       std::lock_guard lock(source_cache->mtx);
@@ -425,7 +543,11 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
           attributes,
           shape_infos,
           atomic_outputs,
-          mutable_inputs);
+          mutable_inputs,
+          fenced_inputs.empty() ? ""
+              : fenced          ? fenced_input_wait
+                                : fenced_input_no_wait,
+          fenced ? fenced_inputs : std::vector<int>{});
 
       if (!template_args.empty()) {
         auto instantiation = kernel_name + template_def;
@@ -475,7 +597,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
               0,
               compile_options.serialize(),
               mutable_inputs,
-              generated->library_name),
+              generated->library_name,
+              fenced ? fenced_inputs : std::vector<int>{}),
           inputs);
     }
     return array::make_arrays(
@@ -495,7 +618,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
             0,
             compile_options.serialize(),
             std::vector<int>{},
-            generated->library_name),
+            generated->library_name,
+            fenced ? fenced_inputs : std::vector<int>{}),
         std::move(inputs));
   };
 }

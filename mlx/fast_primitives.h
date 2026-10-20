@@ -449,7 +449,8 @@ class CustomKernel : public Primitive {
       int shared_memory,
       CompileOptions::Data compile_options = {},
       std::vector<int> mutable_inputs = {},
-      std::string library_name = "")
+      std::string library_name = "",
+      std::vector<int> fenced_inputs = {})
       : Primitive(stream),
         name_(std::move(name)),
         source_(std::move(source)),
@@ -463,7 +464,8 @@ class CustomKernel : public Primitive {
         shared_memory_(shared_memory),
         compile_options_(compile_options),
         library_name_(std::move(library_name)),
-        mutable_inputs_(std::move(mutable_inputs)) {}
+        mutable_inputs_(std::move(mutable_inputs)),
+        fenced_inputs_(std::move(fenced_inputs)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -474,6 +476,16 @@ class CustomKernel : public Primitive {
       override;
 
   DEFINE_NAME(CustomKernel);
+
+  bool fenced_input(int index) const {
+    for (int i : fenced_inputs_) {
+      if (i == index) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   auto state() const {
     return std::make_tuple(
         name_,
@@ -508,6 +520,9 @@ class CustomKernel : public Primitive {
 
  protected:
   std::vector<int> mutable_inputs_;
+  // Inputs whose fence wait runs in the kernel. Not in `state()`: never set
+  // while exporting (see metal_kernel_with_fenced_inputs).
+  std::vector<int> fenced_inputs_;
 };
 
 class MutableInputCustomKernel : public CustomKernel {

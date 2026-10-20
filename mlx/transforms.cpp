@@ -92,6 +92,9 @@ array eval_impl(std::vector<array> outputs, bool async) {
   // Map of array id that needs fence and stream it's computed on
   std::unordered_map<uintptr_t, std::pair<uint32_t, bool>> needs_fence;
 
+  // GPU streams with an array that a CPU primitive reads
+  std::unordered_set<uint32_t> gpu_to_cpu;
+
   auto synchronizer = array(
       {}, bool_, std::make_shared<Synchronizer>(stream), std::move(outputs));
 
@@ -149,6 +152,9 @@ array eval_impl(std::vector<array> outputs, bool async) {
                 std::make_pair(in.primitive().stream().index, device_switch));
             if (!inserted) {
               it->second.second |= device_switch;
+            }
+            if (device_switch && in.primitive().device() == Device::gpu) {
+              gpu_to_cpu.insert(in.primitive().stream().index);
             }
           }
         }
@@ -246,12 +252,20 @@ array eval_impl(std::vector<array> outputs, bool async) {
         }
       }
 
-      for (auto& in : arr.inputs()) {
+      // A kernel can wait for its CPU-stream input itself when that CPU work
+      // can depend on no GPU stream other than this one.
+      bool one_gpu_stream = gpu_to_cpu.empty() ||
+          (gpu_to_cpu.size() == 1 && gpu_to_cpu.count(stream.index) == 1);
+      for (int i = 0; i < arr.inputs().size(); ++i) {
+        auto& in = arr.inputs()[i];
         if (auto it = needs_fence.find(in.id()); it != needs_fence.end()) {
           // Use fence to wait within a single eval
           // Get the input array's stream fence and wait on the
           // output arrays stream
-          fences[it->second.first].wait(stream, in);
+          auto& fence = fences[it->second.first];
+          if (!one_gpu_stream || !fence.wait_in_consumer(stream, arr, i)) {
+            fence.wait(stream, in);
+          }
         } else if (in.event().valid()) {
           if (in.event().is_signaled()) {
             in.detach_event();

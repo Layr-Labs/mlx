@@ -348,13 +348,12 @@ void CommandEncoder::set_input_array(
     const array& a,
     int idx,
     int64_t offset /* = 0 */) {
-  if (all_inputs_.insert(a.buffer().ptr()).second) {
+  if (all_inputs_.insert(a.buffer().ptr())) {
     buffer_sizes_ += a.data_size();
   }
   auto r_buf = static_cast<MTL::Resource*>(const_cast<void*>(a.buffer().ptr()));
   next_inputs_.insert(r_buf);
-  needs_barrier_ =
-      needs_barrier_ | (prev_outputs_.find(r_buf) != prev_outputs_.end());
+  needs_barrier_ = needs_barrier_ | prev_outputs_.contains(r_buf);
   auto a_buf = static_cast<const MTL::Buffer*>(a.buffer().ptr());
   get_command_encoder()->setBuffer(a_buf, a.offset() + offset, idx);
 }
@@ -376,8 +375,7 @@ void CommandEncoder::register_output_array(const array& a) {
     concurrent_outputs_.insert(buf);
   } else {
     next_outputs_.insert(buf);
-    needs_barrier_ =
-        needs_barrier_ | (prev_inputs_.find(buf) != prev_inputs_.end());
+    needs_barrier_ = needs_barrier_ | prev_inputs_.contains(buf);
   }
 }
 
@@ -396,7 +394,7 @@ void CommandEncoder::maybeInsertBarrier() {
   if (needs_barrier_) {
     get_command_encoder()->memoryBarrier(MTL::BarrierScopeBuffers);
     needs_barrier_ = false;
-    // Preserve the hash tables' buckets for reuse across barrier epochs.
+    // Keep the sets' memory for reuse across barrier epochs.
     prev_inputs_.swap(next_inputs_);
     prev_outputs_.swap(next_outputs_);
   } else {
@@ -480,7 +478,8 @@ void CommandEncoder::end_encoding() {
   buffer_->addCompletedHandler([this,
                                 fence = std::move(fence_),
                                 temporaries = std::move(temporaries_),
-                                all_outputs = std::move(all_outputs_),
+                                all_outputs = std::vector<const void*>(
+                                    all_outputs_.begin(), all_outputs_.end()),
                                 waiting_on = std::move(waiting_on)](
                                    MTL::CommandBuffer*) mutable {
     std::lock_guard lk(outputs_mtx_);
@@ -504,6 +503,7 @@ void CommandEncoder::end_encoding() {
   next_outputs_.clear();
   concurrent_outputs_.clear();
   all_inputs_.clear();
+  all_outputs_.clear();
 }
 
 void CommandEncoder::signal_event(Event event, uint64_t value) {

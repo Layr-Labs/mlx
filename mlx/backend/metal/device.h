@@ -3,11 +3,14 @@
 #pragma once
 
 #include <Metal/Metal.hpp>
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "mlx/array.h"
 #include "mlx/backend/common/gemma4_expert_qmm.h"
@@ -21,6 +24,139 @@ using MTLFCList =
     std::vector<std::tuple<const void*, MTL::DataType, NS::UInteger>>;
 
 class Device;
+
+// A set of buffer pointers for the encoder's hazard tracking. A small set is
+// a vector with a linear search; a larger set also gets an open addressing
+// index. clear() keeps the memory, so a warm encoder does not allocate.
+class BufferSet {
+ public:
+  BufferSet() = default;
+  BufferSet(const BufferSet&) = delete;
+  BufferSet& operator=(const BufferSet&) = delete;
+
+  // Returns true if `p` was not in the set.
+  bool insert(const void* p) {
+    if (!indexed_) {
+      if (std::find(items_.begin(), items_.end(), p) != items_.end()) {
+        return false;
+      }
+      items_.push_back(p);
+      if (items_.size() > kLinearMax) {
+        build_index();
+      }
+      return true;
+    }
+    auto i = find_slot(key(p));
+    if (slots_[i] != kEmpty) {
+      return false;
+    }
+    slots_[i] = key(p);
+    items_.push_back(p);
+    if (2 * items_.size() > slots_.size()) {
+      build_index();
+    }
+    return true;
+  }
+
+  template <typename It>
+  void insert(It first, It last) {
+    for (; first != last; ++first) {
+      insert(*first);
+    }
+  }
+
+  bool contains(const void* p) const {
+    if (!indexed_) {
+      return std::find(items_.begin(), items_.end(), p) != items_.end();
+    }
+    return slots_[find_slot(key(p))] != kEmpty;
+  }
+
+  void erase(const void* p) {
+    auto it = std::find(items_.begin(), items_.end(), p);
+    if (it == items_.end()) {
+      return;
+    }
+    *it = items_.back();
+    items_.pop_back();
+    if (indexed_) {
+      erase_slot(find_slot(key(p)));
+    }
+  }
+
+  // build_index() resets every slot, so the index needs no clearing here.
+  void clear() {
+    items_.clear();
+    indexed_ = false;
+  }
+
+  void swap(BufferSet& other) noexcept {
+    items_.swap(other.items_);
+    slots_.swap(other.slots_);
+    std::swap(indexed_, other.indexed_);
+  }
+
+  size_t size() const {
+    return items_.size();
+  }
+  std::vector<const void*>::const_iterator begin() const {
+    return items_.begin();
+  }
+  std::vector<const void*>::const_iterator end() const {
+    return items_.end();
+  }
+
+ private:
+  static constexpr size_t kLinearMax = 16;
+  static constexpr uintptr_t kEmpty = ~uintptr_t(0);
+
+  static uintptr_t key(const void* p) {
+    return reinterpret_cast<uintptr_t>(p);
+  }
+  static size_t hash(uintptr_t k) {
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdULL;
+    k ^= k >> 33;
+    return static_cast<size_t>(k);
+  }
+  // The slot that holds `k`, or the empty slot where it would go.
+  size_t find_slot(uintptr_t k) const {
+    size_t mask = slots_.size() - 1;
+    size_t i = hash(k) & mask;
+    while (slots_[i] != kEmpty && slots_[i] != k) {
+      i = (i + 1) & mask;
+    }
+    return i;
+  }
+  // Remove slot i and move back later entries of its probe run.
+  void erase_slot(size_t i) {
+    size_t mask = slots_.size() - 1;
+    for (size_t j = (i + 1) & mask; slots_[j] != kEmpty; j = (j + 1) & mask) {
+      size_t home = hash(slots_[j]) & mask;
+      bool stays = (i <= j) ? (i < home && home <= j) : (i < home || home <= j);
+      if (!stays) {
+        slots_[i] = slots_[j];
+        i = j;
+      }
+    }
+    slots_[i] = kEmpty;
+  }
+  void build_index() {
+    size_t capacity = 64;
+    while (capacity < 4 * items_.size()) {
+      capacity *= 2;
+    }
+    slots_.assign(capacity, kEmpty);
+    for (auto p : items_) {
+      slots_[find_slot(key(p))] = key(p);
+    }
+    indexed_ = true;
+  }
+
+  std::vector<const void*> items_;
+  std::vector<uintptr_t> slots_;
+  bool indexed_{false};
+};
 
 class MLX_API CommandEncoder {
  public:
@@ -151,13 +287,13 @@ class MLX_API CommandEncoder {
   bool wait_all_pending_{false};
   bool concurrent_{false};
   std::vector<array> temporaries_;
-  std::unordered_set<MTL::Resource*> prev_inputs_;
-  std::unordered_set<MTL::Resource*> prev_outputs_;
-  std::unordered_set<MTL::Resource*> next_inputs_;
-  std::unordered_set<MTL::Resource*> next_outputs_;
-  std::unordered_set<MTL::Resource*> concurrent_outputs_;
-  std::unordered_set<const void*> all_inputs_;
-  std::unordered_set<const void*> all_outputs_;
+  BufferSet prev_inputs_;
+  BufferSet prev_outputs_;
+  BufferSet next_inputs_;
+  BufferSet next_outputs_;
+  BufferSet concurrent_outputs_;
+  BufferSet all_inputs_;
+  BufferSet all_outputs_;
 
   // A map of prior command encoder outputs to their corresponding fence.
   std::unordered_map<const void*, NS::SharedPtr<MTL::Fence>> prev_ce_outputs_;

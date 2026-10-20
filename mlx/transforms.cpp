@@ -41,6 +41,98 @@ static bool too_many_active_tasks() {
 
 namespace {
 
+// Degree of each array id in eval_impl's graph walk: an open-addressing map
+// (linear probing, deletion by backward shift) with the operations of the
+// std::unordered_map it replaces. A decode step's graph has thousands of
+// nodes; this avoids a heap node per entry and the rehash chain.
+class DegreeMap {
+ public:
+  int* find(std::uintptr_t key) {
+    if (keys_.empty()) {
+      return nullptr;
+    }
+    for (size_t i = home(key);; i = (i + 1) & mask_) {
+      if (keys_[i] == key) {
+        return &values_[i];
+      }
+      if (keys_[i] == 0) {
+        return nullptr;
+      }
+    }
+  }
+  // Inserts `value` when `key` is absent; the entry either way.
+  int& emplace(std::uintptr_t key, int value) {
+    if (2 * (size_ + 1) > keys_.size()) {
+      grow();
+    }
+    size_t i = home(key);
+    for (; keys_[i] != 0; i = (i + 1) & mask_) {
+      if (keys_[i] == key) {
+        return values_[i];
+      }
+    }
+    keys_[i] = key;
+    values_[i] = value;
+    ++size_;
+    return values_[i];
+  }
+  int& operator[](std::uintptr_t key) {
+    return emplace(key, 0);
+  }
+  void erase(std::uintptr_t key) {
+    if (keys_.empty()) {
+      return;
+    }
+    size_t i = home(key);
+    for (; keys_[i] != key; i = (i + 1) & mask_) {
+      if (keys_[i] == 0) {
+        return;
+      }
+    }
+    for (size_t j = (i + 1) & mask_; keys_[j] != 0; j = (j + 1) & mask_) {
+      size_t h = home(keys_[j]);
+      bool stays = i <= j ? (i < h && h <= j) : (i < h || h <= j);
+      if (!stays) {
+        keys_[i] = keys_[j];
+        values_[i] = values_[j];
+        i = j;
+      }
+    }
+    keys_[i] = 0;
+    values_[i] = 0;
+    --size_;
+  }
+  bool empty() const {
+    return size_ == 0;
+  }
+
+ private:
+  size_t home(std::uintptr_t key) const {
+    uint64_t k = key;
+    k ^= k >> 33;
+    k *= 0xff51afd7ed558ccdULL;
+    k ^= k >> 33;
+    return static_cast<size_t>(k) & mask_;
+  }
+  void grow() {
+    std::vector<std::uintptr_t> keys(std::max<size_t>(64, 2 * keys_.size()), 0);
+    std::vector<int> values(keys.size(), 0);
+    std::swap(keys, keys_);
+    std::swap(values, values_);
+    mask_ = keys_.size() - 1;
+    size_ = 0;
+    for (size_t i = 0; i < keys.size(); ++i) {
+      if (keys[i] != 0) {
+        emplace(keys[i], values[i]);
+      }
+    }
+  }
+  std::vector<std::uintptr_t> keys_;
+  std::vector<int> values_;
+  size_t mask_ = 0;
+  size_t size_ = 0;
+};
+
 // Create a tracer copy of a primal for use in vjp/jvp. If the primal is a
 // stale Copy from a previous transform call (not an active tracer), peel it
 // off to prevent copy-chain accumulation when containers feed tracers back.
@@ -127,7 +219,7 @@ array eval_impl(std::vector<array> outputs, bool async) {
 
   {
     // Record the degree of each input
-    std::unordered_map<std::uintptr_t, int> cache;
+    DegreeMap cache;
 
     std::stack<std::pair<std::reference_wrapper<array>, int>> dfs;
     dfs.emplace(synchronizer, 0);
@@ -176,14 +268,14 @@ array eval_impl(std::vector<array> outputs, bool async) {
 
         // All siblings have the same degree
         auto cache_it = cache.find(in.id());
-        if (cache_it == cache.end()) {
+        if (cache_it == nullptr) {
           dfs.emplace(in, 0);
-          cache.insert({in.id(), 1});
+          cache.emplace(in.id(), 1);
           for (auto& s : in.siblings()) {
-            cache.insert({s.id(), 1});
+            cache.emplace(s.id(), 1);
           }
         } else {
-          cache_it->second++;
+          (*cache_it)++;
           for (auto& s : in.siblings()) {
             cache[s.id()]++;
           }
@@ -225,9 +317,9 @@ array eval_impl(std::vector<array> outputs, bool async) {
         }
 
         auto it = cache.find(in.id());
-        it->second -= 1;
+        *it -= 1;
 
-        if (it->second != 0) {
+        if (*it != 0) {
           for (auto& s : in.siblings()) {
             cache[s.id()] -= 1;
           }
@@ -235,7 +327,7 @@ array eval_impl(std::vector<array> outputs, bool async) {
         }
 
         // Remove input and siblings from cache
-        cache.erase(it);
+        cache.erase(in.id());
         for (auto& s : in.siblings()) {
           cache.erase(s.id());
         }

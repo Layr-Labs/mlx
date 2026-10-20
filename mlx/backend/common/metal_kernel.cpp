@@ -435,19 +435,20 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
   // The generated source is a pure function of this kernel object (header,
   // body, names, attributes, shape infos, atomic and mutable inputs: all
   // fixed here) and of the per-call key built below: the template
-  // definition and, per input, its dtype and how it is passed (mutable,
+  // arguments and, per input, its dtype and how it is passed (mutable,
   // scalar, constant or device; a 0-d mutable input also drops its shape
-  // parameters). Cache the source and its Metal library name per key, so a
-  // repeated call neither regenerates the (often multi-KB) source nor hashes
-  // it again at dispatch time. Shared by every copy of the returned function.
-  struct GeneratedSource {
-    std::string source;
-    std::string library_name;
+  // parameters), the output dtypes and whether fenced waits are compiled in.
+  // Cache the kernel name, source and Metal library name per key, so a
+  // repeated call neither formats names nor regenerates the (often multi-KB)
+  // source, and every launch of one entry shares it (and its pipeline, see
+  // CustomKernel::eval_gpu). Shared by every copy of the returned function.
+  struct Generated {
+    std::string kernel_name;
+    std::shared_ptr<const CustomKernelSource> source;
   };
   struct SourceCache {
     std::mutex mtx;
-    std::unordered_map<std::string, std::shared_ptr<const GeneratedSource>>
-        entries;
+    std::unordered_map<std::string, std::shared_ptr<const Generated>> entries;
   };
   auto source_cache = std::make_shared<SourceCache>();
 
@@ -478,59 +479,86 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
     check_size(output_dtypes.size(), output_names.size(), "output_dtypes");
 
     auto s = resolve_metal_kernel_stream(s_);
+    const bool fenced = !fenced_inputs.empty() && fenced_inputs_enabled();
 
-    std::string kernel_name = "custom_kernel_" + name;
-    std::string template_def = "";
-    if (!template_args.empty()) {
-      template_def = write_template(template_args);
-      auto template_hash = make_template_hash(template_def);
-      kernel_name += "_";
-      kernel_name += template_hash;
-    }
-
-    // The generated source depends on the dtypes of the inputs and outputs
-    // and on how each input is passed (see `write_signature`). Include them
-    // in the kernel name so that a given name always maps to the same source.
-    for (int i = 0; i < inputs.size(); ++i) {
-      const auto& arr = inputs[i];
-      kernel_name += "_";
-      kernel_name += get_type_string(arr.dtype());
-      if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
-          mutable_inputs.end()) {
-        kernel_name += "m";
-      } else if (arr.ndim() == 0) {
-        kernel_name += "s";
-      } else if (arr.size() < max_constant_array_size) {
-        kernel_name += "c";
+    // The per-call key as raw bytes: each template argument (name, kind,
+    // value), each input's dtype and passing, each output's dtype and the
+    // fenced form. It determines the kernel name and the source below.
+    thread_local std::string key;
+    key.clear();
+    for (const auto& [arg_name, arg] : template_args) {
+      key += arg_name;
+      key += '\0';
+      key += static_cast<char>(arg.index());
+      if (auto* v = std::get_if<int>(&arg)) {
+        key.append(reinterpret_cast<const char*>(v), sizeof(int));
+      } else if (auto* b = std::get_if<bool>(&arg)) {
+        key += *b ? '1' : '0';
+      } else {
+        key += static_cast<char>(std::get<Dtype>(arg).val());
       }
     }
+    key += '\0';
+    for (int i = 0; i < inputs.size(); ++i) {
+      const auto& arr = inputs[i];
+      key += static_cast<char>(arr.dtype().val());
+      if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+          mutable_inputs.end()) {
+        key += arr.ndim() == 0 ? 'z' : 'n';
+      } else if (arr.ndim() == 0) {
+        key += 's';
+      } else if (arr.size() < max_constant_array_size) {
+        key += 'c';
+      } else {
+        key += 'd';
+      }
+    }
+    key += '\0';
     for (const auto& dtype : output_dtypes) {
-      kernel_name += "_";
-      kernel_name += get_type_string(dtype);
+      key += static_cast<char>(dtype.val());
     }
+    key += fenced ? 'f' : 'u';
 
-    // `kernel_name` already encodes the template hash, every dtype and the
-    // m/s/c passing of each input; the full template definition and the
-    // 0-d-ness of mutable inputs complete the key (see `SourceCache`).
-    std::string cache_key = kernel_name;
-    cache_key += '|';
-    cache_key += template_def;
-    for (int i : mutable_inputs) {
-      cache_key += inputs[i].ndim() == 0 ? 'z' : 'n';
-    }
-    const bool fenced = !fenced_inputs.empty() && fenced_inputs_enabled();
-    if (!fenced_inputs.empty()) {
-      cache_key += fenced ? 'f' : 'u';
-    }
-    std::shared_ptr<const GeneratedSource> generated;
+    std::shared_ptr<const Generated> generated;
     {
       std::lock_guard lock(source_cache->mtx);
-      if (auto it = source_cache->entries.find(cache_key);
+      if (auto it = source_cache->entries.find(key);
           it != source_cache->entries.end()) {
         generated = it->second;
       }
     }
     if (!generated) {
+      std::string kernel_name = "custom_kernel_" + name;
+      std::string template_def = "";
+      if (!template_args.empty()) {
+        template_def = write_template(template_args);
+        auto template_hash = make_template_hash(template_def);
+        kernel_name += "_";
+        kernel_name += template_hash;
+      }
+
+      // The generated source depends on the dtypes of the inputs and outputs
+      // and on how each input is passed (see `write_signature`). Include them
+      // in the kernel name so that a given name always maps to the same
+      // source.
+      for (int i = 0; i < inputs.size(); ++i) {
+        const auto& arr = inputs[i];
+        kernel_name += "_";
+        kernel_name += get_type_string(arr.dtype());
+        if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+            mutable_inputs.end()) {
+          kernel_name += "m";
+        } else if (arr.ndim() == 0) {
+          kernel_name += "s";
+        } else if (arr.size() < max_constant_array_size) {
+          kernel_name += "c";
+        }
+      }
+      for (const auto& dtype : output_dtypes) {
+        kernel_name += "_";
+        kernel_name += get_type_string(dtype);
+      }
+
       std::string kernel_source = write_signature(
           kernel_name,
           header,
@@ -565,17 +593,19 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
           kernel_name,
           std::hash<std::string>{}(kernel_source),
           compile_options.serialize());
-      generated = std::make_shared<const GeneratedSource>(
-          GeneratedSource{std::move(kernel_source), std::move(library_name)});
+      auto entry = std::make_shared<Generated>();
+      entry->kernel_name = std::move(kernel_name);
+      entry->source = std::make_shared<const CustomKernelSource>(
+          std::move(kernel_source), std::move(library_name));
+      generated = std::move(entry);
       std::lock_guard lock(source_cache->mtx);
-      source_cache->entries.emplace(cache_key, generated);
+      source_cache->entries.emplace(key, generated);
     }
-    const std::string& kernel_source = generated->source;
 
     if (verbose) {
       std::cout << "Generated source code for `" << name << "`:" << std::endl
                 << "```" << std::endl
-                << kernel_source << std::endl
+                << generated->source->source << std::endl
                 << "```" << std::endl;
     }
 
@@ -585,8 +615,8 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
           output_dtypes,
           std::make_shared<MutableInputCustomKernel>(
               s,
-              kernel_name,
-              kernel_source,
+              generated->kernel_name,
+              generated->source,
               grid,
               threadgroup,
               shape_infos,
@@ -597,17 +627,16 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
               0,
               compile_options.serialize(),
               mutable_inputs,
-              generated->library_name,
               fenced ? fenced_inputs : std::vector<int>{}),
           inputs);
     }
     return array::make_arrays(
-        std::move(output_shapes),
-        std::move(output_dtypes),
+        output_shapes,
+        output_dtypes,
         std::make_shared<CustomKernel>(
             s,
-            std::move(kernel_name),
-            kernel_source,
+            generated->kernel_name,
+            generated->source,
             grid,
             threadgroup,
             shape_infos,
@@ -618,9 +647,8 @@ CustomKernelFunction metal_kernel_with_fenced_inputs(
             0,
             compile_options.serialize(),
             std::vector<int>{},
-            generated->library_name,
             fenced ? fenced_inputs : std::vector<int>{}),
-        std::move(inputs));
+        inputs);
   };
 }
 

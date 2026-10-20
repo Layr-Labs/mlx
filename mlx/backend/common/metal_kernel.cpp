@@ -2,7 +2,12 @@
 
 #include <algorithm>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
+
+#include <fmt/format.h>
 
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/metal/metal.h"
@@ -313,6 +318,25 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     }
   }
 
+  // The generated source is a pure function of this kernel object (header,
+  // body, names, attributes, shape infos, atomic and mutable inputs: all
+  // fixed here) and of the per-call key built below: the template
+  // definition and, per input, its dtype and how it is passed (mutable,
+  // scalar, constant or device; a 0-d mutable input also drops its shape
+  // parameters). Cache the source and its Metal library name per key, so a
+  // repeated call neither regenerates the (often multi-KB) source nor hashes
+  // it again at dispatch time. Shared by every copy of the returned function.
+  struct GeneratedSource {
+    std::string source;
+    std::string library_name;
+  };
+  struct SourceCache {
+    std::mutex mtx;
+    std::unordered_map<std::string, std::shared_ptr<const GeneratedSource>>
+        entries;
+  };
+  auto source_cache = std::make_shared<SourceCache>();
+
   return [=,
           shape_infos = std::move(shape_infos),
           attributes = std::move(attributes)](
@@ -371,30 +395,60 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
       kernel_name += get_type_string(dtype);
     }
 
-    std::string kernel_source = write_signature(
-        kernel_name,
-        header,
-        source,
-        input_names,
-        inputs,
-        output_names,
-        output_dtypes,
-        template_args,
-        attributes,
-        shape_infos,
-        atomic_outputs,
-        mutable_inputs);
-
-    if (!template_args.empty()) {
-      template_def = kernel_name + template_def;
-      kernel_source += "\ntemplate [[host_name(\"";
-      kernel_source += kernel_name;
-      kernel_source += "\")]] [[kernel]] decltype(";
-      kernel_source += template_def;
-      kernel_source += ") ";
-      kernel_source += template_def;
-      kernel_source += ";\n";
+    // `kernel_name` already encodes the template hash, every dtype and the
+    // m/s/c passing of each input; the full template definition and the
+    // 0-d-ness of mutable inputs complete the key (see `SourceCache`).
+    std::string cache_key = kernel_name;
+    cache_key += '|';
+    cache_key += template_def;
+    for (int i : mutable_inputs) {
+      cache_key += inputs[i].ndim() == 0 ? 'z' : 'n';
     }
+    std::shared_ptr<const GeneratedSource> generated;
+    {
+      std::lock_guard lock(source_cache->mtx);
+      if (auto it = source_cache->entries.find(cache_key);
+          it != source_cache->entries.end()) {
+        generated = it->second;
+      }
+    }
+    if (!generated) {
+      std::string kernel_source = write_signature(
+          kernel_name,
+          header,
+          source,
+          input_names,
+          inputs,
+          output_names,
+          output_dtypes,
+          template_args,
+          attributes,
+          shape_infos,
+          atomic_outputs,
+          mutable_inputs);
+
+      if (!template_args.empty()) {
+        auto instantiation = kernel_name + template_def;
+        kernel_source += "\ntemplate [[host_name(\"";
+        kernel_source += kernel_name;
+        kernel_source += "\")]] [[kernel]] decltype(";
+        kernel_source += instantiation;
+        kernel_source += ") ";
+        kernel_source += instantiation;
+        kernel_source += ";\n";
+      }
+      // Exactly the name CustomKernel::eval_gpu derived before.
+      auto library_name = fmt::format(
+          "{}_{:x}_{}",
+          kernel_name,
+          std::hash<std::string>{}(kernel_source),
+          compile_options.serialize());
+      generated = std::make_shared<const GeneratedSource>(
+          GeneratedSource{std::move(kernel_source), std::move(library_name)});
+      std::lock_guard lock(source_cache->mtx);
+      source_cache->entries.emplace(cache_key, generated);
+    }
+    const std::string& kernel_source = generated->source;
 
     if (verbose) {
       std::cout << "Generated source code for `" << name << "`:" << std::endl
@@ -420,7 +474,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
               false,
               0,
               compile_options.serialize(),
-              mutable_inputs),
+              mutable_inputs,
+              generated->library_name),
           inputs);
     }
     return array::make_arrays(
@@ -429,7 +484,7 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
         std::make_shared<CustomKernel>(
             s,
             std::move(kernel_name),
-            std::move(kernel_source),
+            kernel_source,
             grid,
             threadgroup,
             shape_infos,
@@ -438,7 +493,9 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
             std::vector<ScalarArg>{},
             false,
             0,
-            compile_options.serialize()),
+            compile_options.serialize(),
+            std::vector<int>{},
+            generated->library_name),
         std::move(inputs));
   };
 }

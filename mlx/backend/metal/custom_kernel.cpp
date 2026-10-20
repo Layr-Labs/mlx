@@ -81,8 +81,16 @@ void CustomKernel::eval_gpu(
     checked_inputs.push_back(check_input(in));
   }
 
-  std::string lib_name = fmt::format(
-      "{}_{:x}_{}", name_, std::hash<std::string>{}(source_), compile_options_);
+  // Hashing the whole generated source (often tens of KB) on every dispatch
+  // dominated the host cost of decode-sized custom kernels; the kernel
+  // builder precomputes the identical name once per generated source.
+  std::string lib_name = library_name_.empty()
+      ? fmt::format(
+            "{}_{:x}_{}",
+            name_,
+            std::hash<std::string>{}(source_),
+            compile_options_)
+      : library_name_;
   auto lib = d.get_library(
       lib_name, compile_options_, [this] { return metal::utils() + source_; });
   auto kernel = d.get_kernel(name_, lib);

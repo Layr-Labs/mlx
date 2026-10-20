@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 
@@ -50,6 +51,23 @@ class Group {
   virtual void send(const void* input, size_t n_bytes, int dst) = 0;
   virtual void recv(void* output, size_t n_bytes, int src) = 0;
   virtual void barrier() = 0;
+
+  /**
+   * Two ranks: send n_bytes while the peer's n_bytes land in output. A frame
+   * goes out when ready(end) says input[0, end) is final; arrived(end) runs
+   * when output[0, end) is filled. See MeshImpl::exchange.
+   */
+  virtual bool supports_exchange() {
+    return false;
+  }
+  virtual void exchange(
+      const char* /* input */,
+      char* /* output */,
+      size_t /* n_bytes */,
+      const std::function<bool(size_t)>& /* ready */,
+      const std::function<void(size_t)>& /* arrived */) {
+    throw std::runtime_error("[jaccl] This group cannot exchange.");
+  }
 };
 
 /**

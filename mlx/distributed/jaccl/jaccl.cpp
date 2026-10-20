@@ -88,6 +88,19 @@ class JACCLGroup : public GroupImpl {
     group_->end_startup_wait_budget();
   }
 
+  bool supports_exchange() override {
+    return group_->supports_exchange();
+  }
+
+  void exchange(
+      const char* send,
+      char* recv,
+      size_t n,
+      const std::function<bool(size_t)>& ready,
+      const std::function<void(size_t)>& arrived) override {
+    group_->exchange(send, recv, n, ready, arrived);
+  }
+
   void all_sum(const array& input, array& output, Stream stream) override {
     auto in_ptr = input.data<char>();
     auto out_ptr = output.data<char>();

@@ -1,6 +1,7 @@
 // Copyright © 2026 Darkbloom.
 
 #include <algorithm>
+#include <cstring>
 #include <dispatch/dispatch.h>
 #include <mutex>
 #include <stdexcept>
@@ -11,6 +12,7 @@
 #include "mlx/distributed/distributed_impl.h"
 #include "mlx/distributed/primitives.h"
 #include "mlx/distributed/sealed.h"
+#include "mlx/distributed/sealed_stream.h"
 
 namespace mlx::core::distributed {
 
@@ -20,6 +22,16 @@ std::optional<SealCodec> installed_codec;
 } // namespace
 
 void set_seal_codec(SealCodec codec) {
+  if (codec.seal != nullptr && codec.open != nullptr &&
+      (codec.seal_piece != nullptr || codec.open_piece != nullptr)) {
+    if (!codec.streamed() || codec.piece_bytes < 4096 ||
+        codec.piece_bytes > (size_t(16) << 20) ||
+        codec.piece_bytes % 16 != 0) {
+      throw std::invalid_argument(
+          "[set_seal_codec] a streamed codec needs both piece callbacks and "
+          "piece_bytes: a multiple of 16 in [4 KiB, 16 MiB]");
+    }
+  }
   std::lock_guard<std::mutex> lock(codec_mutex);
   if (codec.seal == nullptr || codec.open == nullptr) {
     installed_codec.reset();
@@ -102,6 +114,13 @@ void SealedAllSum::eval_cpu(
       : contiguous_copy_cpu(inputs[0], stream());
   auto& out = outputs[0];
   out.set_data(allocator::malloc(out.nbytes()));
+  if (codec_.streamed() && group().raw_group()->supports_exchange()) {
+    eval_streamed(in, out);
+    if (!inputs[0].flags().row_contiguous) {
+      cpu::get_command_encoder(stream()).add_temporary(in);
+    }
+    return;
+  }
   size_t n = in.nbytes();
   size_t frame = n + codec_.overhead;
   array sealed({static_cast<int>(frame)}, uint8, nullptr, {});
@@ -117,13 +136,19 @@ void SealedAllSum::eval_cpu(
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
   encoder.set_output_array(sealed);
-  encoder.dispatch(
-      [codec, src = in.data<char>(), dst = sealed.data<char>(), n, counter]() {
-        if (codec.seal(codec.ctx, src, n, dst, counter) != 0) {
-          throw std::runtime_error(
-              "[all_sum_sealed] the codec refused to seal a partial");
-        }
-      });
+  encoder.dispatch([codec,
+                    src = in.data<char>(),
+                    dst = sealed.data<char>(),
+                    n,
+                    frame,
+                    counter]() {
+    if (codec.seal(codec.ctx, src, n, dst, counter) != 0) {
+      // The gather after this task still runs: never send stale bytes.
+      std::memset(dst, 0, frame);
+      throw std::runtime_error(
+          "[all_sum_sealed] the codec refused to seal a partial");
+    }
+  });
   distributed::detail::all_gather(group(), sealed, gathered, stream());
   encoder.set_input_array(gathered);
   encoder.set_output_array(out);
@@ -176,6 +201,68 @@ void SealedAllSum::eval_cpu(
   if (!inputs[0].flags().row_contiguous) {
     encoder.add_temporary(in);
   }
+}
+
+// One CPU-stream task that seals, sends, opens and adds piece by piece
+// (sealed_stream.h). Each rank receives only the peer's frame.
+void SealedAllSum::eval_streamed(const array& in, array& out) {
+  detail::PieceLayout layout(in.nbytes(), codec_.piece_bytes);
+  if (layout.count > 0xFFFF) {
+    throw std::invalid_argument(
+        "[all_sum_sealed] a partial needs more than 65,535 sealed pieces");
+  }
+  detail::AddPieceFn add;
+  switch (in.dtype()) {
+    case float32:
+      add = detail::add_piece<float>;
+      break;
+    case bfloat16:
+      add = detail::add_piece<bfloat16_t>;
+      break;
+    case float16:
+      add = detail::add_piece<float16_t>;
+      break;
+    default:
+      throw std::runtime_error("[all_sum_sealed] unsupported dtype");
+  }
+  array sealed({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  sealed.set_data(allocator::malloc(layout.frame()));
+  array received({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  received.set_data(allocator::malloc(layout.frame()));
+
+  int rank = group().rank();
+  uint64_t counter = counter_++;
+  auto& encoder = cpu::get_command_encoder(stream());
+  encoder.set_input_array(in);
+  encoder.set_output_array(out);
+  encoder.dispatch([codec = codec_,
+                    layout,
+                    counter,
+                    rank,
+                    add,
+                    group = group().raw_group(),
+                    src = in.data<char>(),
+                    dst = out.data<char>(),
+                    mine = sealed.data<char>(),
+                    theirs = received.data<char>()]() {
+    detail::StreamedSum sum(
+        codec, layout, counter, rank, src, dst, mine, theirs, add);
+    bool ok = sum.run([&group](
+                          const char* send,
+                          char* recv,
+                          size_t n,
+                          const detail::ReadyFn& ready,
+                          const detail::ArrivedFn& arrived) {
+      group->exchange(send, recv, n, ready, arrived);
+    });
+    if (!ok) {
+      throw std::runtime_error(
+          "[all_sum_sealed] a piece did not seal or a peer piece did not "
+          "authenticate: refused");
+    }
+  });
+  encoder.add_temporary(sealed);
+  encoder.add_temporary(received);
 }
 
 void SealedAllSum::eval_gpu(const std::vector<array>&, std::vector<array>&) {

@@ -70,8 +70,10 @@ class AllReduce : public DistPrimitive {
 };
 
 /// The sealed all-sum (`all_sum_sealed`, sealed.h): seal, all-gather the two
-/// frames, open the peer's, add in rank order. `counter_` advances per
-/// evaluation; both ranks evaluate the same graph in the same order.
+/// frames, open the peer's, add in rank order. With a streamed codec on a
+/// group that can exchange, one task does this piece by piece
+/// (sealed_stream.h). `counter_` advances per evaluation; both ranks
+/// evaluate the same graph in the same order.
 class SealedAllSum : public DistPrimitive {
  public:
   SealedAllSum(Stream stream, Group group, SealCodec codec)
@@ -87,6 +89,8 @@ class SealedAllSum : public DistPrimitive {
   }
 
  private:
+  void eval_streamed(const array& in, array& out);
+
   SealCodec codec_;
   static inline std::atomic<uint64_t> counter_{0};
 };

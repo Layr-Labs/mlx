@@ -39,6 +39,22 @@ class GroupImpl {
   virtual void all_min(const array& input, array& output, Stream stream) = 0;
   virtual void
   sum_scatter(const array& input, array& output, Stream stream) = 0;
+
+  // Two ranks, on the calling thread (a CPU-stream task): send n bytes while
+  // the peer's n bytes land in recv. ready(end) tells if send[0, end) is
+  // final; it is polled and must not block. arrived(end) runs when
+  // recv[0, end) holds the peer's bytes. Neither callback may throw.
+  virtual bool supports_exchange() {
+    return false;
+  }
+  virtual void exchange(
+      const char* /* send */,
+      char* /* recv */,
+      size_t /* n */,
+      const std::function<bool(size_t)>& /* ready */,
+      const std::function<void(size_t)>& /* arrived */) {
+    throw std::runtime_error("[distributed] This group cannot exchange.");
+  }
 };
 
 /* Define the MLX stream that the communication should happen in. */

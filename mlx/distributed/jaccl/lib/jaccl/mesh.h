@@ -59,6 +59,19 @@ class MeshGroup : public Group {
 
   void barrier() override;
 
+  bool supports_exchange() override {
+    return size_ == 2;
+  }
+
+  void exchange(
+      const char* input,
+      char* output,
+      size_t n_bytes,
+      const std::function<bool(size_t)>& ready,
+      const std::function<void(size_t)>& arrived) override {
+    mesh_.exchange(input, output, n_bytes, ready, arrived);
+  }
+
  private:
   template <typename T, typename ReduceOp>
   void all_reduce(

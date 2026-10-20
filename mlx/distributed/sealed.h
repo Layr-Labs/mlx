@@ -38,15 +38,52 @@ using OpenFn = int (*)(
     uint64_t counter,
     int peer);
 
+// The streamed frame: piece k holds plaintext
+// [k * piece_bytes, min(n, (k + 1) * piece_bytes)) as its ciphertext, then a
+// kSealTagBytes tag; the pieces are in order. seal_piece writes
+// len + kSealTagBytes bytes; open_piece reads them and writes len bytes.
+// Calls for one counter can run at the same time, on any thread, in any
+// order; `pieces` and `total` (n) are the same for each piece of a counter.
+// Both return 0 on success.
+constexpr size_t kSealTagBytes = 16;
+using SealPieceFn = int (*)(
+    void* ctx,
+    const void* plaintext,
+    size_t len,
+    void* sealed,
+    uint64_t counter,
+    uint32_t piece,
+    uint32_t pieces,
+    size_t total);
+using OpenPieceFn = int (*)(
+    void* ctx,
+    const void* sealed,
+    size_t len,
+    void* plaintext,
+    uint64_t counter,
+    uint32_t piece,
+    uint32_t pieces,
+    size_t total,
+    int peer);
+
 struct SealCodec {
   SealFn seal = nullptr;
   OpenFn open = nullptr;
   void* ctx = nullptr;
   size_t overhead = 0;
+  // Optional. A group that can exchange (two-rank JACCL mesh) then streams
+  // the pieces; other groups use seal and open.
+  SealPieceFn seal_piece = nullptr;
+  OpenPieceFn open_piece = nullptr;
+  size_t piece_bytes = 0;
+  bool streamed() const {
+    return seal_piece != nullptr && open_piece != nullptr;
+  }
 };
 
 // Installs (or, with a null seal, removes) the process's codec. A sealed
-// all-sum without a codec is refused when the graph is built.
+// all-sum without a codec is refused when the graph is built. A streamed
+// codec needs piece_bytes: a multiple of 16 in [4 KiB, 16 MiB].
 MLX_API void set_seal_codec(SealCodec codec);
 MLX_API std::optional<SealCodec> seal_codec();
 

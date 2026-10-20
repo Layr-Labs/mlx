@@ -67,6 +67,13 @@ void Fence::wait(Stream stream, const array& x) {
   // Register outputs to ensure that no kernels which depends on the
   // output starts before this one is done
   compute_encoder.register_output_array(x);
+  // The spin must not start ahead of GPU work encoded before it: without
+  // hazard tracking Metal may run this pass before an earlier pass still in
+  // flight, and when that pass is what the awaited CPU work depends on (a
+  // GPU -> CPU -> GPU chain, e.g. a CPU-stream collective) the GPU spins
+  // forever. Waiting on every pending pass costs nothing here: the CPU work
+  // this spin waits for already follows them.
+  compute_encoder.wait_for_all_pending();
 
   auto kernel = d.get_kernel("fence_wait");
   MTL::Size kernel_dims = MTL::Size(1, 1, 1);

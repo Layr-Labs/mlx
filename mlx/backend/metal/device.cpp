@@ -464,6 +464,13 @@ void CommandEncoder::end_encoding() {
         }
       }
     }
+    if (wait_all_pending_) {
+      for (auto& [_, pending] : prev_ce_outputs_) {
+        if (waiting_on.insert(pending).second) {
+          encoder_->waitForFence(pending.get());
+        }
+      }
+    }
     for (auto& out : all_outputs_) {
       prev_ce_outputs_[out] = fence_;
     }
@@ -489,6 +496,7 @@ void CommandEncoder::end_encoding() {
   encoder_->endEncoding();
   encoder_.reset();
   needs_barrier_ = false;
+  wait_all_pending_ = false;
   concurrent_ = false;
   prev_inputs_.clear();
   next_inputs_.clear();

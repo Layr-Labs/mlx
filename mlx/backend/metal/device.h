@@ -90,6 +90,13 @@ class MLX_API CommandEncoder {
   }
 
   void barrier();
+
+  // The current pass waits for every pass still in flight on this queue, not
+  // only those that wrote its inputs (see Fence::wait).
+  void wait_for_all_pending() {
+    wait_all_pending_ = true;
+  }
+
   void end_encoding();
   void wait_event(Event event, uint64_t value);
   void signal_event(Event event, uint64_t value);
@@ -130,6 +137,7 @@ class MLX_API CommandEncoder {
   NS::SharedPtr<MTL::ComputeCommandEncoder> encoder_;
   NS::SharedPtr<MTL::Fence> fence_;
   bool needs_barrier_{false};
+  bool wait_all_pending_{false};
   bool concurrent_{false};
   std::vector<array> temporaries_;
   std::unordered_set<MTL::Resource*> prev_inputs_;

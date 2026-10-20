@@ -1,5 +1,7 @@
 // Copyright © 2026 Darkbloom.
 
+#include <algorithm>
+#include <dispatch/dispatch.h>
 #include <mutex>
 #include <stdexcept>
 
@@ -58,14 +60,14 @@ array all_sum_sealed(
 
 namespace {
 template <typename T>
-void add_in_rank_order(const T* rank0, const T* rank1, T* out, size_t n) {
+void add_span(const T* rank0, const T* rank1, T* out, size_t n) {
   for (size_t i = 0; i < n; ++i) {
     out[i] = static_cast<T>(
         static_cast<float>(rank0[i]) + static_cast<float>(rank1[i]));
   }
 }
 template <>
-void add_in_rank_order<float>(
+void add_span<float>(
     const float* rank0,
     const float* rank1,
     float* out,
@@ -73,6 +75,22 @@ void add_in_rank_order<float>(
   for (size_t i = 0; i < n; ++i) {
     out[i] = rank0[i] + rank1[i];
   }
+}
+// The same element-wise sum (one rounding, rank 0 + rank 1), split across
+// cores for prefill-sized partials; small partials stay on this thread.
+template <typename T>
+void add_in_rank_order(const T* rank0, const T* rank1, T* out, size_t n) {
+  constexpr size_t kSpan = size_t(1) << 18;
+  if (n <= kSpan) {
+    add_span(rank0, rank1, out, n);
+    return;
+  }
+  size_t spans = (n + kSpan - 1) / kSpan;
+  dispatch_apply(spans, DISPATCH_APPLY_AUTO, ^(size_t i) {
+    size_t begin = i * kSpan;
+    size_t count = std::min(kSpan, n - begin);
+    add_span(rank0 + begin, rank1 + begin, out + begin, count);
+  });
 }
 } // namespace
 

@@ -24,6 +24,21 @@ namespace mlx::core {
 
 static constexpr int MAX_ACTIVE_TASKS = 10;
 
+// At most MLX_MAX_ACTIVE_TASKS (default MAX_ACTIVE_TASKS) tasks in flight.
+// MLX_MAX_ACTIVE_CPU_TASKS=n (n > 0) gives CPU-stream tasks their own limit
+// n, and the first limit then counts GPU command buffers only.
+static bool too_many_active_tasks() {
+  static const int max_tasks =
+      env::get_var("MLX_MAX_ACTIVE_TASKS", MAX_ACTIVE_TASKS);
+  static const int max_cpu_tasks = env::get_var("MLX_MAX_ACTIVE_CPU_TASKS", 0);
+  int n_tasks = scheduler::n_active_tasks();
+  if (max_cpu_tasks <= 0) {
+    return n_tasks > max_tasks;
+  }
+  int n_cpu_tasks = scheduler::n_active_cpu_tasks();
+  return n_tasks - n_cpu_tasks > max_tasks || n_cpu_tasks > max_cpu_tasks;
+}
+
 namespace {
 
 // Create a tracer copy of a primal for use in vjp/jvp. If the primal is a
@@ -282,7 +297,7 @@ array eval_impl(std::vector<array> outputs, bool async) {
         cpu::eval(arr);
       }
 
-      if (scheduler::n_active_tasks() > MAX_ACTIVE_TASKS ||
+      if (too_many_active_tasks() ||
           (get_active_memory() > get_memory_limit() &&
            scheduler::n_active_tasks() > 0)) {
         // Commit any open streams

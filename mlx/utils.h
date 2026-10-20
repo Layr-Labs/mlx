@@ -211,6 +211,12 @@ inline bool metal_fast_synch() {
   return metal_fast_synch;
 }
 
+// A cross-device fast fence update in one dispatch (fence_update_coherent).
+inline bool metal_fused_fence_update() {
+  static bool fused = get_var("MLX_METAL_FUSED_FENCE_UPDATE", 0);
+  return fused;
+}
+
 inline bool enable_tf32() {
   static bool enable_tf32_ = get_var("MLX_ENABLE_TF32", 1);
   return enable_tf32_;

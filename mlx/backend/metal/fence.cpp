@@ -18,9 +18,11 @@ struct FenceImpl {
     if (!use_fast) {
       event = std::make_unique<Event>(stream);
     } else {
-      auto buf = allocator::malloc(sizeof(uint32_t)).ptr();
+      // The timestamp, then the fence_update_coherent arrival count.
+      auto buf = allocator::malloc(2 * sizeof(uint32_t)).ptr();
       fence = static_cast<void*>(buf);
       cpu_value()[0] = 0;
+      cpu_value()[1] = 0;
     }
   }
 
@@ -31,6 +33,8 @@ struct FenceImpl {
   }
   bool use_fast{false};
   uint32_t count{0};
+  // Threadgroups that fence_update_coherent counted in (mod 2^32).
+  uint32_t arrivals{0};
   void* fence;
   std::unique_ptr<Event> event;
 
@@ -108,6 +112,36 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
 
   auto& d = metal::device(stream.device);
   auto& compute_encoder = metal::get_command_encoder(stream);
+
+  if (cross_device && env::metal_fused_fence_update()) {
+    uint32_t words = (x.data_size() * x.itemsize() + sizeof(uint32_t) - 1) /
+        sizeof(uint32_t);
+    constexpr uint32_t threads = 1024;
+    constexpr uint32_t words_per_group = threads * 8;
+    uint32_t groups =
+        std::max<uint32_t>(1, (words + words_per_group - 1) / words_per_group);
+    uint32_t target = 0;
+    if (groups > 1) {
+      f.arrivals += groups;
+      target = f.arrivals;
+    }
+    auto kernel = d.get_kernel("fence_update_coherent");
+    compute_encoder.set_compute_pipeline_state(kernel);
+    compute_encoder.set_input_array(x, 0);
+    compute_encoder.set_bytes(words, 1);
+    auto buf = static_cast<MTL::Buffer*>(f.fence);
+    compute_encoder.set_buffer(buf, 2);
+    compute_encoder.set_bytes(f.count, 3);
+    compute_encoder.set_buffer(buf, 4, sizeof(uint32_t));
+    compute_encoder.set_bytes(target, 5);
+    // After every earlier kernel, as fence_update. This also keeps two
+    // updates of this fence from overlapping, which `arrivals` requires.
+    compute_encoder.barrier();
+    compute_encoder.dispatch_threadgroups(
+        MTL::Size(groups, 1, 1), MTL::Size(threads, 1, 1));
+    compute_encoder.retain_until_completed(fence_);
+    return;
+  }
 
   // Launch input visibility kernels
   if (cross_device) {

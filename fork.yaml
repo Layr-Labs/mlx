@@ -290,6 +290,20 @@ def:
         - "mlx/distributed/primitives.h"
         - "mlx/distributed/sealed.cpp"
         - "mlx/distributed/sealed.h"
+    - title: "Fused cross-device fence update"
+      description: |
+        Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU
+        reads in the same eval is made coherent and its fence timestamp is written in one
+        dispatch (`fence_update_coherent`) instead of `input_coherent` then `fence_update`.
+        Every word is still rewritten with system-coherent stores before a system-scope fence.
+        The last threadgroup to finish writes the timestamp. The fence buffer carries an
+        arrival count that only increases, so an unfinished earlier dispatch can delay a
+        timestamp but cannot release it early. Synchronization only: results do not change.
+      globs:
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/metal/kernels/fence.metal"
+        - "mlx/utils.h"
+        - "docs/src/usage/environment_variables.rst"
     - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

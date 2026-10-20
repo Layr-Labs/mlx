@@ -108,6 +108,17 @@ class MLX_API CommandEncoder {
     return buffer_.get();
   }
 
+  // Keep an object (array data, a fence) alive until the command buffer that
+  // is current now completes. Everything retained is released by the single
+  // completion handler commit() installs, instead of one Metal completion
+  // handler (an Objective-C block plus a hash set) per encoded primitive.
+  // A primitive that commits mid-eval (e.g. the expert-tile route's retract
+  // check) retains into the replacement buffer, which completes after the
+  // committed one on this queue, so the lifetime is never shorter.
+  void retain_until_completed(std::shared_ptr<void> object) {
+    retained_.push_back(std::move(object));
+  }
+
  private:
   MTL::ComputeCommandEncoder* get_command_encoder();
 
@@ -151,6 +162,10 @@ class MLX_API CommandEncoder {
   // A map of prior command encoder outputs to their corresponding fence.
   std::unordered_map<const void*, NS::SharedPtr<MTL::Fence>> prev_ce_outputs_;
   std::mutex outputs_mtx_;
+
+  // Objects kept alive until the current command buffer completes
+  // (`retain_until_completed`); moved into its completion handler at commit.
+  std::vector<std::shared_ptr<void>> retained_;
 };
 
 class MLX_API Device {

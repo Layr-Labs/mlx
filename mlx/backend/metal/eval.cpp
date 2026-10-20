@@ -44,33 +44,32 @@ void eval(array& arr) {
         encoder.get_command_buffer(), arr.primitive());
     arr.primitive().eval_gpu(arr.inputs(), outputs);
   }
-  std::unordered_set<std::shared_ptr<array::Data>> buffers;
+  // Keep the inputs and siblings alive until the command buffer completes;
+  // the output is skipped when an input donated its buffer to it. Retention
+  // is batched per command buffer (`retain_until_completed`): a hash set plus
+  // a Metal completion handler per primitive dominated host-side encode time
+  // for decode-sized kernels. Retained AFTER eval_gpu, into the encoder's
+  // current buffer: a primitive that synchronizes mid-eval (e.g. the
+  // expert-tile route's descriptor retract check) commits and replaces the
+  // buffer, and the current one holds the tail of this primitive's work,
+  // which is exactly what the inputs must outlive. A duplicate input is
+  // retained twice, which only costs one more reference.
+  auto* out_data = arr.data_shared_ptr().get();
   for (auto& in : arr.inputs()) {
-    buffers.insert(in.data_shared_ptr());
+    if (in.data_shared_ptr().get() != out_data) {
+      encoder.retain_until_completed(in.data_shared_ptr());
+    }
   }
-  for (auto& s : arr.siblings()) {
-    buffers.insert(s.data_shared_ptr());
-  }
-  // Remove the output if it was donated to by an input
-  if (auto it = buffers.find(arr.data_shared_ptr()); it != buffers.end()) {
-    buffers.erase(it);
+  for (auto& sib : arr.siblings()) {
+    if (sib.data_shared_ptr().get() != out_data) {
+      encoder.retain_until_completed(sib.data_shared_ptr());
+    }
   }
 
   if (encoder.needs_commit()) {
     encoder.end_encoding();
     scheduler::notify_new_task(s);
-    encoder.commit([s, buffers = std::move(buffers)]() {
-      scheduler::notify_task_completion(s);
-    });
-  } else {
-    // Fetch the command buffer AFTER eval_gpu: primitives that synchronize
-    // mid-eval (e.g. the expert-tile route's descriptor retract check)
-    // commit and REPLACE the encoder's buffer, so a pointer captured before
-    // eval_gpu would be stale here — attaching the buffer-liveness handler
-    // to it is a use-after-free. The current buffer holds the tail of this
-    // primitive's work, which is exactly what the inputs must outlive.
-    encoder.get_command_buffer()->addCompletedHandler(
-        [buffers = std::move(buffers)](MTL::CommandBuffer* cbuf) {});
+    encoder.commit([s]() { scheduler::notify_task_completion(s); });
   }
 }
 

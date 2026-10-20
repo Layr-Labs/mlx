@@ -84,8 +84,8 @@ void Fence::wait(Stream stream, const array& x) {
   compute_encoder.set_bytes(f.count, 1);
   compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
 
-  compute_encoder.get_command_buffer()->addCompletedHandler(
-      [fence_ = fence_](MTL::CommandBuffer* cbuf) {});
+  // The fence buffer must outlive the pass that spins on it.
+  compute_encoder.retain_until_completed(fence_);
 }
 
 void Fence::update(Stream stream, const array& x, bool cross_device) {
@@ -135,8 +135,8 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
   compute_encoder.set_bytes(f.count, 1);
   compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
 
-  compute_encoder.get_command_buffer()->addCompletedHandler(
-      [fence_ = fence_](MTL::CommandBuffer* cbuf) {});
+  // The fence buffer must outlive the pass that writes it.
+  compute_encoder.retain_until_completed(fence_);
 }
 
 } // namespace mlx::core

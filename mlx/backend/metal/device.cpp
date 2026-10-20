@@ -531,10 +531,13 @@ void CommandEncoder::commit(std::function<void()> completion) {
       [&error_ = error_,
        wait_events = std::move(wait_events_),
        signal_events = std::move(signal_events_),
+       retained = std::move(retained_),
        completion = std::move(completion)](MTL::CommandBuffer* cbuf) mutable {
         if (completion) {
           completion();
         }
+        // The buffer finished: release what its primitives kept alive.
+        retained.clear();
         // If any of the waited event has error in it, poison the encoder.
         for (auto& event : wait_events) {
           if (error_.store_if_valid(event.load_error())) {
@@ -569,6 +572,9 @@ void CommandEncoder::commit(std::function<void()> completion) {
   buffer_ = NS::RetainPtr(queue_->commandBufferWithUnretainedReferences());
   buffer_ops_ = 0;
   buffer_sizes_ = 0;
+  // The moved-from vector is valid but unspecified: reset it explicitly.
+  retained_ = {};
+  retained_.reserve(256);
 }
 
 void CommandEncoder::synchronize() {

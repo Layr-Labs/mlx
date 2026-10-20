@@ -306,6 +306,15 @@ array eval_impl(std::vector<array> outputs, bool async) {
                 it = fences.emplace(stream.index, Fence{stream}).first;
               }
               it->second.update(stream, a, nf->second.second);
+              // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
+              // CPU stream starts when `a` is ready, not when the buffer is
+              // full.
+              static const bool eager_commit =
+                  env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
+              if (eager_commit && nf->second.second &&
+                  stream.device == Device::gpu) {
+                gpu::finalize(stream);
+              }
             }
           };
 

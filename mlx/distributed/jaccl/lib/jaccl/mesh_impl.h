@@ -55,7 +55,9 @@ class MeshImpl {
     Call call(*this, "mesh all_reduce");
     auto [sz, buffer_size] = buffer_size_from_message(size * sizeof(T));
     int64_t N = buffer_size / sizeof(T);
-    constexpr int PIPELINE = 2;
+    // Frames in flight per peer (staging holds this many; NUM_BUFFERS >= it).
+    constexpr int PIPELINE = MESH_PIPELINE;
+    static_assert(MESH_PIPELINE <= NUM_BUFFERS, "mesh pipeline exceeds registered buffers");
     constexpr int WC_NUM = PIPELINE * MESH_MAX_PEERS * 2;
     int64_t total = static_cast<int64_t>(size);
     int num_peers = size_ - 1;

@@ -466,3 +466,17 @@ We can then implement the backwards pass as follows:
 There's an even larger speed up for the vjp:
 
 ``676.4ms -> 16.7ms => 40x speed up``
+
+Threadgroup compiler capacity
+-----------------------------
+
+Custom Metal kernels require positive threadgroup axes, nonnegative grid axes,
+a thread count within UINT32_MAX, and axes within the device limits. Invalid
+geometry is refused before output allocation. A capable original pipeline is
+kept. For a nonempty grid containing complete 512- or 1024-wide groups, exactly
+``(512, 1, 1)`` or ``(1024, 1, 1)`` may retry an insufficient pipeline with the MSL
+``max_total_threads_per_threadgroup(requestedWidth)`` declaration attribute. The retry
+uses a distinct source/library identity and must itself support the full
+threadgroup. Compile errors and remaining capacity failures propagate. This
+does not change shader math, precision, group/grid axes, or guarantee that a
+particular shader can compile at the requested width. Other geometries receive no retry.

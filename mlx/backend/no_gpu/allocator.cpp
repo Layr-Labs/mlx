@@ -213,6 +213,15 @@ size_t get_peak_memory() {
 void reset_peak_memory() {
   return allocator::common_allocator().reset_peak_memory();
 }
+void install_process_allocation_cap(size_t) {
+  throw std::runtime_error(
+      "process allocation cap unsupported on this backend");
+}
+ProcessAllocationCapSnapshot get_process_allocation_cap_snapshot() {
+  throw std::runtime_error(
+      "process allocation cap unsupported on this backend");
+}
+
 size_t set_memory_limit(size_t limit) {
   return allocator::common_allocator().set_memory_limit(limit);
 }

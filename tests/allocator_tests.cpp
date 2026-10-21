@@ -182,7 +182,7 @@ TEST_CASE("test memory snapshot does not wait for stream work") {
   auto status = snapshot.wait_for(std::chrono::seconds(1));
   release.set_value();
   synchronize(stream);
-  snapshot.get();
+  (void)snapshot.get();
   CHECK_EQ(status, std::future_status::ready);
 }
 

@@ -76,3 +76,17 @@ If we time the computation fully on the GPU, we get 2.8 milliseconds. But if we
 run the computation with ``d1=mx.gpu`` and ``d2=mx.cpu``, then the time is only
 about 1.4 milliseconds, about twice as fast. These times were measured on an M1
 Max.
+
+Native allocation footprint bounds
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The C++ ``get_allocation_footprint_policy()`` returns a detached value that
+bounds one allocator buffer, including alignment and permitted cache reuse.
+Zero bytes has a zero bound; arithmetic overflow is refused. The bound does
+not apply a one-page minimum to requests smaller than one page.
+
+Capped no-copy backing is touched once per VM page from the CPU before it is
+wrapped as a Metal buffer. This makes the process physical footprint include
+pages first written by GPU work. It preserves the allocator cap and does not
+replace load admission or operating-system memory headroom. The fresh-process
+``gpu-footprint`` regression checks GPU-written backing; it requires Metal.

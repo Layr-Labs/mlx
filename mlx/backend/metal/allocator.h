@@ -24,6 +24,8 @@ class MetalAllocator : public allocator::Allocator {
   virtual Buffer make_buffer(void* ptr, size_t size) override;
   virtual void release(Buffer buffer) override;
 
+  void install_process_allocation_cap(size_t bytes);
+  ProcessAllocationCapSnapshot get_process_allocation_cap_snapshot();
   MemorySnapshot get_memory_snapshot();
   size_t get_active_memory() {
     return active_memory_;
@@ -93,6 +95,14 @@ class MetalAllocator : public allocator::Allocator {
   static constexpr size_t resource_high_water_num_ = 9;
   static constexpr size_t resource_high_water_den_ = 10;
 
+  Buffer malloc_capped(size_t size, std::unique_lock<std::mutex>& lock);
+  void relinquish_capped(MTL::Buffer* buffer, bool cached);
+  std::shared_ptr<allocator::ProcessAllocationCap> cap_{
+      std::make_shared<allocator::ProcessAllocationCap>()};
+  bool cap_installed_{false};
+  bool buffer_allocation_attempted_{false};
+  std::map<MTL::Buffer*, std::shared_ptr<allocator::ProcessBackingLease>>
+      capped_buffers_;
   std::mutex mutex_;
 };
 

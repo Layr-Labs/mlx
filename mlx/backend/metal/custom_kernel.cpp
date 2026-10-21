@@ -8,6 +8,8 @@
 
 #include <fmt/format.h>
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 
 namespace mlx::core::fast {
 
@@ -18,7 +20,30 @@ void CustomKernel::eval_gpu(
   (void)is_precompiled_;
   (void)shared_memory_;
 
+  const auto [tx, ty, tz] = threadgroup_;
+  const auto [gx, gy, gz] = grid_;
+  if (tx <= 0 || ty <= 0 || tz <= 0 || gx < 0 || gy < 0 || gz < 0) {
+    throw std::invalid_argument("Invalid custom kernel launch dimensions.");
+  }
+  size_t tg_size = 1;
+  for (auto dimension : {tx, ty, tz}) {
+    if (static_cast<size_t>(dimension) >
+        std::numeric_limits<std::uint32_t>::max() / tg_size) {
+      throw std::invalid_argument(
+          "Custom kernel threadgroup size exceeds 32 bits.");
+    }
+    tg_size *= static_cast<size_t>(dimension);
+  }
+
   auto& s = stream();
+  auto& d = metal::device(s.device);
+  const auto device_max = d.mtl_device()->maxThreadsPerThreadgroup();
+  if (static_cast<size_t>(tx) > device_max.width ||
+      static_cast<size_t>(ty) > device_max.height ||
+      static_cast<size_t>(tz) > device_max.depth) {
+    throw std::invalid_argument(
+        "Custom kernel threadgroup exceeds device dimensions.");
+  }
 
   for (auto i : mutable_inputs_) {
     if (i < 0 || i >= inputs.size()) {
@@ -56,13 +81,45 @@ void CustomKernel::eval_gpu(
     checked_inputs.push_back(check_input(in));
   }
 
-  auto& d = metal::device(s.device);
-
   std::string lib_name = fmt::format(
       "{}_{:x}_{}", name_, std::hash<std::string>{}(source_), compile_options_);
   auto lib = d.get_library(
       lib_name, compile_options_, [this] { return metal::utils() + source_; });
   auto kernel = d.get_kernel(name_, lib);
+  auto max_tg_size = kernel->maxTotalThreadsPerThreadgroup();
+  const bool retry_geometry = (tx == 512 || tx == 1024) && ty == 1 && tz == 1 &&
+      gx >= tx && gx % tx == 0 && gy > 0 && gz > 0;
+  if (tg_size > max_tg_size && retry_geometry) {
+    const std::string declaration = "[[kernel]] void " + name_ + "(";
+    const auto position = source_.find(declaration);
+    if (position != std::string::npos &&
+        source_.find(declaration, position + declaration.size()) ==
+            std::string::npos) {
+      // Keep the dispatch geometry and give the compiler its required size.
+      auto constrained_source = source_;
+      constrained_source.insert(
+          position,
+          "[[max_total_threads_per_threadgroup(" + std::to_string(tg_size) +
+              ")]] ");
+      auto constrained_name =
+          lib_name + "_required_tg_" + std::to_string(tg_size);
+      auto constrained_lib = d.get_library(
+          constrained_name, compile_options_, [&constrained_source] {
+            return metal::utils() + constrained_source;
+          });
+      kernel = d.get_kernel(name_, constrained_lib);
+      max_tg_size = kernel->maxTotalThreadsPerThreadgroup();
+    }
+  }
+  if (tg_size > max_tg_size) {
+    std::ostringstream msg;
+    msg << "Thread group size (" << tg_size << ") is greater than "
+        << " the maximum allowed threads per threadgroup (" << max_tg_size
+        << "). Kernel: " << name_ << "; threadgroup=(" << tx << "," << ty << ","
+        << tz << "); grid=(" << gx << "," << gy << "," << gz << ").";
+    throw std::invalid_argument(msg.str());
+  }
+
   auto& compute_encoder = metal::get_command_encoder(s);
   compute_encoder.set_compute_pipeline_state(kernel);
   int index = 0;
@@ -96,18 +153,6 @@ void CustomKernel::eval_gpu(
     index++;
   }
 
-  const auto [tx, ty, tz] = threadgroup_;
-  auto tg_size = tx * ty * tz;
-  auto max_tg_size = kernel->maxTotalThreadsPerThreadgroup();
-  if (tg_size > max_tg_size) {
-    std::ostringstream msg;
-    msg << "Thread group size (" << tg_size << ") is greater than "
-        << " the maximum allowed threads per threadgroup (" << max_tg_size
-        << ").";
-    throw std::invalid_argument(msg.str());
-  }
-
-  const auto [gx, gy, gz] = grid_;
   MTL::Size group_dims =
       MTL::Size(std::min(tx, gx), std::min(ty, gy), std::min(tz, gz));
   MTL::Size grid_dims = MTL::Size(gx, gy, gz);

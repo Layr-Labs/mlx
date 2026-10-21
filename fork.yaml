@@ -75,6 +75,21 @@ def:
         - "mlx/backend/metal/kernels/quantized.h"
         - "mlx/backend/metal/kernels/quantized.metal"
         - "tests/gpu_tests.cpp"
+    - title: "Thread-scoped command-buffer commit limits"
+      description: |
+        `mlx_metal_set_thread_command_buffer_limits(max_ops, max_mb, ...)` overrides, for the
+        calling thread only, when its command buffers commit: after `max_ops` operations or
+        `max_mb` megabytes of distinct inputs instead of the device defaults (zero keeps a
+        default; the previous values are returned for restoring). Evaluation encodes on the
+        thread that calls `eval`/`async_eval`, so a caller can give single-token decode steps
+        larger buffers (the CPU encodes further ahead of the GPU) while prefill keeps the
+        defaults and their memory bound. The Ultra defaults (50 ops / 50 MB) count weight
+        inputs, so multi-GB expert banks commit after almost every MoE operation.
+        Partitioning work into command buffers does not change results.
+      globs:
+        - "mlx/backend/common/command_buffer_limits.h"
+        - "mlx/backend/metal/device.h"
+        - "mlx/backend/metal/device.cpp"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

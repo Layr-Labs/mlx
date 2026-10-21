@@ -102,6 +102,27 @@ variables:
   (rank 0 listener)
 - **JACCL_RING** / **MLX_JACCL_RING**: (Optional) Prefer ring topology over
   mesh
+- **JACCL_PROGRESS_TIMEOUT_MS** / **MLX_JACCL_PROGRESS_TIMEOUT_MS**: (Optional)
+  The longest time in milliseconds that a call waits for an RDMA completion.
+  The default is 30000. Zero or a negative value removes the limit.
+- **JACCL_TIMEOUT_ACTION** / **MLX_JACCL_TIMEOUT_ACTION**: (Optional) What a
+  failed call does: `teardown-exit` (the default) or `throw`. Any other value
+  keeps the default.
+
+A call fails when it gets no completion for this time, a failed work
+completion or a failed poll. It first destroys the queue pairs and completion
+queues of the group and deregisters its buffers (the ring waits until all of
+its wires have returned). With `teardown-exit` it then prints the reason, runs
+the memory release hook registered with `jaccl::set_memory_release` (MLX
+registers one that sets the wired limit to zero and clears the buffer cache;
+it gets at most 10 seconds) and exits the process with status 75 (EX_TEMPFAIL,
+restartable) through `std::_Exit`. With `throw` the caller gets the exception;
+every later call on that group throws immediately, and the group cannot be
+opened again in the same process. Set the limit above the longest time that a
+rank can wait for a peer, for example in `recv` while the peer computes.
+
+Each completion queue has `4 * (MAX_SEND_WR + MAX_RECV_WR)` entries, four times
+what its queue pair can have outstanding.
 
 ### Device File Format
 
@@ -320,6 +341,26 @@ class Config {
   bool is_valid_ring() const;
 }
 ```
+
+## Tests
+
+`tests/jaccl` in the MLX repository has tests that do not use RDMA hardware.
+They compile the mesh, ring and RDMA headers with a small stand-in for
+`<infiniband/verbs.h>` and simulate the verbs. They check that each send frame
+holds its payload and then only zero bytes, and that a call fails and the group
+is closed when a completion does not arrive or reports a failure. The directory
+is a separate CMake project, so the MLX build does not build it:
+
+```bash
+cmake -S tests/jaccl -B build/jaccl-tests
+cmake --build build/jaccl-tests
+ctest --test-dir build/jaccl-tests --output-on-failure
+```
+
+The tests use AddressSanitizer and UndefinedBehaviorSanitizer. Configure with
+`-DJACCL_TESTS_TSAN=ON` to use ThreadSanitizer. The guard tests measure time: a
+stalled call must fail between its limit of 250 ms and one second after it, so
+a machine under heavy load can make them fail.
 
 ## License
 

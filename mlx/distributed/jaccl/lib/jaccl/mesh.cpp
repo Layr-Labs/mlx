@@ -38,7 +38,7 @@ void MeshGroup::initialize() {
       continue;
     }
     conn.allocate_protection_domain();
-    conn.create_completion_queue(MAX_SEND_WR + MAX_RECV_WR);
+    conn.create_completion_queue(COMPLETION_QUEUE_DEPTH);
     conn.create_queue_pair();
   }
 

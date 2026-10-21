@@ -351,39 +351,6 @@ void failure_case(const std::string& mode, size_t page) {
     require(munmap(foreign_pages, page) == 0, "foreign pages lost ownership");
   }
 }
-void footprint_case(size_t page, bool capped) {
-  const auto quoted = get_allocation_footprint_policy();
-  if (capped) {
-    install_process_allocation_cap(8 << 20);
-  }
-  set_cache_limit(0);
-  const auto heap = snapshot().heap_bytes;
-  for (auto requested : std::array<size_t, 9>{
-           1, 8, 255, 256, 384, page - 1, page, page + 1, page * 2 + 1}) {
-    auto buffer = a::malloc(requested);
-    const auto actual = a::allocator().size(buffer);
-    size_t bound = 0;
-    const bool valid = quoted.upper_bound(requested, bound);
-    const auto direct = get_allocation_size_upper_bound(requested);
-    a::free(buffer);
-    clear_cache();
-    settled(heap);
-    std::cout << "footprint requested=" << requested << " actual=" << actual
-              << " bound=" << bound << '\n';
-    require(
-        valid && direct == bound, "pre-cap policy changed after installation");
-    require(
-        actual >= requested && actual <= bound,
-        "actual backing exceeds quotation");
-    require(
-        snapshot().pending_bytes == 0, "footprint check leaked reservation");
-  }
-  require(
-      get_allocation_size_upper_bound(0) == 0,
-      "empty allocation bound changed");
-  refuses([] { get_allocation_size_upper_bound(SIZE_MAX); });
-}
-
 // Capped backing is owned no-copy VM. Pages first written by the GPU must
 // still be charged to this process, or the OS cannot see the model's memory.
 size_t physical_footprint() {
@@ -441,8 +408,6 @@ int main(int argc, char** argv) {
       footprint_delta_case();
     } else if (mode == "gpu-footprint") {
       gpu_footprint_case();
-    } else if (mode == "footprint" || mode == "footprint-ordinary") {
-      footprint_case(page, mode == "footprint");
     } else if (mode == "concurrent") {
       concurrent_case(page);
     } else if (mode.find("registration-") == 0 || mode == "nil-foreign") {

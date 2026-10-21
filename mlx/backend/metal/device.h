@@ -10,7 +10,6 @@
 #include <unordered_set>
 
 #include "mlx/array.h"
-#include "mlx/backend/common/command_buffer_limits.h"
 #include "mlx/backend/common/gemma4_expert_qmm.h"
 #include "mlx/backend/common/metal_kernel.h"
 #include "mlx/backend/metal/resident.h"

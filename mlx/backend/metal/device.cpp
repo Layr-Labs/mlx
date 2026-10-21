@@ -11,6 +11,7 @@
 #define CA_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
 
+#include "mlx/backend/common/command_buffer_limits.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/event.h"
@@ -514,15 +515,6 @@ namespace {
 // Per-thread commit limits; zero selects the device default.
 thread_local int thread_max_ops_per_buffer = 0;
 thread_local int thread_max_mb_per_buffer = 0;
-} // namespace
-
-std::tuple<int, int> Device::get_max_ops_mb_per_buffer() const {
-  return std::make_tuple(
-      thread_max_ops_per_buffer > 0 ? thread_max_ops_per_buffer
-                                    : max_ops_per_buffer_,
-      thread_max_mb_per_buffer > 0 ? thread_max_mb_per_buffer
-                                   : max_mb_per_buffer_);
-}
 
 void set_thread_command_buffer_limits(
     int max_ops,
@@ -537,6 +529,15 @@ void set_thread_command_buffer_limits(
   }
   thread_max_ops_per_buffer = std::max(0, max_ops);
   thread_max_mb_per_buffer = std::max(0, max_mb);
+}
+} // namespace
+
+std::tuple<int, int> Device::get_max_ops_mb_per_buffer() const {
+  return std::make_tuple(
+      thread_max_ops_per_buffer > 0 ? thread_max_ops_per_buffer
+                                    : max_ops_per_buffer_,
+      thread_max_mb_per_buffer > 0 ? thread_max_mb_per_buffer
+                                   : max_mb_per_buffer_);
 }
 
 bool CommandEncoder::needs_commit() const {

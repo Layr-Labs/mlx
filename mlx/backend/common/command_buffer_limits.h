@@ -17,7 +17,7 @@ extern "C" {
 /// when they are not null. Partitioning work into command buffers does not
 /// change results; larger buffers let the CPU encode further ahead of the
 /// GPU and keep each buffer's temporaries alive until it completes.
-void mlx_metal_set_thread_command_buffer_limits(
+MLX_API void mlx_metal_set_thread_command_buffer_limits(
     int max_ops,
     int max_mb,
     int* previous_ops,

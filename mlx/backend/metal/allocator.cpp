@@ -520,8 +520,7 @@ MetalAllocator& allocator() {
 } // namespace metal
 
 AllocationFootprintPolicy get_allocation_footprint_policy() noexcept {
-  // Capped fallback buffers use whole VM pages, including subpage requests.
-  return {vm_page_size, vm_page_size, vm_page_size, 0, vm_page_size};
+  return {vm_page_size, vm_page_size, 0, 0, vm_page_size};
 }
 
 size_t get_allocation_size_upper_bound(size_t size) {

@@ -128,11 +128,6 @@ def:
         memory limits are unchanged. Residency insertion rolls back failed registration before
         callers release buffers, including ordinary uncapped allocations. Standalone CPU and
         real-Metal tests cover delayed release, churn, and injected construction failures.
-        Metal footprint quotations apply a one-VM-page minimum to every positive request
-        before adding the cache-reuse allowance, covering capped page-backed fallback even
-        when the policy was captured before cap installation. Standalone fresh-process
-        ordinary and capped cases compare actual backing with detached and direct bounds
-        at subpage and page boundaries; zero and overflow remain explicit controls.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.

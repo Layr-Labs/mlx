@@ -82,18 +82,8 @@ Native allocation footprint bounds
 
 The C++ ``get_allocation_footprint_policy()`` returns a detached value that
 bounds one allocator buffer, including alignment and permitted cache reuse.
-On Metal, every positive request has a minimum footprint of one VM page
-before the cache-reuse allowance is added. This covers the page-backed
-fallback used by the optional process-allocation cap, including requests
-smaller than one page. A policy captured before cap installation remains
-valid afterward. Zero bytes still has a zero bound; arithmetic overflow is
-refused.
-
-For example, with 16,384-byte VM pages, requests from 1 through 16,384 bytes
-have an upper bound of 32,767 bytes. The bound is conservative; it is not a
-measurement of the buffer's actual backing. The cap accounts for its fixed
-heap separately. Per-buffer footprint bounds and the optional cap do not
-replace whole-process memory budgets or OS headroom checks.
+Zero bytes has a zero bound; arithmetic overflow is refused. The bound does
+not apply a one-page minimum to requests smaller than one page.
 
 Capped no-copy backing is touched once per VM page from the CPU before it is
 wrapped as a Metal buffer. This makes the process physical footprint include

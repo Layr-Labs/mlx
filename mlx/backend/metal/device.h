@@ -162,9 +162,9 @@ class MLX_API Device {
   int get_architecture_gen() const {
     return arch_gen_;
   }
-  std::tuple<int, int> get_max_ops_mb_per_buffer() const {
-    return std::make_tuple(max_ops_per_buffer_, max_mb_per_buffer_);
-  }
+  // The device defaults, or the calling thread's limits where set
+  // (mlx_metal_set_thread_command_buffer_limits).
+  std::tuple<int, int> get_max_ops_mb_per_buffer() const;
 
   MTL::Library* get_library(
       const std::string& name,

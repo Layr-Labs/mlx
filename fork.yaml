@@ -294,12 +294,16 @@ def:
         gathers the frames, opens the peer frame and adds in rank order. Missing
         codecs and authentication failures refuse evaluation without a plaintext
         fallback. The distributed primitive retains its temporary arrays until
-        the queued work completes.
+        the queued work completes. On a two-rank JACCL mesh the sum streams in 256 KiB
+        pieces, each with its own AES-256-GCM tag, over `MeshImpl::exchange`: a piece is
+        sent as soon as it is sealed and opened and added as soon as it lands. Other
+        groups keep the seal-gather-open path.
       globs:
         - "mlx/distributed/CMakeLists.txt"
         - "mlx/distributed/primitives.h"
         - "mlx/distributed/sealed.cpp"
         - "mlx/distributed/sealed.h"
+        - "mlx/distributed/sealed_stream.h"
     - title: "Fused cross-device fence update"
       description: |
         Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU
@@ -339,6 +343,22 @@ def:
         - "mlx/backend/cuda/fence.cpp"
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
+    - title: "Cheaper custom-kernel launches and graph bookkeeping"
+      description: |
+        Host time only: generated sources, kernel names, buffers and dispatch order do not
+        change. Custom-kernel primitives share the cached generated source and resolve the
+        pipeline once per source; repeat launches skip rebuilding the name, template string
+        and cache key, and bind inputs directly when none needs a contiguous copy. Graph
+        teardown dedups node inputs with a small vector, `eval_impl`'s per-node map is a flat
+        open-addressing map, and allocation reads the device's maximum buffer length once.
+      globs:
+        - "mlx/array.cpp"
+        - "mlx/transforms.cpp"
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "mlx/backend/metal/allocator.cpp"
+        - "mlx/backend/cuda/custom_kernel.cpp"
     - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

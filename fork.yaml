@@ -121,6 +121,7 @@ def:
         - "mlx/backend/cuda/allocator.cpp"
         - "mlx/backend/no_gpu/allocator.cpp"
         - "tests/allocator_tests.cpp"
+        - "docs/src/usage/unified_memory.rst"
     - title: "FP32 partial sums in two-pass vector SDPA"
       description: |
         The two-pass vector SDPA cast unnormalized partial sums to the input dtype before

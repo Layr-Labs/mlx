@@ -9,6 +9,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/arange.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/arg_reduce.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/binary_two.cu
+          ${CMAKE_CURRENT_SOURCE_DIR}/cholesky.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/compiled.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/copy.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/copy/copy_contiguous.cu
@@ -21,6 +22,7 @@ target_sources(
           ${CMAKE_CURRENT_SOURCE_DIR}/cublas_utils.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/cross_entropy.cu
           ${CMAKE_CURRENT_SOURCE_DIR}/cudnn_utils.cpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/cusolver_utils.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/device_info.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/custom_kernel.cpp
           ${CMAKE_CURRENT_SOURCE_DIR}/device.cpp
@@ -77,6 +79,10 @@ target_sources(
 add_library(mlx_dirs OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/dirs.cpp)
 target_include_directories(mlx_dirs PRIVATE "${PROJECT_SOURCE_DIR}")
 target_link_libraries(mlx PRIVATE $<BUILD_INTERFACE:mlx_dirs>)
+# TODO: Remove after removing std::atomic_store/load.
+target_compile_definitions(
+  mlx_dirs
+  PUBLIC _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/binary)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/unary)
@@ -181,6 +187,8 @@ set_target_properties(mlx PROPERTIES CUDA_ARCHITECTURES
 
 # Configure Windows CUDA DLL loading.
 if(WIN32)
+  target_sources(mlx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wddm.cpp)
+  target_link_libraries(mlx PRIVATE dxgi)
   set(MLX_CUDA_BIN_DIR
       ""
       CACHE STRING "Directory containing CUDA DLLs for Windows delay-loading")
@@ -241,6 +249,7 @@ else()
                "$ORIGIN/../../nvidia/cuda_nvrtc/lib"
                "$ORIGIN/../../nvidia/cudnn/lib"
                "$ORIGIN/../../nvidia/cufft/lib"
+               "$ORIGIN/../../nvidia/cusolver/lib"
                "$ORIGIN/../../nvidia/nccl/lib")
   endif()
 endif()
@@ -285,6 +294,9 @@ target_link_libraries(mlx PRIVATE CUDA::cublasLt)
 
 # Use cuFFT.
 target_link_libraries(mlx PRIVATE CUDA::cufft)
+
+# Use cuSOLVER.
+target_link_libraries(mlx PRIVATE CUDA::cusolver)
 
 # Use NVRTC and driver APIs.
 target_link_libraries(mlx PRIVATE CUDA::nvrtc CUDA::cuda_driver)

@@ -25,13 +25,13 @@ def cuda_toolkit_major_version():
 
 def get_version():
     with open("mlx/version.h", "r") as fid:
-        for l in fid:
-            if "#define MLX_VERSION_MAJOR" in l:
-                major = l.split()[-1]
-            if "#define MLX_VERSION_MINOR" in l:
-                minor = l.split()[-1]
-            if "#define MLX_VERSION_PATCH" in l:
-                patch = l.split()[-1]
+        for line in fid:
+            if "#define MLX_VERSION_MAJOR" in line:
+                major = line.split()[-1]
+            if "#define MLX_VERSION_MINOR" in line:
+                minor = line.split()[-1]
+            if "#define MLX_VERSION_PATCH" in line:
+                patch = line.split()[-1]
     version = f"{major}.{minor}.{patch}"
     pypi_release = int(os.environ.get("PYPI_RELEASE", 0))
     dev_release = int(os.environ.get("DEV_RELEASE", 0))
@@ -57,7 +57,8 @@ def get_version():
 #
 # Frontend package:
 #  - Triggered with `MLX_BUILD_FRONTEND_PACKAGE=1`
-#  - Include everything except backend-specific binaries (e.g. libmlx.so, mlx.metallib, etc)
+#  - Include everything except backend-specific binaries (e.g. libmlx.so, mlx.metallib,
+#    etc)
 #  - Wheel has Python ABI and platform tags
 #  - Wheel should be built for the cross-product of python version and platforms
 #  - Package name is "mlx" and it depends on backend packages (e.g. mlx-metal, mlx-cuda)
@@ -339,6 +340,7 @@ if __name__ == "__main__":
                     "nvidia-cublas-cu12==12.9.*",
                     "nvidia-cufft-cu12==11.4.*",
                     "nvidia-cuda-nvrtc-cu12==12.9.*",
+                    "nvidia-cusolver-cu12==11.7.*",
                 ]
             elif toolkit == 13:
                 install_requires += [
@@ -346,6 +348,7 @@ if __name__ == "__main__":
                     "nvidia-cufft==12.*",
                     "nvidia-cuda-nvrtc==13.*",
                     "nvidia-cuda-runtime==13.*",
+                    "nvidia-cusolver==12.*",
                 ]
             else:
                 raise ValueError(f"Unknown toolkit {toolkit}")

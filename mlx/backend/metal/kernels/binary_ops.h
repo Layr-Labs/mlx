@@ -41,19 +41,8 @@ struct FloorDivide {
 };
 
 struct Divide {
-  // Integer Divide is floor_divide: round down, keep x / 0 unchanged.
   template <typename T>
-  metal::enable_if_t<metal::is_integral_v<T> & metal::is_signed_v<T>, T>
-  operator()(T x, T y) thread {
-    auto q = x / y;
-    if (y != 0 && x % y != 0 && (x < 0) != (y < 0)) {
-      q -= 1;
-    }
-    return q;
-  }
-  template <typename T>
-  metal::enable_if_t<!(metal::is_integral_v<T> & metal::is_signed_v<T>), T>
-  operator()(T x, T y) thread {
+  T operator()(T x, T y) thread {
     return x / y;
   }
 };
@@ -272,7 +261,7 @@ struct Power {
       return {0.0, 0.0};
     }
     auto x_theta = metal::atan2(x.imag, x.real);
-    auto x_ln_r = 0.5 * metal::log(x.real * x.real + x.imag * x.imag);
+    auto x_ln_r = metal::log(hypot(x.real, x.imag));
     auto mag = metal::exp(y.real * x_ln_r - y.imag * x_theta);
     auto phase = y.imag * x_ln_r + y.real * x_theta;
     return {mag * metal::cos(phase), mag * metal::sin(phase)};

@@ -37,6 +37,7 @@ class MLX_API Scheduler {
     {
       std::lock_guard<std::mutex> lk(mtx);
       n_active_tasks_++;
+      n_active_cpu_tasks_ += stream.device.type == Device::cpu;
     }
     completion_cv.notify_all();
   }
@@ -45,12 +46,18 @@ class MLX_API Scheduler {
     {
       std::lock_guard<std::mutex> lk(mtx);
       n_active_tasks_--;
+      n_active_cpu_tasks_ -= stream.device.type == Device::cpu;
     }
     completion_cv.notify_all();
   }
 
   int n_active_tasks() const {
     return n_active_tasks_;
+  }
+
+  // The active tasks of CPU streams; they are also in n_active_tasks().
+  int n_active_cpu_tasks() const {
+    return n_active_cpu_tasks_;
   }
 
   void wait_for_one() {
@@ -69,6 +76,7 @@ class MLX_API Scheduler {
   StreamThread& get_thread(Stream s);
 
   int n_active_tasks_{0};
+  int n_active_cpu_tasks_{0};
   std::unordered_map<int, std::unique_ptr<StreamThread>> threads_;
   std::shared_mutex threads_mtx_;
   std::condition_variable completion_cv;
@@ -100,6 +108,10 @@ inline void check_error(Stream s) {
 
 inline int n_active_tasks() {
   return scheduler().n_active_tasks();
+}
+
+inline int n_active_cpu_tasks() {
+  return scheduler().n_active_cpu_tasks();
 }
 
 inline void notify_new_task(const Stream& stream) {

@@ -138,6 +138,22 @@ Group Group::split(int color, int key /* = -1 */) const {
   return Group(group_->split(color, key));
 }
 
+void Group::begin_startup_wait_budget(int64_t timeout_ms) const {
+  if (!group_) {
+    throw std::runtime_error(
+        "[distributed] Cannot set a budget on a null group.");
+  }
+  group_->begin_startup_wait_budget(timeout_ms);
+}
+
+void Group::end_startup_wait_budget() const {
+  if (!group_) {
+    throw std::runtime_error(
+        "[distributed] Cannot end a budget on a null group.");
+  }
+  group_->end_startup_wait_budget();
+}
+
 namespace {
 
 std::unordered_map<std::string, std::shared_ptr<detail::GroupImpl>>&

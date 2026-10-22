@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include <atomic>
 #include "mlx/distributed/distributed.h"
 #include "mlx/distributed/distributed_impl.h"
+#include "mlx/distributed/sealed.h"
 #include "mlx/primitives.h"
 
 namespace mlx::core::distributed {
@@ -65,6 +67,71 @@ class AllReduce : public DistPrimitive {
 
  private:
   ReduceType reduce_type_;
+};
+
+/// The sealed all-sum (`all_sum_sealed`, sealed.h): seal, all-gather the two
+/// frames, open the peer's, add in rank order. With a streamed codec on a
+/// group that can exchange, one task does this piece by piece
+/// (sealed_stream.h). `counter_` advances per evaluation; both ranks
+/// evaluate the same graph in the same order.
+class SealedAllSum : public DistPrimitive {
+ public:
+  SealedAllSum(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedAllSum";
+  }
+
+ private:
+  void eval_streamed(const array& in, array& out);
+
+  SealCodec codec_;
+};
+
+/// The sealed reduce-scatter and all-gather (`reduce_scatter_sealed`,
+/// `all_gather_sealed`, sealed.h): the all-sum's frames and counters, half
+/// the bytes each. Every sealed collective draws its counter from one
+/// sequence (`detail::next_sealed_counter`), in evaluation order.
+class SealedReduceScatter : public DistPrimitive {
+ public:
+  SealedReduceScatter(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedReduceScatter";
+  }
+
+ private:
+  SealCodec codec_;
+};
+
+class SealedAllGather : public DistPrimitive {
+ public:
+  SealedAllGather(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedAllGather";
+  }
+
+ private:
+  SealCodec codec_;
 };
 
 class AllGather : public DistPrimitive {

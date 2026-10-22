@@ -1,5 +1,7 @@
 // Copyright © 2024 Apple Inc.
 
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <variant>
 
@@ -433,8 +435,58 @@ class Quantize : public Custom {
 
 using ScalarArg = std::variant<bool, int, float>;
 
+// Generated source of a custom kernel. `metal_kernel` makes one for each
+// kernel and template instance, and all its launches share it.
+struct CustomKernelSource {
+  explicit CustomKernelSource(
+      std::string source,
+      std::string library_name = "")
+      : source(std::move(source)), library_name(std::move(library_name)) {}
+
+  std::string source;
+  // Metal library name. When empty, eval_gpu makes it from the source.
+  std::string library_name;
+
+  // The compiled kernel and its threadgroup limit, resolved once by the
+  // first launch (Metal).
+  mutable std::once_flag resolved;
+  mutable std::shared_ptr<void> pipeline;
+  mutable size_t max_total_threads = 0;
+};
+
 class CustomKernel : public Primitive {
  public:
+  CustomKernel(
+      Stream stream,
+      std::string name,
+      std::shared_ptr<const CustomKernelSource> source,
+      std::tuple<int, int, int> grid,
+      std::tuple<int, int, int> threadgroup,
+      std::vector<std::tuple<bool, bool, bool>> shape_infos,
+      bool ensure_row_contiguous,
+      std::optional<float> init_value,
+      std::vector<ScalarArg> scalar_arguments,
+      bool is_precompiled,
+      int shared_memory,
+      CompileOptions::Data compile_options = {},
+      std::vector<int> mutable_inputs = {},
+      std::vector<int> fenced_inputs = {})
+      : Primitive(stream),
+        name_(std::move(name)),
+        source_(std::move(source)),
+        grid_(grid),
+        threadgroup_(threadgroup),
+        shape_infos_(std::move(shape_infos)),
+        ensure_row_contiguous_(ensure_row_contiguous),
+        init_value_(init_value),
+        scalar_arguments_(std::move(scalar_arguments)),
+        is_precompiled_(is_precompiled),
+        shared_memory_(shared_memory),
+        compile_options_(compile_options),
+        mutable_inputs_(std::move(mutable_inputs)),
+        fenced_inputs_(std::move(fenced_inputs)) {}
+
+  // A private source entry (graph import, cuda): resolved once per primitive.
   CustomKernel(
       Stream stream,
       std::string name,
@@ -449,19 +501,20 @@ class CustomKernel : public Primitive {
       int shared_memory,
       CompileOptions::Data compile_options = {},
       std::vector<int> mutable_inputs = {})
-      : Primitive(stream),
-        name_(std::move(name)),
-        source_(std::move(source)),
-        grid_(grid),
-        threadgroup_(threadgroup),
-        shape_infos_(std::move(shape_infos)),
-        ensure_row_contiguous_(ensure_row_contiguous),
-        init_value_(init_value),
-        scalar_arguments_(std::move(scalar_arguments)),
-        is_precompiled_(is_precompiled),
-        shared_memory_(shared_memory),
-        compile_options_(compile_options),
-        mutable_inputs_(std::move(mutable_inputs)) {}
+      : CustomKernel(
+            stream,
+            std::move(name),
+            std::make_shared<const CustomKernelSource>(std::move(source)),
+            grid,
+            threadgroup,
+            std::move(shape_infos),
+            ensure_row_contiguous,
+            init_value,
+            std::move(scalar_arguments),
+            is_precompiled,
+            shared_memory,
+            compile_options,
+            std::move(mutable_inputs)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override {
@@ -472,10 +525,20 @@ class CustomKernel : public Primitive {
       override;
 
   DEFINE_NAME(CustomKernel);
+
+  bool fenced_input(int index) const {
+    for (int i : fenced_inputs_) {
+      if (i == index) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   auto state() const {
     return std::make_tuple(
         name_,
-        source_,
+        source_->source,
         grid_,
         threadgroup_,
         shape_infos_,
@@ -489,7 +552,7 @@ class CustomKernel : public Primitive {
 
  private:
   std::string name_;
-  std::string source_;
+  std::shared_ptr<const CustomKernelSource> source_;
   std::tuple<int, int, int> grid_;
   std::tuple<int, int, int> threadgroup_;
   std::vector<std::tuple<bool, bool, bool>> shape_infos_;
@@ -502,6 +565,9 @@ class CustomKernel : public Primitive {
 
  protected:
   std::vector<int> mutable_inputs_;
+  // Inputs whose fence wait runs in the kernel. Not in `state()`: never set
+  // while exporting (see metal_kernel_with_fenced_inputs).
+  std::vector<int> fenced_inputs_;
 };
 
 class MutableInputCustomKernel : public CustomKernel {

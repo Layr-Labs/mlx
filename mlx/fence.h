@@ -32,6 +32,11 @@ class Fence {
   void update(Stream stream, const array& x, bool cross_device);
   void wait(Stream stream, const array& x);
 
+  // Give the wait on input `input` of `consumer` to the consumer's own GPU
+  // kernel (a fenced input of a Metal custom kernel). Returns false when it
+  // cannot; call `wait` then.
+  bool wait_in_consumer(Stream stream, const array& consumer, int input);
+
   template <typename T>
   auto& cast() const {
     return *static_cast<T*>(fence_.get());

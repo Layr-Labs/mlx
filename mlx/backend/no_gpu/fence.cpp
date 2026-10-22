@@ -20,6 +20,10 @@ void Fence::wait(Stream s, const array&) {
   cast<FenceImpl>().event.wait(s);
 }
 
+bool Fence::wait_in_consumer(Stream, const array&, int) {
+  return false;
+}
+
 void Fence::update(Stream s, const array&, bool) {
   auto& f = cast<FenceImpl>();
   f.count++;

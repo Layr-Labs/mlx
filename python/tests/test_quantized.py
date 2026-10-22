@@ -1599,7 +1599,143 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 self.assertTrue(mx.allclose(y1, y3, atol=tol))
                 self.assertTrue(mx.allclose(y1, y4, atol=tol))
 
+    def test_cpu_quantized_accumulation_modes_and_orientations(self):
+        with mx.stream(mx.cpu):
+            for mode, dtype, transpose, k in product(
+                ["affine", "mxfp4", "mxfp8", "nvfp4"],
+                [mx.bfloat16, mx.float16, mx.float32],
+                [False, True],
+                [96, 3072],
+            ):
+                with self.subTest(mode=mode, dtype=dtype, transpose=transpose, k=k):
+                    group_size = 16 if mode == "nvfp4" else 32
+                    bits = 8 if mode == "mxfp8" else 4
+                    x = mx.full((1, k), 3, dtype=dtype)
+                    weights = mx.full((32, k) if transpose else (k, 32), 2, dtype=dtype)
+                    if mode == "nvfp4":
+                        # E2M1 code 2 is 1; E4M3 code 64 is exactly 2.
+                        packed = (
+                            mx.full(
+                                (*weights.shape[:-1], weights.shape[-1] // 8),
+                                0x22222222,
+                                dtype=mx.uint32,
+                            ),
+                            mx.full(
+                                (*weights.shape[:-1], weights.shape[-1] // 16),
+                                64,
+                                dtype=mx.uint8,
+                            ),
+                        )
+                    else:
+                        packed = mx.quantize(
+                            weights, group_size=group_size, bits=bits, mode=mode
+                        )
+                    dequantized = mx.dequantize(
+                        *packed, group_size=group_size, bits=bits, mode=mode
+                    )
+                    reference = x @ (dequantized.T if transpose else dequantized)
+                    expected = mx.full((1, 32), 6 * k, dtype=dtype)
+                    self.assertTrue(mx.array_equal(reference, expected))
+                    actual = mx.quantized_matmul(
+                        x,
+                        *packed,
+                        transpose=transpose,
+                        group_size=group_size,
+                        bits=bits,
+                        mode=mode,
+                    )
+                    self.assertTrue(mx.array_equal(actual, expected))
+
+    def test_affine_qmm_cpu_low_precision_accumulation(self):
+        with mx.stream(mx.cpu):
+            for dtype, bits, k in product(
+                [mx.bfloat16, mx.float16, mx.float32], [3, 4, 6], [96, 128]
+            ):
+                with self.subTest(dtype=dtype, bits=bits, k=k):
+                    x = mx.full((1, 1, k), 3, dtype=dtype)
+                    weights = mx.full((1, 32, k), 2, dtype=dtype)
+                    packed = mx.quantize(weights, group_size=32, bits=bits)
+                    reference = x @ mx.swapaxes(
+                        mx.dequantize(*packed, group_size=32, bits=bits), -1, -2
+                    )
+                    expected = mx.full((1, 1, 32), 6 * k, dtype=dtype)
+                    self.assertTrue(mx.array_equal(reference, expected))
+                    for sorted_indices in [False, True]:
+                        actual = mx.gather_qmm(
+                            x,
+                            *packed,
+                            rhs_indices=mx.array([0], dtype=mx.uint32),
+                            group_size=32,
+                            bits=bits,
+                            sorted_indices=sorted_indices,
+                        )
+                        self.assertTrue(mx.array_equal(actual, expected))
+                    actual = mx.quantized_matmul(x, *packed, group_size=32, bits=bits)
+                    self.assertTrue(mx.array_equal(actual, expected))
+
     @unittest.skipIf(mx.cuda.is_available(), "Not implemented for CUDA")
+    @unittest.skipUnless(mx.metal.is_available(), "Metal tail-load regression")
+    def test_gather_qmm_sorted_partial_tiles(self):
+        # Exact sums expose reading a following row as reduction-tile padding.
+        counts = [17, 3, 31, 14]
+        indices = [expert for expert, count in enumerate(counts) for _ in range(count)]
+        rhs = mx.array(indices, dtype=mx.uint32)
+        experts = [0.25, 0.5, 1.0, 2.0]
+        for mode, dtype, k, n in product(
+            ["affine", "mxfp4", "mxfp8", "nvfp4"],
+            [mx.float16, mx.bfloat16],
+            [32, 64, 96, 128],
+            [32, 96],
+        ):
+            with self.subTest(mode=mode, dtype=dtype, k=k, n=n):
+                group_size = 16 if mode == "nvfp4" else 32
+                bits = 8 if mode == "mxfp8" else 4
+                if mode == "nvfp4":
+                    # E2M1 code 2 is 1; E4M3 scales are 1/4, 1/2, 1, 2.
+                    wq = mx.full((4, n, k // 8), 0x22222222, dtype=mx.uint32)
+                    scales = mx.broadcast_to(
+                        mx.array([40, 48, 56, 64], dtype=mx.uint8)[:, None, None],
+                        (4, n, k // 16),
+                    )
+                    packed = (wq, scales)
+                else:
+                    weights = mx.broadcast_to(
+                        mx.array(experts, dtype=dtype)[:, None, None], (4, n, k)
+                    )
+                    packed = mx.quantize(
+                        weights, group_size=group_size, bits=bits, mode=mode
+                    )
+                for poison in [False, True]:
+                    rows = [
+                        float("nan") if poison and i % 2 else float(i % 3 + 1)
+                        for i in range(len(indices))
+                    ]
+                    x = mx.broadcast_to(
+                        mx.array(rows, dtype=dtype)[:, None, None], (len(indices), 1, k)
+                    )
+                    actual = mx.gather_qmm(
+                        mx.contiguous(x),
+                        *packed,
+                        rhs_indices=rhs,
+                        transpose=True,
+                        group_size=group_size,
+                        bits=bits,
+                        mode=mode,
+                        sorted_indices=True,
+                    )
+                    expected = mx.array(
+                        [
+                            rows[row] * k * experts[expert]
+                            for row, expert in enumerate(indices)
+                        ],
+                        dtype=dtype,
+                    )[:, None, None]
+                    self.assertEqual(actual.shape, (len(indices), 1, n))
+                    equal = (actual == expected) | (
+                        mx.isnan(actual) & mx.isnan(expected)
+                    )
+                    self.assertTrue(mx.all(equal).item(), f"poison={poison}")
+
     def test_gather_qmm_sorted_sliced_weight(self):
         E, R, D, N = 8, 64, 256, 64
         dtype = mx.float16 if (mx.default_device() == mx.gpu) else mx.float32

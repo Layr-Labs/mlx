@@ -6,11 +6,12 @@ footer: |
 base:
   name: ml-explore/mlx
   url: https://github.com/ml-explore/mlx
-  # The upstream commit this fork is based on. CI (`scripts/check_forkdiff.py`)
-  # requires this to equal `git merge-base HEAD upstream/main`, so a rebase onto
-  # newer upstream fails the gate until the hash — and the sections below — are
-  # brought up to date. Upstream main as of 2026-08-14.
-  hash: 77a0c1e8ae16eb781a79e2b7134ba84b2ee7b597
+  # The upstream commit this fork is based on: upstream main on 2026-10-22, the
+  # head that the fork merged on that date. CI (`scripts/check_forkdiff.py`)
+  # requires this hash to equal `git merge-base HEAD upstream/main`. Each upstream
+  # merge moves the merge-base, so the gate fails until this hash and the
+  # sections below are brought up to date.
+  hash: c6abf0dbb4fc141fad739b32ae486c06728e49e5
 fork:
   name: Layr-Labs/mlx
   url: https://github.com/Layr-Labs/mlx
@@ -29,10 +30,6 @@ def:
     control, declared-mutable custom-kernel inputs for paged KV, and a use-after-free fix in
     Metal eval. Every change is meant to be additive and rebasable; each is gated by shape,
     device or environment checks so the upstream path stays the default elsewhere.
-
-    One section is not fork work at all: the fork carries upstream's own v0.32.2 changes
-    (applied in PR #10 rather than merged), and those files are listed as such so the page
-    stays honest about what Layr-Labs actually changed.
   sub:
     - title: "Metal eval: use-after-free with mid-eval synchronization"
       description: |
@@ -55,7 +52,7 @@ def:
         an older library fails the route closed; `trust` skips the descriptor-retract readback
         when the caller guarantees sorted indices. A retracted call runs the unsorted gather
         route, because the sorted `gather_qmm_rhs` kernels read per-expert offsets and give a
-        correct result only for sorted indices. Diagnostics counters
+        correct result only for sorted indices (PR #27). Diagnostics counters
         (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
         mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
         quantized-vector bias-sum operand is promoted to the accumulator type before summation
@@ -66,6 +63,7 @@ def:
         - "mlx/backend/metal/device.cpp"
         - "mlx/backend/metal/kernels/quantized.h"
         - "mlx/backend/metal/kernels/quantized.metal"
+        - "mlx/backend/metal/quantized.cpp"
         - "tests/gpu_tests.cpp"
     - title: "Thread-scoped command-buffer commit limits"
       description: |
@@ -176,26 +174,16 @@ def:
         - "mlx/compile.cpp"
         - "mlx/compile_impl.h"
         - "tests/compile_tests.cpp"
-    - title: "Integer floor_divide rounds down"
+    - title: "Integer floor_divide tests"
       description: |
-        `floor_divide` on integers uses the `Divide` primitive. The CPU and Metal `Divide`
-        functors truncated toward zero, so `-7 // 2` gave -3. NumPy and Python give -4. For
-        signed integers the functors now subtract 1 when the remainder is not zero and the
-        signs are different. On the CPU the signed-integer functor does not divide by 0 or
-        divide the minimum value by -1, because C++ does not define these. It returns 0 for
-        `x // 0` and the minimum value for `min // -1`, the same values as before. The Metal
-        Shading Language does not define these cases either. Unsigned and floating-point
-        division do not change. Upstream fixed the same defect in `ops.cpp` (ml-explore/mlx
-        #4515); the fork does the fix in the kernels. If a later upstream sync ports #4515 on
-        top of these kernels, `floor_divide` subtracts 1 twice; the tests catch this. The CUDA
-        `Divide` functor (`cuda/device/binary_ops.cuh:36-41`) does not change and still
-        truncates; no workflow in this fork builds CUDA. mlx-swift keeps generated copies of
-        both headers (`Source/Cmlx/mlx-generated/binary_ops.cpp`,
-        `mlx-generated/metal/binary_ops.h`, `mlx-generated/compiled_preamble.cpp`), so
-        `tools/update-mlx.sh` must run at the mlx-swift pin bump.
+        The fork keeps its regression tests for integer `floor_divide` from PR #32. Upstream
+        now does the fix itself: ml-explore/mlx #4515 fixes `floor_divide` in `ops.cpp` and
+        #4642 adds a `FloorDivide` primitive that rounds down. The fork dropped its own flooring `Divide` functors when it merged
+        upstream on 2026-10-22, so integer `Divide` truncates again, as in upstream. The tests
+        check negative operands of every signed integer type, the SIMD and scalar paths,
+        unsigned and floating-point division, and compiled graphs. On the CPU they also check
+        that `x // 0` gives 0 and `min // -1` gives the minimum value.
       globs:
-        - "mlx/backend/cpu/binary_ops.h"
-        - "mlx/backend/metal/kernels/binary_ops.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
     - title: "Validated custom Metal threadgroups and bounded compiler retry"
@@ -242,159 +230,29 @@ def:
       globs:
         - "mlx/backend/cpu/quantized.cpp"
         - "python/tests/test_quantized.py"
-    - title: "Upstream v0.32.2 sync carried in PR #10"
+    - title: "Every simdgroup runs the MMA in the sorted gather_qmm NAX kernels"
       description: |
-        **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
-        v0.32.2 by applying upstream's changes rather than merging them, so `git` sees them as
-        fork commits even though the imported content matches upstream `v0.32.2`
-        (CUDA backend, CPU SIMD, kernels, Python bindings and tests, repository CI and
-        templates, `AGENTS.md` / `CLAUDE.md`, docs). Listed here so the page does not credit
-        Layr-Labs with upstream's changes; the section disappears once the fork rebases onto
-        an upstream commit at or past v0.32.2. Later fork changes to these paths
-        are described in their own sections, including quantized NAX tile bounds.
-      globs:
-        - ".pre-commit-config.yaml"
-        - "AGENTS.md"
-        - "CLAUDE.md"
-        - "CMakeLists.txt"
-        - "CONTRIBUTING.md"
-        - "setup.py"
-        - ".github/pull_request_template.md"
-        - ".github/ISSUE_TEMPLATE/*"
-        - ".github/actions/build-macos/action.yml"
-        - ".github/actions/setup/action.yml"
-        - ".github/actions/build-wheel/action.yml"
-        - ".github/actions/test-linux/action.yml"
-        - ".github/actions/test-macos/action.yml"
-        - "benchmarks/python/sdpa_bench.py"
-        - "docs/src/install.rst"
-        - "docs/src/python/fast.rst"
-        - "examples/extensions/*"
-        - "mlx/array.h"
-        - "mlx/einsum.cpp"
-        - "mlx/error.h"
-        - "mlx/event.h"
-        - "mlx/fast.cpp"
-        - "mlx/fence.h"
-        - "mlx/fft.cpp"
-        - "mlx/ops.cpp"
-        - "mlx/ops.h"
-        - "mlx/primitives.cpp"
-        - "mlx/primitives.h"
-        - "mlx/scheduler.cpp"
-        - "mlx/scheduler.h"
-        - "mlx/version.h"
-        - "mlx/backend/common/load.cpp"
-        - "mlx/backend/cpu/*"
-        - "mlx/backend/cpu/simd/base_simd.h"
-        - "mlx/backend/cuda/CMakeLists.txt"
-        - "mlx/backend/cuda/cross_entropy.cu"
-        - "mlx/backend/cuda/cuda_utils.h"
-        - "mlx/backend/cuda/custom_kernel.cpp"
-        - "mlx/backend/cuda/delayload.cpp"
-        - "mlx/backend/cuda/device.cpp"
-        - "mlx/backend/cuda/device.h"
-        - "mlx/backend/cuda/dirs.cpp"
-        - "mlx/backend/cuda/event.cu"
-        - "mlx/backend/cuda/event.h"
-        - "mlx/backend/cuda/fence.cpp"
-        - "mlx/backend/cuda/jit_module.cpp"
-        - "mlx/backend/cuda/scaled_dot_product_attention.cpp"
-        - "mlx/backend/cuda/device/binary_ops.cuh"
-        - "mlx/backend/metal/compiled.cpp"
-        - "mlx/backend/metal/conv.cpp"
-        - "mlx/backend/metal/event.cpp"
-        - "mlx/backend/metal/event.h"
-        - "mlx/backend/metal/fence.cpp"
-        - "mlx/backend/metal/jit_kernels.cpp"
-        - "mlx/backend/metal/kernels.h"
-        - "mlx/backend/metal/nojit_kernels.cpp"
-        - "mlx/backend/metal/normalization.cpp"
-        - "mlx/backend/metal/primitives.cpp"
-        - "mlx/backend/metal/kernels/binary_ops.h"
-        - "mlx/backend/metal/kernels/copy.h"
-        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
-        - "mlx/backend/metal/kernels/fp_quantized_nax.metal"
-        - "mlx/backend/metal/kernels/fp8.h"
-        - "mlx/backend/metal/kernels/quantized_nax.h"
-        - "mlx/backend/metal/kernels/quantized_nax.metal"
-        - "mlx/backend/metal/kernels/rms_norm.metal"
-        - "mlx/backend/metal/kernels/sort.h"
-        - "mlx/backend/metal/kernels/utils.h"
-        - "mlx/backend/metal/kernels/reduction/*"
-        - "mlx/backend/metal/kernels/steel/attn/kernels/*"
-        - "mlx/backend/no_gpu/event.cpp"
-        - "mlx/backend/no_gpu/fence.cpp"
-        - "mlx/backend/no_gpu/primitives.cpp"
-        - "mlx/distributed/mpi/mpi.cpp"
-        - "mlx/distributed/ring/ring.cpp"
-        - "mlx/io/gguf.cpp"
-        - "python/mlx/*"
-        - "python/mlx/_distributed_utils/launch.py"
-        - "python/mlx/nn/losses.py"
-        - "python/mlx/nn/layers/normalization.py"
-        - "python/mlx/optimizers/optimizers.py"
-        - "python/src/*"
-        - "python/tests/__main__.py"
-        - "python/tests/mlx_tests.py"
-        - "python/tests/run.py"
-        - "python/tests/test_array.py"
-        - "python/tests/test_compile.py"
-        - "python/tests/test_conv_transpose.py"
-        - "python/tests/test_double.py"
-        - "python/tests/test_einsum.py"
-        - "python/tests/test_eval.py"
-        - "python/tests/test_fast.py"
-        - "python/tests/test_load.py"
-        - "python/tests/test_nn.py"
-        - "python/tests/test_ops.py"
-        - "python/tests/test_quantized.py"
-        - "python/tests/test_reduce.py"
-        - "python/tests/test_vmap.py"
-        - "tests/load_tests.cpp"
-        - "tests/ops_tests.cpp"
-    - title: "Upstream gather_mm and gather_qmm row-tile scheduling (ml-explore/mlx #4567, #4572)"
-      description: |
-        **Not fork work.** Cherry-picks of upstream commits `a2a09fd5`
-        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)) and `90089440`
-        ([ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572)). The sorted
-        `gather_mm` and `gather_qmm` kernels schedule row tiles from per-expert offsets, so
-        one tile holds rows of one expert and does one matmul pass. A small kernel
-        (`gather_mm_offsets`) computes the offsets from the sorted `rhs_indices`.
-
-        The `gather_qmm` change is in `quantized.h`, `quantized_nax.h`, `fp_quantized.h`,
-        `fp_quantized_nax.h` and `quantized.cpp`, which are listed in the sections that
-        describe the fork work in those files. `utils.h` (`schedule_row_tile`) is listed in
-        the v0.32.2 section. Two differences from upstream `90089440` remain in the ported
-        kernels, because the fork base does not have the related upstream changes: the
-        floating-point kernels have no global-scale input, and the NAX kernels keep the
-        fork's bound for the last K tile. The section disappears once the fork rebases onto
-        an upstream commit at or past `90089440`.
-
-        One upstream change in these NAX kernels is reverted on purpose: the simdgroup skip
-        of [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`,
-        which arrived with the v0.32.2 changes; `#4572` kept it as
+        The fork reverts one upstream change in two NAX kernels: the simdgroup skip of
+        [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`, kept by
+        [ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572) as
         `sg_active = sgp_sm > 0`). `fp_gather_qmm_rhs_nax` and `affine_gather_qmm_rhs_nax` run
-        the MMA in every simdgroup again. With the skip, mixture-of-experts serving on a
-        two-Mac JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB
-        wired until a reboot. Stores stay bounded by `sgp_sm`, so the output is unchanged.
-        Keep the revert at every rebase onto upstream.
+        the MMA in every simdgroup. With the skip, mixture-of-experts serving on a two-Mac
+        JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB wired
+        until a reboot. Stores stay bounded by `sgp_sm`, so the output does not change. Keep
+        the revert at every upstream merge. Upstream added the row-tile scheduling of #4567
+        and #4572, which the fork had carried as a backport in PR #27, so only this revert
+        remains.
       globs:
-        - ".gitignore"
-        - "benchmarks/python/swiglu_bench.py"
-        - "benchmarks/python/swiglu_qmm_bench.py"
-        - "mlx/backend/metal/matmul.cpp"
-        - "mlx/backend/metal/matmul.h"
-        - "mlx/backend/metal/kernels/CMakeLists.txt"
-        - "mlx/backend/metal/kernels/gather_mm_offsets.metal"
-        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather.h"
-        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
+        - "mlx/backend/metal/kernels/quantized_nax.h"
+        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
     - title: "Fork tooling"
       description: |
-        The fork deletes the upstream workflows that cannot run here: the PyPI release build and
-        the documentation deploy. `build_and_test.yml` keeps the lint, sanitizer and Fedora jobs.
-        The fork deletes the jobs that run only in the upstream repository, and the composite
-        actions that only the deleted workflows and jobs used.
+        The fork deletes the upstream workflows that cannot run here: the PyPI release build,
+        the documentation deploy and the daily bypass-list update with its two scripts.
+        `build_and_test.yml` keeps the lint, sanitizer and Fedora jobs. The fork deletes the
+        jobs that run only in the upstream repository, and the composite actions that only
+        the deleted workflows and jobs used. An upstream merge adds these files again, so
+        delete them again at each merge.
 
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
         not the merge-base with upstream, when a file the fork changes is not described by a
@@ -405,9 +263,9 @@ def:
         because the organization blocks actions that are not pinned. The organization also
         blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
         the ccache files with `actions/cache`. It then runs the same tests a second time with
-        the CPU as the default device. Two Python tests check behavior that exists only in the
-        Metal backend (Winograd batch tiling and the FFT size limit), so they skip when the
-        default device is not the GPU.
+        the CPU as the default device. Three Python tests check behavior that exists only in
+        the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
+        so they skip when the default device is not the GPU.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
@@ -418,6 +276,9 @@ def:
         - ".github/workflows/build_and_test.yml"
         - ".github/workflows/documentation.yml"
         - ".github/workflows/release.yml"
+        - ".github/workflows/update_bypass_list.yml"
+        - ".github/scripts/find-eligible-contributors.js"
+        - ".github/scripts/update-bypass-list.js"
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "README.md"

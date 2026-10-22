@@ -1036,10 +1036,10 @@ METAL_FUNC void adjust_matrix_offsets(
   y += tid.z * output_stride;
 }
 
-// AffineQuantizedNAXBlockLoader's thread mapping split into two steps: fetch() reads the
-// packed words and the group's scale and bias for one BK step into registers,
-// store() dequantizes them into threadgroup memory. Fetching step k + 1 before
-// the MMAs of step k hides the device reads behind the matrix work.
+// AffineQuantizedNAXBlockLoader's thread mapping split into two steps: fetch()
+// reads the packed words and the group's scale and bias for one BK step into
+// registers, store() dequantizes them into threadgroup memory. Fetching step
+// k + 1 before the MMAs of step k hides the device reads behind the matrix work.
 template <
     typename T,
     short BROWS,
@@ -2023,8 +2023,6 @@ template <
 
   using AccumType = float;
 
-  const bool sg_active = sgp_sm > 0;
-
   NAXTile<AccumType, TM, TN> Dtile;
   Dtile.clear();
 
@@ -2055,34 +2053,33 @@ template <
 
         STEEL_PRAGMA_NO_UNROLL
         for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-          if (sg_active) {
-            NAXTile<T, TM, TK> Atile;
-            NAXTile<T, BR, BC> Btile;
+          NAXTile<T, TM, TK> Atile;
+          NAXTile<T, BR, BC> Btile;
 
-            volatile int compiler_barrier;
+          volatile int compiler_barrier;
 
-            if constexpr (kAlignedM.value) {
-              Atile.load(xn + kk1, K);
-            } else {
-              Atile.load_safe(xn + kk1, K, short2(SK, sgp_sm));
-            }
-
-            if constexpr (transpose) {
-              Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
-            } else {
-              Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
-            }
-
-            tile_matmad_nax(
-                Dtile,
-                Atile,
-                metal::bool_constant<false>{},
-                Btile,
-                metal::bool_constant<transpose>{});
-
-            (void)compiler_barrier;
+          if constexpr (kAlignedM.value) {
+            Atile.load(xn + kk1, K);
+          } else {
+            Atile.load_safe(xn + kk1, K, short2(SK, sgp_sm));
           }
+
+          if constexpr (transpose) {
+            Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
+          } else {
+            Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
+          }
+
+          tile_matmad_nax(
+              Dtile,
+              Atile,
+              metal::bool_constant<false>{},
+              Btile,
+              metal::bool_constant<transpose>{});
+
+          (void)compiler_barrier;
         }
+      }
 
         xn += BK;
         loader_w.next();
@@ -2095,30 +2092,28 @@ template <
 
         STEEL_PRAGMA_NO_UNROLL
         for (int kk1 = 0; kk1 < BK; kk1 += SK) {
-          if (sg_active) {
-            NAXTile<T, TM, TK> Atile;
-            NAXTile<T, BR, BC> Btile;
+          NAXTile<T, TM, TK> Atile;
+          NAXTile<T, BR, BC> Btile;
 
-            volatile int compiler_barrier;
+          volatile int compiler_barrier;
 
-            const short psk = min(int(SK), max(0, (k_remain - kk1)));
-            Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
+          const short psk = min(int(SK), max(0, (k_remain - kk1)));
+          Atile.load_safe(xn + kk1, K, short2(psk, sgp_sm));
 
-            if constexpr (transpose) {
-              Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
-            } else {
-              Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
-            }
-
-            tile_matmad_nax(
-                Dtile,
-                Atile,
-                metal::bool_constant<false>{},
-                Btile,
-                metal::bool_constant<transpose>{});
-
-            (void)compiler_barrier;
+          if constexpr (transpose) {
+            Btile.template load<T, BK_padded, 1>(Ws + tn * BK_padded + kk1);
+          } else {
+            Btile.template load<T, BN_padded, 1>(Ws + tn + kk1 * BN_padded);
           }
+
+          tile_matmad_nax(
+              Dtile,
+              Atile,
+              metal::bool_constant<false>{},
+              Btile,
+              metal::bool_constant<transpose>{});
+
+          (void)compiler_barrier;
         }
       }
 

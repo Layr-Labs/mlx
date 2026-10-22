@@ -2071,10 +2071,11 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   int M = x_shape[x_batch_ndims];
-  adjust_matrix_offsets(
+  adjust_matrix_offsets<has_global_scale>(
       x,
       w,
       scales,
+      global_scale,
       lhs_indices,
       rhs_indices,
       y,

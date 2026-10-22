@@ -1039,7 +1039,8 @@ METAL_FUNC void adjust_matrix_offsets(
 // AffineQuantizedNAXBlockLoader's thread mapping split into two steps: fetch()
 // reads the packed words and the group's scale and bias for one BK step into
 // registers, store() dequantizes them into threadgroup memory. Fetching step
-// k + 1 before the MMAs of step k hides the device reads behind the matrix work.
+// k + 1 before the MMAs of step k hides the device reads behind the matrix
+// work.
 template <
     typename T,
     short BROWS,
@@ -2079,7 +2080,6 @@ template <
 
           (void)compiler_barrier;
         }
-      }
 
         xn += BK;
         loader_w.next();

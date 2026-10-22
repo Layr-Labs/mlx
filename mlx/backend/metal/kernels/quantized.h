@@ -1340,7 +1340,6 @@ template <
     const int group_size,
     const int bits,
     const bool aligned_N,
-    typename U = T,
     const int BM = 32,
     const int BK = 32,
     const int BN = 32>
@@ -1469,6 +1468,7 @@ template <
     const int group_size,
     const int bits,
     const bool aligned_N,
+    typename U = T,
     const int BM = 32,
     const int BK = 32,
     const int BN = 32>

@@ -54,9 +54,7 @@ def:
         route, because the sorted `gather_qmm_rhs` kernels read per-expert offsets and give a
         correct result only for sorted indices (PR #27). Diagnostics counters
         (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
-        mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
-        quantized-vector bias-sum operand is promoted to the accumulator type before summation
-        (PR #15).
+        mlx-swift can arm, snapshot and reset them.
       globs:
         - "mlx/backend/common/gemma4_expert_qmm.h"
         - "mlx/backend/metal/device.h"

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import mlx.core as mx
 import mlx_tests
+import numpy as np
 
 
 def mlx_ref_attn(q, k, v, scale=1.0, mask=None, sinks=None):

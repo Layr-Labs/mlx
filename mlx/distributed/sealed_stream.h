@@ -106,7 +106,12 @@ inline size_t seal_lanes() {
   return lanes;
 }
 
-// One streamed sealed sum, run on the calling thread (a CPU-stream task).
+// One streamed sealed exchange, run on the calling thread (a CPU-stream
+// task): `send` is sealed and sent piece by piece; each peer piece is opened
+// into `out` and, with `add`, `addend` (this rank's own values for the same
+// elements) is added to it in rank order. The all-sum sends and adds its
+// whole partial; the reduce-scatter sends the peer's half and adds its own;
+// the all-gather sends its own half and only opens.
 class StreamedSum {
  public:
   StreamedSum(
@@ -114,7 +119,8 @@ class StreamedSum {
       const PieceLayout& layout,
       uint64_t counter,
       int rank,
-      const char* mine,
+      const char* send,
+      const char* addend,
       char* out,
       char* sealed,
       char* received,
@@ -123,7 +129,8 @@ class StreamedSum {
         layout_(layout),
         counter_(counter),
         rank_(rank),
-        mine_(mine),
+        mine_(send),
+        addend_(addend),
         out_(out),
         sealed_(sealed),
         received_(received),
@@ -273,7 +280,9 @@ class StreamedSum {
       failed_.store(true);
       return;
     }
-    add_(rank_, mine_ + layout_.plain(k), dst, len);
+    if (add_ != nullptr) {
+      add_(rank_, addend_ + layout_.plain(k), dst, len);
+    }
   }
 
   const SealCodec codec_;
@@ -281,6 +290,7 @@ class StreamedSum {
   const uint64_t counter_;
   const int rank_;
   const char* const mine_;
+  const char* const addend_;
   char* const out_;
   char* const sealed_;
   char* const received_;

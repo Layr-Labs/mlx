@@ -95,4 +95,20 @@ MLX_API array all_sum_sealed(
     std::optional<Group> group = std::nullopt,
     StreamOrDevice s = {});
 
+// Two ranks, `x` shaped [1, T, ...]. Rank r receives rows
+// [r * T / 2, (r + 1) * T / 2) of the sum, added in rank order exactly as
+// all_sum_sealed adds them (T even): each rank sends only the peer's half.
+MLX_API array reduce_scatter_sealed(
+    const array& x,
+    std::optional<Group> group = std::nullopt,
+    StreamOrDevice s = {});
+
+// Two ranks, `x` shaped [1, T, ...] (this rank's rows): [1, 2T, ...], rank
+// 0's rows then rank 1's, each rank sending only its own. A copy: every
+// element keeps its bits.
+MLX_API array all_gather_sealed(
+    const array& x,
+    std::optional<Group> group = std::nullopt,
+    StreamOrDevice s = {});
+
 } // namespace mlx::core::distributed

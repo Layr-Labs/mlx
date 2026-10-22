@@ -92,7 +92,46 @@ class SealedAllSum : public DistPrimitive {
   void eval_streamed(const array& in, array& out);
 
   SealCodec codec_;
-  static inline std::atomic<uint64_t> counter_{0};
+};
+
+/// The sealed reduce-scatter and all-gather (`reduce_scatter_sealed`,
+/// `all_gather_sealed`, sealed.h): the all-sum's frames and counters, half
+/// the bytes each. Every sealed collective draws its counter from one
+/// sequence (`detail::next_sealed_counter`), in evaluation order.
+class SealedReduceScatter : public DistPrimitive {
+ public:
+  SealedReduceScatter(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedReduceScatter";
+  }
+
+ private:
+  SealCodec codec_;
+};
+
+class SealedAllGather : public DistPrimitive {
+ public:
+  SealedAllGather(Stream stream, Group group, SealCodec codec)
+      : DistPrimitive(stream, group), codec_(codec) {}
+
+  void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+  void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)
+      override;
+
+  const char* name() const override {
+    return "SealedAllGather";
+  }
+
+ private:
+  SealCodec codec_;
 };
 
 class AllGather : public DistPrimitive {

@@ -5,6 +5,7 @@
 #include <dispatch/dispatch.h>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 
 #include "mlx/allocator.h"
 #include "mlx/backend/cpu/copy.h"
@@ -19,6 +20,12 @@ namespace mlx::core::distributed {
 namespace {
 std::mutex codec_mutex;
 std::optional<SealCodec> installed_codec;
+// One counter for every sealed collective, advanced per evaluation; both
+// ranks evaluate the same graph in the same order.
+std::atomic<uint64_t> sealed_counter{0};
+uint64_t next_sealed_counter() {
+  return sealed_counter++;
+}
 } // namespace
 
 void set_seal_codec(SealCodec codec) {
@@ -67,6 +74,67 @@ array all_sum_sealed(
       x.shape(),
       x.dtype(),
       std::make_shared<SealedAllSum>(stream, group, *codec),
+      {x});
+}
+
+namespace {
+// [1, T, ...] split on its second axis between two ranks.
+void require_rows(const array& x, Group& group, const char* name, bool even) {
+  if (group.size() != 2) {
+    throw std::invalid_argument(std::string(name) + " needs exactly two ranks");
+  }
+  if (x.dtype() != float32 && x.dtype() != bfloat16 && x.dtype() != float16) {
+    throw std::invalid_argument(
+        std::string(name) + " moves float32, bfloat16 or float16 only");
+  }
+  if (x.ndim() < 2 || x.shape(0) != 1 || x.shape(1) < 1 ||
+      (even && x.shape(1) % 2 != 0)) {
+    throw std::invalid_argument(
+        std::string(name) + " needs [1, T, ...]" + (even ? " with T even" : ""));
+  }
+}
+SealCodec require_codec(const char* name) {
+  auto codec = seal_codec();
+  if (!codec.has_value()) {
+    throw std::runtime_error(
+        std::string(name) +
+        " no seal codec is installed: a partial never crosses the link in the clear");
+  }
+  return *codec;
+}
+} // namespace
+
+array reduce_scatter_sealed(
+    const array& x,
+    std::optional<Group> group_,
+    StreamOrDevice s) {
+  auto group = group_.has_value() ? group_.value() : distributed::init();
+  require_rows(x, group, "[reduce_scatter_sealed]", true);
+  auto codec = require_codec("[reduce_scatter_sealed]");
+  auto shape = x.shape();
+  shape[1] /= 2;
+  auto stream = detail::communication_stream(group, s);
+  return array(
+      std::move(shape),
+      x.dtype(),
+      std::make_shared<SealedReduceScatter>(stream, group, codec),
+      {x});
+}
+
+array all_gather_sealed(
+    const array& x,
+    std::optional<Group> group_,
+    StreamOrDevice s) {
+  auto group = group_.has_value() ? group_.value() : distributed::init();
+  require_rows(x, group, "[all_gather_sealed]", false);
+  auto codec = require_codec("[all_gather_sealed]");
+  auto shape = x.shape();
+  shape[1] *= 2;
+  auto stream = detail::communication_stream(group, s);
+  return array(
+      std::move(shape),
+      x.dtype(),
+      std::make_shared<SealedAllGather>(stream, group, codec),
       {x});
 }
 
@@ -131,7 +199,7 @@ void SealedAllSum::eval_cpu(
   peer.set_data(allocator::malloc(n));
 
   int rank = group().rank();
-  uint64_t counter = counter_++;
+  uint64_t counter = next_sealed_counter();
   auto codec = codec_;
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
@@ -231,7 +299,7 @@ void SealedAllSum::eval_streamed(const array& in, array& out) {
   received.set_data(allocator::malloc(layout.frame()));
 
   int rank = group().rank();
-  uint64_t counter = counter_++;
+  uint64_t counter = next_sealed_counter();
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
   encoder.set_output_array(out);
@@ -246,7 +314,7 @@ void SealedAllSum::eval_streamed(const array& in, array& out) {
                     mine = sealed.data<char>(),
                     theirs = received.data<char>()]() {
     detail::StreamedSum sum(
-        codec, layout, counter, rank, src, dst, mine, theirs, add);
+        codec, layout, counter, rank, src, src, dst, mine, theirs, add);
     bool ok = sum.run([&group](
                           const char* send,
                           char* recv,
@@ -268,6 +336,221 @@ void SealedAllSum::eval_streamed(const array& in, array& out) {
 void SealedAllSum::eval_gpu(const std::vector<array>&, std::vector<array>&) {
   throw std::runtime_error(
       "[SealedAllSum::eval_gpu] has no GPU implementation.");
+}
+
+namespace {
+
+detail::AddPieceFn add_piece_for(Dtype dtype, const char* name) {
+  switch (dtype) {
+    case float32:
+      return detail::add_piece<float>;
+    case bfloat16:
+      return detail::add_piece<bfloat16_t>;
+    case float16:
+      return detail::add_piece<float16_t>;
+    default:
+      throw std::runtime_error(std::string(name) + " unsupported dtype");
+  }
+}
+
+// The streamed half-size exchange both new collectives run: `send` (n bytes)
+// sealed and sent, the peer's n bytes opened into `out` and, with `add`,
+// `addend` added in rank order.
+void run_streamed(
+    const SealCodec& codec,
+    Group& group,
+    Stream stream,
+    const array& in,
+    array& out,
+    size_t n,
+    const char* send,
+    const char* addend,
+    char* dst,
+    detail::AddPieceFn add,
+    const char* name) {
+  detail::PieceLayout layout(n, codec.piece_bytes);
+  if (layout.count > 0xFFFF) {
+    throw std::invalid_argument(
+        std::string(name) + " a frame needs more than 65,535 sealed pieces");
+  }
+  array sealed({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  sealed.set_data(allocator::malloc(layout.frame()));
+  array received({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  received.set_data(allocator::malloc(layout.frame()));
+  int rank = group.rank();
+  uint64_t counter = next_sealed_counter();
+  auto& encoder = cpu::get_command_encoder(stream);
+  encoder.set_input_array(in);
+  encoder.set_output_array(out);
+  std::string label = name;
+  encoder.dispatch([codec,
+                    layout,
+                    counter,
+                    rank,
+                    add,
+                    label,
+                    raw = group.raw_group(),
+                    send,
+                    addend,
+                    dst,
+                    mine = sealed.data<char>(),
+                    theirs = received.data<char>()]() {
+    detail::StreamedSum exchange(
+        codec, layout, counter, rank, send, addend, dst, mine, theirs, add);
+    bool ok = exchange.run([&raw](
+                               const char* sent,
+                               char* recv,
+                               size_t bytes,
+                               const detail::ReadyFn& ready,
+                               const detail::ArrivedFn& arrived) {
+      raw->exchange(sent, recv, bytes, ready, arrived);
+    });
+    if (!ok) {
+      throw std::runtime_error(
+          label +
+          " a piece did not seal or a peer piece did not authenticate: refused");
+    }
+  });
+  encoder.add_temporary(sealed);
+  encoder.add_temporary(received);
+}
+
+// The same without an exchange: seal `send`, gather both frames, open the
+// peer's into `dst` and, with `add`, add `addend` in rank order.
+void run_gathered(
+    const SealCodec& codec,
+    Group& group,
+    Stream stream,
+    const array& in,
+    array& out,
+    size_t n,
+    const char* send,
+    const char* addend,
+    char* dst,
+    detail::AddPieceFn add,
+    const char* name) {
+  size_t frame = n + codec.overhead;
+  array sealed({static_cast<int>(frame)}, uint8, nullptr, {});
+  sealed.set_data(allocator::malloc(frame));
+  array gathered({static_cast<int>(2 * frame)}, uint8, nullptr, {});
+  gathered.set_data(allocator::malloc(2 * frame));
+  int rank = group.rank();
+  uint64_t counter = next_sealed_counter();
+  std::string label = name;
+  auto& encoder = cpu::get_command_encoder(stream);
+  encoder.set_input_array(in);
+  encoder.set_output_array(sealed);
+  encoder.dispatch(
+      [codec, send, dst = sealed.data<char>(), n, frame, counter, label]() {
+        if (codec.seal(codec.ctx, send, n, dst, counter) != 0) {
+          std::memset(dst, 0, frame);
+          throw std::runtime_error(label + " the codec refused to seal");
+        }
+      });
+  distributed::detail::all_gather(group, sealed, gathered, stream);
+  encoder.set_input_array(gathered);
+  encoder.set_output_array(out);
+  encoder.dispatch([codec,
+                    frames = gathered.data<char>(),
+                    addend,
+                    dst,
+                    n,
+                    frame,
+                    counter,
+                    rank,
+                    add,
+                    label]() {
+    const char* peer_frame = frames + (rank == 0 ? frame : 0);
+    if (codec.open(codec.ctx, peer_frame, n, dst, counter, 1 - rank) != 0) {
+      throw std::runtime_error(
+          label + " a peer frame did not authenticate: refused");
+    }
+    if (add != nullptr) {
+      add(rank, addend, dst, n);
+    }
+  });
+  encoder.add_temporary(sealed);
+  encoder.add_temporary(gathered);
+}
+
+} // namespace
+
+// Rank r keeps rows [r * T / 2, (r + 1) * T / 2): it sends the peer's half
+// of its partial and adds the peer's partial of its own half to its own, in
+// rank order (rank 0 + rank 1), as the all-sum does for every element.
+void SealedReduceScatter::eval_cpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto in = inputs[0].flags().row_contiguous
+      ? inputs[0]
+      : contiguous_copy_cpu(inputs[0], stream());
+  auto& out = outputs[0];
+  out.set_data(allocator::malloc(out.nbytes()));
+  size_t half = out.nbytes();
+  int rank = group().rank();
+  const char* src = in.data<char>();
+  const char* send = src + (rank == 0 ? half : 0);
+  const char* mine = src + (rank == 0 ? 0 : half);
+  auto add = add_piece_for(in.dtype(), "[reduce_scatter_sealed]");
+  auto group = this->group();
+  if (codec_.streamed() && group.raw_group()->supports_exchange()) {
+    run_streamed(
+        codec_, group, stream(), in, out, half, send, mine, out.data<char>(),
+        add, "[reduce_scatter_sealed]");
+  } else {
+    run_gathered(
+        codec_, group, stream(), in, out, half, send, mine, out.data<char>(),
+        add, "[reduce_scatter_sealed]");
+  }
+  if (!inputs[0].flags().row_contiguous) {
+    cpu::get_command_encoder(stream()).add_temporary(in);
+  }
+}
+
+void SealedReduceScatter::eval_gpu(
+    const std::vector<array>&,
+    std::vector<array>&) {
+  throw std::runtime_error(
+      "[SealedReduceScatter::eval_gpu] has no GPU implementation.");
+}
+
+// Rank 0's rows then rank 1's: this rank's rows are copied in place and the
+// peer's arrive sealed.
+void SealedAllGather::eval_cpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  auto in = inputs[0].flags().row_contiguous
+      ? inputs[0]
+      : contiguous_copy_cpu(inputs[0], stream());
+  auto& out = outputs[0];
+  out.set_data(allocator::malloc(out.nbytes()));
+  size_t n = in.nbytes();
+  int rank = group().rank();
+  char* own = out.data<char>() + (rank == 0 ? 0 : n);
+  char* theirs = out.data<char>() + (rank == 0 ? n : 0);
+  auto& encoder = cpu::get_command_encoder(stream());
+  encoder.set_input_array(in);
+  encoder.set_output_array(out);
+  encoder.dispatch(
+      [src = in.data<char>(), own, n]() { std::memcpy(own, src, n); });
+  auto group = this->group();
+  if (codec_.streamed() && group.raw_group()->supports_exchange()) {
+    run_streamed(
+        codec_, group, stream(), in, out, n, in.data<char>(), nullptr, theirs,
+        nullptr, "[all_gather_sealed]");
+  } else {
+    run_gathered(
+        codec_, group, stream(), in, out, n, in.data<char>(), nullptr, theirs,
+        nullptr, "[all_gather_sealed]");
+  }
+  if (!inputs[0].flags().row_contiguous) {
+    encoder.add_temporary(in);
+  }
+}
+
+void SealedAllGather::eval_gpu(const std::vector<array>&, std::vector<array>&) {
+  throw std::runtime_error(
+      "[SealedAllGather::eval_gpu] has no GPU implementation.");
 }
 
 } // namespace mlx::core::distributed

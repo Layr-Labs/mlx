@@ -710,6 +710,21 @@ class TestQuantized(mlx_tests.MLXTestCase):
                         tol = 1e-2 if dtype == mx.bfloat16 else 1e-3
                         self.assertTrue(mx.allclose(y_q, y_hat, rtol=tol, atol=tol))
 
+    def test_qmv_bias_sum_widens_inputs(self):
+        if mx.default_device() == mx.cpu:
+            self.skipTest("Checks the Metal QMV tiers")
+        # In bf16, 256 + 1 rounds to 256, so a bias sum of the 4-tuple
+        # (256, 1, 1, 1) taken in T loses 3 per tuple. Every tier must add in fp32.
+        for M, N, K, bits in [(1, 98336, 1024, 2), (8, 1024, 2816, 4)]:
+            with self.subTest(M=M, N=N, K=K, bits=bits):
+                x = mx.tile(mx.array([256, 1, 1, 1], mx.bfloat16), (M, K // 4))
+                w = mx.zeros((N, K * bits // 32), mx.uint32)
+                scales = mx.ones((N, K // 64), mx.bfloat16)
+                biases = mx.ones((N, K // 64), mx.bfloat16)
+                y = mx.quantized_matmul(x, w, scales, biases, True, 64, bits)
+                expected = mx.full((M, N), 259 * K // 4, mx.float32)
+                self.assertTrue(mx.array_equal(y, expected.astype(mx.bfloat16)))
+
     def test_qmv_wide(self):
         # M in [2, vector_limit) routes to qmv_wide -- except K in {64, 128}
         # with power-of-2 bits, which stays on qmv_quad. Check both paths

@@ -1,5 +1,7 @@
 import math
 import os
+import subprocess
+import sys
 import unittest
 from itertools import product
 from unittest.mock import patch
@@ -356,6 +358,56 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                 ref = mlx_primitives_sdpa(q, kr, vr, scale)
                 out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
                 self.assertTrue(mx.allclose(ref, out, atol=1e-4, rtol=1e-4))
+
+    def test_sdpa_vector_head_dim_512(self):
+        # Head dim 512 takes the 2-pass vector kernel at every key length.
+        D = 512
+        scale = D**-0.5
+        mx.random.seed(0)
+        for (Nq, Nkv), L, dtype in product(
+            [(16, 2), (4, 4)], [7, 1000, 8192], [mx.float32, mx.float16]
+        ):
+            with self.subTest(Nq=Nq, Nkv=Nkv, L=L, dtype=dtype):
+                tol = 1e-4 if dtype == mx.float32 else 2e-3
+                q = 5e-1 * mx.random.normal(shape=(1, Nq, 1, D), dtype=dtype)
+                k = 5e-1 * mx.random.normal(shape=(1, Nkv, L, D), dtype=dtype)
+                v = 5e-1 * mx.random.normal(shape=(1, Nkv, L, D), dtype=dtype)
+                for m in [None, mx.random.uniform(shape=(Nq, 1, L)) > 0.2]:
+                    ref = mlx_ref_attn(q, k, v, scale, mask=m)
+                    out = mx.fast.scaled_dot_product_attention(
+                        q, k, v, scale=scale, mask=m
+                    )
+                    self.assertTrue(mx.allclose(ref, out, atol=tol, rtol=tol))
+
+    @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
+    def test_sdpa_vector_head_dim_512_gqa_dedup(self):
+        # The process reads the dedup switch once, so the case runs in a
+        # child process with the switch on.
+        script = """
+import mlx.core as mx
+from test_fast_sdpa import mlx_ref_attn
+
+D = 512
+scale = D**-0.5
+mx.random.seed(0)
+for L in [8192, 8201]:
+    for dtype, tol in [(mx.float32, 1e-4), (mx.float16, 2e-3)]:
+        q = 5e-1 * mx.random.normal(shape=(1, 16, 1, D), dtype=dtype)
+        k = 5e-1 * mx.random.normal(shape=(1, 2, L, D), dtype=dtype)
+        v = 5e-1 * mx.random.normal(shape=(1, 2, L, D), dtype=dtype)
+        ref = mlx_ref_attn(q, k, v, scale)
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        assert mx.allclose(ref, out, atol=tol, rtol=tol), (L, dtype)
+"""
+        env = dict(os.environ, DARKBLOOM_GEMMA4_D512_DECODE_2PASS_DEDUP="1")
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(not mx.is_available(mx.gpu), "GPU kernel path only")
     def test_sdpa_two_pass_partial_cancellation(self):

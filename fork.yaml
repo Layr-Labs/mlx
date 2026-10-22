@@ -247,6 +247,17 @@ def:
       globs:
         - "mlx/backend/metal/kernels/quantized_nax.h"
         - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+    - title: "64-bit wire offsets in the JACCL ring"
+      description: |
+        The JACCL ring computes each wire's byte offset as `lr * n_wires * size`. Upstream
+        multiplies `lr` and `n_wires` as `int` before the product widens to 64 bits, and
+        compares `size_ * 2 * n_conns_` as `int`. The fork widens the first operand to
+        `int64_t`, so each product is computed in 64 bits. The values are small, so the result
+        does not change. The change closes the CodeQL alerts
+        `cpp/integer-multiplication-cast-to-long` in these two files.
+      globs:
+        - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
+        - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

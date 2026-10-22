@@ -248,8 +248,16 @@ template <typename T, int N>
 Simd<T, N> floor_divide(Simd<T, N> a, Simd<T, N> b) {
   if constexpr (std::is_integral_v<T>) {
     // Swap zero divisors for 1 before dividing so the quotient is defined.
+    // For signed types also swap -1 where a is min: min / -1 overflows, and
+    // min / 1 gives min, the wrapped result.
     auto zero = b == Simd<T, N>(0);
-    auto q = a / select(zero, Simd<T, N>(1), b);
+    auto use_one = zero;
+    if constexpr (is_signed_v<T>) {
+      use_one = use_one ||
+          (a == Simd<T, N>(std::numeric_limits<T>::min()) &&
+           b == Simd<T, N>(-1));
+    }
+    auto q = a / select(use_one, Simd<T, N>(1), b);
     q = select(zero, Simd<T, N>(0), q);
     if constexpr (is_signed_v<T>) {
       // a - b * q is the remainder and needs no division by zero.

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <complex>
 #include <functional>
+#include <limits>
 
 #ifdef _MSC_VER
 #include <intrin.h> // For _BitScanReverse
@@ -226,6 +227,12 @@ Simd<T, 1> floor_divide(Simd<T, 1> a_, Simd<T, 1> b_) {
     // Integer division by zero gives 0. See divide above.
     if (b == 0) {
       return T(0);
+    }
+    if constexpr (is_signed_v<T>) {
+      // min / -1 overflows and traps on x86. The result wraps to min.
+      if (b == T(-1)) {
+        return a == std::numeric_limits<T>::min() ? a : T(-a);
+      }
     }
     T q = a / b;
     if constexpr (is_signed_v<T>) {

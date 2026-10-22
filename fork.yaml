@@ -180,8 +180,12 @@ def:
         upstream on 2026-10-22, so integer `Divide` truncates again, as in upstream. The tests
         check negative operands of every signed integer type, the SIMD and scalar paths,
         unsigned and floating-point division, and compiled graphs. On the CPU they also check
-        that `x // 0` gives 0 and `min // -1` gives the minimum value.
+        that `x // 0` gives 0 and `min // -1` gives the minimum value. Upstream's CPU
+        `floor_divide` divided `min` by -1, which overflows and traps on x86 (SIGFPE). The
+        fork divides by 1 there, as PR #32 did, so the result wraps to `min`.
       globs:
+        - "mlx/backend/cpu/simd/base_simd.h"
+        - "mlx/backend/cpu/simd/accelerate_simd.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
     - title: "Validated custom Metal threadgroups and bounded compiler retry"

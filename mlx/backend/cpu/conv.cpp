@@ -5,6 +5,7 @@
 
 #include "mlx/backend/cpu/copy.h"
 #include "mlx/backend/cpu/encoder.h"
+#include "mlx/backend/cpu/gemm.h"
 #include "mlx/backend/cpu/lapack.h"
 #include "mlx/primitives.h"
 #include "mlx/utils.h"
@@ -916,6 +917,8 @@ void explicit_gemm_conv_1D_cpu(
                     C_per_group]() {
     for (int g = 0; g < groups; ++g) {
       // Perform gemm
+      clear_gemm_output(
+          gemm_out_ptr + g * O_per_group, strided_reshape, O_per_group, O);
       cblas_sgemm(
           CblasRowMajor,
           CblasNoTrans, // no trans A
@@ -1086,6 +1089,7 @@ void explicit_gemm_conv_ND_cpu(
                     strided_reshape = std::move(strided_reshape),
                     O]() {
     // Perform gemm
+    clear_gemm_output(gemm_out_ptr, strided_reshape[0], O, O);
     cblas_sgemm(
         CblasRowMajor,
         CblasNoTrans, // no trans A

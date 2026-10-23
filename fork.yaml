@@ -271,18 +271,25 @@ def:
         GPU" on a stream that is not a GPU stream, as `gather_qmm` already does.
       globs:
         - "mlx/ops.cpp"
-    - title: "CPU BLAS matmul clears C when beta is 0"
+    - title: "CPU BLAS gemm clears C when beta is 0"
       description: |
-        The CPU float32, float64 and complex64 matmuls call Accelerate (or another CBLAS)
-        with beta = 0. Accelerate can still read C (seen with M = 1), and an output buffer
-        from the allocator cache can hold old data, for example packed fp4 weights that
-        read as NaN. The result is NaN * 0 = NaN in the output. Upstream's
-        `test_fp_gather_qmm_non_multiple_of_32` found it in the fork's CPU test pass: its
-        float32 reference `x @ w_sel` reused the 266240-byte buffer of the previous
-        subtest's packed weights. The fork now fills C with zeros before the BLAS call when
-        beta is 0. MLX's own SIMD gemm already skips C when beta is 0.
+        The CPU backend calls BLAS gemm with beta = 0 in five places: the float32, float64
+        and complex64 `matmul` wrappers in `gemms/cblas.cpp` (used by `Matmul`, `AddMM`
+        and `SegmentedMM`), `BlockMaskedMM` and `GatherMM` in `masked_mm.cpp`, and the two
+        explicit-gemm convolutions in `conv.cpp`. BLAS must not read C when beta is 0, but
+        Accelerate can (seen with M = 1). An output buffer from the allocator cache can
+        hold old data, for example packed fp4 weights that read as NaN, and NaN * 0 is NaN.
+        Upstream's `test_fp_gather_qmm_non_multiple_of_32` found it in the fork's CPU test
+        pass: its float32 reference `x @ w_sel` reused the 266240-byte buffer of the
+        previous subtest's packed weights. One helper, `clear_gemm_output` in `gemm.h`,
+        fills the exact C region of each call (rows by columns, with its `ldc`) with zeros
+        before the call. MLX's own SIMD gemm already skips C when beta is 0. This is a
+        latent upstream bug.
       globs:
+        - "mlx/backend/cpu/gemm.h"
         - "mlx/backend/cpu/gemms/cblas.cpp"
+        - "mlx/backend/cpu/masked_mm.cpp"
+        - "mlx/backend/cpu/conv.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

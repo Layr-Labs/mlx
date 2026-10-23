@@ -1,7 +1,5 @@
 // Copyright © 2025 Apple Inc.
 
-#include <algorithm>
-
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/cpu/gemm.h"
 #include "mlx/backend/cpu/lapack.h"
@@ -30,13 +28,10 @@ void matmul<float>(
   size_t N = b_shape[ndim - 1];
   size_t K = a_shape[ndim - 1];
 
-  // Accelerate can read C when beta is 0 (seen with M = 1), and a reused
-  // buffer can hold NaN, which gives NaN * 0. Clear C first.
-  if (beta == 0.0f) {
-    std::fill(out, out + M * N * batch_size, float(0));
-  }
-
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_sgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA
@@ -77,13 +72,10 @@ void matmul<double>(
   size_t N = b_shape[ndim - 1];
   size_t K = a_shape[ndim - 1];
 
-  // Accelerate can read C when beta is 0 (seen with M = 1), and a reused
-  // buffer can hold NaN, which gives NaN * 0. Clear C first.
-  if (beta == 0.0f) {
-    std::fill(out, out + M * N * batch_size, double(0));
-  }
-
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_dgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA
@@ -126,13 +118,10 @@ void matmul<complex64_t>(
   auto calpha = static_cast<complex64_t>(alpha);
   auto cbeta = static_cast<complex64_t>(beta);
 
-  // Accelerate can read C when beta is 0 (seen with M = 1), and a reused
-  // buffer can hold NaN, which gives NaN * 0. Clear C first.
-  if (beta == 0.0f) {
-    std::fill(out, out + M * N * batch_size, complex64_t(0));
-  }
-
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_cgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA

@@ -325,6 +325,7 @@ void BlockMaskedMM::eval_cpu(const std::vector<array>& inputs, array& out) {
       }
 
       // Do matmul
+      clear_gemm_output(ci, M, N, ldc);
       cblas_sgemm(
           CblasRowMajor,
           a_transposed ? CblasTrans : CblasNoTrans, // transA
@@ -469,6 +470,7 @@ void GatherMM::eval_cpu(const std::vector<array>& inputs, array& out) {
       uint32_t indx_B = rhs_indices_ptr[elem_to_loc(
           i, rhs_indices_shape, rhs_indices_strides)];
 
+      clear_gemm_output(out_ptr + matrix_stride_out * i, M, N, ldc);
       cblas_sgemm(
           CblasRowMajor,
           a_transposed ? CblasTrans : CblasNoTrans, // transA

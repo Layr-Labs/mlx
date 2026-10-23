@@ -1,6 +1,7 @@
 {
   "gpu": [
     [
+      "test_quantized",
       "test_ops",
       "test_reduce",
       "test_nn",
@@ -32,71 +33,66 @@
       "test_tree"
     ],
     [
-      "test_quantized",
-      "test_fft",
-      "test_compile",
-      "test_blas"
-    ],
-    [
-      "test_fast_gated_delta",
       "test_fast_sdpa",
-      "test_array"
+      "test_fast_gated_delta",
+      "test_compile",
+      "test_fft",
+      "test_array",
+      "test_blas"
     ]
   ],
   "cpu": [
     [
-      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_sequential",
+      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_simdgroup",
       "test_quantized:rest",
-      "test_export_import",
+      "test_fast_sdpa.TestFastSDPA.test_sdpa_vector_gqa_long",
       "test_fft",
+      "test_fast_gated_delta:rest",
+      "test_ops",
+      "test_array",
+      "test_conv",
       "test_eval",
-      "test_upsample",
-      "test_load",
-      "test_threads",
+      "test_autograd",
+      "test_metal_threadgroup_bounds",
+      "test_zero_copy",
+      "test_bf16",
+      "test_einsum",
       "test_double",
-      "test_device",
-      "test_einsum"
+      "test_memory"
+    ],
+    [
+      "test_reduce",
+      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_sequential",
+      "test_compile",
+      "test_quantized.TestQuantized.test_qmv_wide",
+      "test_quantized.TestQuantized.test_gather_qmm_sorted",
+      "test_nn",
+      "test_quantized.TestQuantized.test_qmv",
+      "test_fast",
+      "test_upsample",
+      "test_threads",
+      "test_random",
+      "test_vmap",
+      "test_conv_transpose",
+      "test_tree",
+      "test_graph"
     ],
     [
       "test_fast_gated_delta.TestGatedDelta.test_gated_delta_nax",
-      "test_quantized.TestQuantized.test_qmv_wide",
-      "test_quantized.TestQuantized.test_gather_qmm_sorted",
-      "test_quantized.TestQuantized.test_qmv",
-      "test_quantized.TestQuantized.test_qmm_large_dims",
-      "test_quantized.TestQuantized.test_gather_qmm_sorted_nax_large_m",
-      "test_compile",
-      "test_optimizers",
-      "test_conv",
-      "test_autograd",
-      "test_vmap",
-      "test_random",
-      "test_linalg",
-      "test_bf16",
-      "test_conv_transpose",
-      "test_constants"
-    ],
-    [
-      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_simdgroup",
-      "test_reduce",
       "test_fast_sdpa.TestFastSDPA.test_sdpa",
-      "test_zero_copy",
-      "test_metal_threadgroup_bounds",
-      "test_extension",
-      "test_graph",
-      "test_init",
-      "test_losses",
-      "test_memory",
-      "test_tree"
-    ],
-    [
-      "test_fast_sdpa.TestFastSDPA.test_sdpa_vector_gqa_long",
       "test_fast_sdpa:rest",
-      "test_fast_gated_delta:rest",
+      "test_export_import",
+      "test_quantized.TestQuantized.test_gather_qmm_sorted_nax_large_m",
       "test_blas",
-      "test_ops",
-      "test_nn",
-      "test_array",
-      "test_fast"
+      "test_quantized.TestQuantized.test_qmm_large_dims",
+      "test_optimizers",
+      "test_load",
+      "test_extension",
+      "test_linalg",
+      "test_init",
+      "test_constants",
+      "test_losses",
+      "test_device"
     ]
   ]
 }

@@ -17,6 +17,10 @@ name: Fork Tests
 # .github/scripts/fork-tests/python-shards.json, and
 # .github/scripts/fork-tests/python_shards.py fails a job if a test file is
 # in no shard or in two shards.
+#
+# The hosted macOS runners are a shared pool. A run uses 8 macOS jobs, and
+# at most 6 of them run at the same time. A new push to a pull request
+# cancels the older run and frees its runners.
 
 on:
   pull_request:
@@ -172,7 +176,7 @@ jobs:
       matrix:
         # One job for each "gpu" shard in python-shards.json. The script
         # fails if the two counts are not equal.
-        shard: [0, 1, 2]
+        shard: [0, 1]
     env:
       METAL_DEBUG_ERROR_MODE: 0
       METAL_DEVICE_WRAPPER_TYPE: 1
@@ -282,7 +286,7 @@ jobs:
       fail-fast: false
       matrix:
         # One job for each "cpu" shard in python-shards.json.
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2]
     env:
       DEVICE: cpu
       # Tests that take more than 5 minutes on the CPU. The GPU pass

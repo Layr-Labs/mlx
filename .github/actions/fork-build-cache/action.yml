@@ -8,14 +8,17 @@ description: 'Set up a fork-tests build job with ccache and the Metal kernel cac
 # when the build had cache misses.
 #
 # Cache keys:
-#   ccache  ccache-fork-tests-KIND-TOOLCHAIN-FLAGS-macOS-ARM64-metal-SHA-RUN-ATTEMPT
-#   Metal   metal-TOOLCHAIN-KERNELS-KIND-RUN-ATTEMPT
-# TOOLCHAIN is a hash of the Xcode, clang, Metal and SDK versions. FLAGS is a
-# hash of CFLAGS, CXXFLAGS, the deployment target and KIND. KIND sets the
-# CMake arguments of the build step.
-# KERNELS is the hash of mlx/backend/metal/kernels. A restore takes the
-# newest cache with the same prefix. ccache and the Metal cache script check
-# the content of each entry, so an older cache gives only fewer hits.
+#   ccache  ccache-fork-tests-KIND-FLAGS-clangCLANG-macOS-ARM64-metal-SHA-RUN-ATTEMPT
+#   Metal   metal-METAL-KERNELS-KIND-RUN-ATTEMPT
+# CLANG is the clang major.minor version. METAL is the metal compiler
+# version. FLAGS is a hash of CFLAGS, CXXFLAGS, the deployment target and
+# KIND. KIND sets the CMake arguments of the build. KERNELS is a hash of
+# mlx/backend/metal/kernels. A restore takes the newest cache with the same
+# prefix. The ccache restore falls back to a cache of another clang version;
+# ccache checks the compiler content (compiler_check=content), so the
+# objects of another compiler only miss. The Metal restore falls back only to
+# a cache of the same metal compiler version, and the cache script puts the
+# metal compiler version and the SDK build in each entry key.
 
 inputs:
   phase:
@@ -55,23 +58,31 @@ runs:
         KIND: ${{ inputs.kind }}
         KERNELS: ${{ hashFiles('mlx/backend/metal/kernels/**') }}
       run: |
-        toolchain=$({
-          xcodebuild -version
-          xcrun clang --version
-          xcrun -sdk macosx metal --version
-          xcrun -sdk macosx --show-sdk-build-version
-        } 2>&1 | shasum -a 256 | cut -c 1-16)
-        # The setup action makes the same CMake arguments for each metal
-        # build. The build steps add the rest.
+        # The other lines of --version name the install folder and the OS.
+        # They change between runner images, so the keys use the first line.
+        version() {
+          echo "$1" | head -n 1 | sed -E 's/.* version ([0-9.]+).*/\1/' | tr -c 'A-Za-z0-9.\n' '_'
+        }
+        clang_text=$(xcrun clang --version)
+        metal_text=$(xcrun -sdk macosx metal --version)
+        sdk=$(xcrun -sdk macosx --show-sdk-build-version)
+        printf '%s\n' "$clang_text" "$metal_text" "SDK build: $sdk"
+        clang=$(version "$clang_text" | cut -d . -f 1-2)
+        metal=$(version "$metal_text")
+        if [ -z "$clang" ] || [ -z "$metal" ] || [ -z "$sdk" ]; then
+          echo "::error::Cannot read the clang, metal or SDK version."
+          exit 1
+        fi
         flags=$(printf '%s\n' "$CFLAGS" "$CXXFLAGS" "$MACOSX_DEPLOYMENT_TARGET" "$KIND" \
           | shasum -a 256 | cut -c 1-16)
         kernels=${KERNELS:0:16}
         {
-          echo "toolchain=$toolchain"
-          echo "ccache-key=fork-tests-$KIND-$toolchain-$flags"
-          echo "metal-prefix=metal-$toolchain-"
-          echo "metal-restore=metal-$toolchain-$kernels-"
-          echo "metal-save=metal-$toolchain-$kernels-$KIND-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "toolchain=$(echo "$metal_text" | head -n 1) SDK $sdk"
+          echo "ccache-key=fork-tests-$KIND-$flags-clang$clang"
+          echo "ccache-fallback=ccache-fork-tests-$KIND-$flags-"
+          echo "metal-restore=metal-$metal-$kernels-"
+          echo "metal-fallback=metal-$metal-"
+          echo "metal-save=metal-$metal-$kernels-$KIND-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
         } | tee -a "$GITHUB_OUTPUT"
 
     - uses: ./.github/actions/setup
@@ -80,6 +91,7 @@ runs:
       with:
         toolkit: metal
         ccache-key: ${{ steps.keys.outputs.ccache-key }}
+        ccache-fallback: ${{ steps.keys.outputs.ccache-fallback }}
         # The build and the C++ tests do not use openmpi. Only the
         # distributed test in python-gpu shard 0 does.
         install-macos-deps: 'false'
@@ -92,7 +104,7 @@ runs:
         key: ${{ steps.keys.outputs.metal-restore }}
         restore-keys: |
           ${{ steps.keys.outputs.metal-restore }}
-          ${{ steps.keys.outputs.metal-prefix }}
+          ${{ steps.keys.outputs.metal-fallback }}
 
     - name: Prepare the caches
       if: inputs.phase == 'restore'

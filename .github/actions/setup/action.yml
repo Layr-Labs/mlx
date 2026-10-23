@@ -26,6 +26,10 @@ inputs:
     description: 'Use this instead of inputs.toolkit in the ccache key'
     required: false
     default: ''
+  ccache-fallback:
+    description: 'A second restore-keys prefix for the ccache files'
+    required: false
+    default: ''
   install-macos-deps:
     description: 'Whether to run brew update and install openmpi on macOS'
     required: false
@@ -121,10 +125,16 @@ runs:
       shell: bash
       env:
         PREFIX: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
+        FALLBACK: ${{ inputs.ccache-fallback }}
       run: |
-        echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
-        echo "restore=$PREFIX$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-        echo "save=$PREFIX$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+        {
+          echo "restore=$PREFIX$GITHUB_SHA"
+          echo "save=$PREFIX$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "restore-keys<<EOF"
+          echo "$PREFIX"
+          if [ -n "$FALLBACK" ]; then echo "$FALLBACK"; fi
+          echo "EOF"
+        } | tee -a "$GITHUB_OUTPUT"
 
     - name: Restore the ccache files
       # This action only restores the cache. The workflow saves it with
@@ -134,7 +144,7 @@ runs:
       with:
         path: ${{ github.workspace }}/.ccache
         key: ${{ steps.ccache-keys.outputs.restore }}
-        restore-keys: ${{ steps.ccache-keys.outputs.prefix }}
+        restore-keys: ${{ steps.ccache-keys.outputs.restore-keys }}
 
     - name: Cache JIT-compiled CUDA kernels
       if: runner.os == 'Linux' && startsWith(inputs.toolkit, 'cuda')

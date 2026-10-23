@@ -318,7 +318,8 @@ def:
         action saves the ccache files. It also keeps a cache of the compiled Metal kernels: the
         build jobs put `metal-cache/xcrun` first in `PATH`, and that script gives the kernel
         compile and link commands a cache. The key of a kernel is its preprocessed source,
-        its arguments and the toolchain versions. Three Python tests check behavior that exists only in
+        its arguments, the metal compiler version and the SDK build. The ccache key holds
+        the clang version, and ccache checks the compiler content of each object. Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
         so they skip when the default device is not the GPU. Upstream's
         `test_init_reduce_large_output` skips only when the default device cannot hold its

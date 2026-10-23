@@ -13,7 +13,7 @@
 # replaced by the SHA-256 of its content.
 #
 # Environment:
-#   MLX_METAL_CACHE_TOOLCHAIN  the toolchain ID (Xcode, SDK and Metal versions)
+#   MLX_METAL_CACHE_TOOLCHAIN  the metal compiler version and the SDK build
 #   MLX_METAL_CACHE_IN         the folder with the restored entries
 #   MLX_METAL_CACHE_OUT        the folder that gets every entry that this
 #                              build uses; the job saves this folder

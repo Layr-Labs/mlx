@@ -261,6 +261,16 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/backend/metal/scaled_dot_product_attention.cpp"
+    - title: "CPU qqmm refuses a global scale"
+      description: |
+        The CPU `QQMatmul` kernel has no global scale input. Upstream passes the scales to it,
+        and the kernel ignores them, so `qqmm` with `global_scale_x` and `global_scale_w` on
+        a CPU stream returns a wrong result with no error (upstream marks this as a TODO in
+        `test_quantized.py`). The fork's CPU test pass found it: the error was about 1000
+        against a tolerance of 1e-3. `qqmm` now raises "Global scale is only supported on the
+        GPU" on a stream that is not a GPU stream, as `gather_qmm` already does.
+      globs:
+        - "mlx/ops.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,
@@ -285,7 +295,8 @@ def:
         `test_init_reduce_large_output` makes a 4 GiB output. The GitHub-hosted runner has a
         3.5 GiB Metal buffer limit and 7 GB of memory, so the test skips on a device that
         cannot hold the output. When a CPU test file fails, the job prints the end of its log
-        at once.
+        at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
+        `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"

@@ -972,6 +972,14 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
                     v = mx.random.normal(shape=(1, kv_heads, 1029, D), dtype=dtype)
                     scale = D**-0.5
 
+                    if mx.default_device() != mx.gpu:
+                        # The fused kernels need a GPU stream.
+                        with self.assertRaises(ValueError):
+                            mx.fast.scaled_dot_product_attention(
+                                q, k, v, scale=scale, mask=mask, force_fused=True
+                            )
+                        continue
+
                     out = mx.fast.scaled_dot_product_attention(
                         q, k, v, scale=scale, mask=mask, force_fused=True
                     )

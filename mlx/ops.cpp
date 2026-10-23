@@ -5105,6 +5105,12 @@ array qqmm(
   // validate inputs
   validate_qqmm_inputs(
       x, w, scales_w, group_size, bits, global_scale_x, global_scale_w, qmode);
+  // The CPU kernel has no global scale input. Refuse rather than ignore it.
+  if ((global_scale_x.has_value() || global_scale_w.has_value()) &&
+      stream.device != Device::gpu) {
+    throw std::invalid_argument(
+        "[qqmm] Global scale is only supported on the GPU.");
+  }
   // validate and extract shapes
   auto [w_inner_dims, w_outer_dims] =
       extract_qqmm_dims(x, w, scales_w, group_size, bits);

@@ -449,6 +449,18 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 )
 
                 expected = x_hat @ mx.swapaxes(w_hat, -1, -2)
+                if mx.default_device() != mx.gpu:
+                    # Global scale is only supported on the GPU.
+                    with self.assertRaises(ValueError):
+                        mx.qqmm(
+                            x,
+                            w_q,
+                            scales,
+                            mode="nvfp4",
+                            global_scale_x=global_scale_x,
+                            global_scale_w=global_scale_w,
+                        )
+                    continue
                 actual = mx.qqmm(
                     x,
                     w_q,
@@ -1055,6 +1067,18 @@ class TestQuantized(mlx_tests.MLXTestCase):
                     dtype=dtype,
                 )
                 expected = x_hat.astype(mx.float32) @ w_hat.T
+                if mx.default_device() != mx.gpu:
+                    # Global scale is only supported on the GPU.
+                    with self.assertRaises(ValueError):
+                        mx.qqmm(
+                            x,
+                            q,
+                            s,
+                            mode="nvfp4",
+                            global_scale_x=global_scale_x,
+                            global_scale_w=global_scale_w,
+                        )
+                    continue
                 actual = mx.qqmm(
                     x,
                     q,
@@ -2845,6 +2869,12 @@ class TestQuantized(mlx_tests.MLXTestCase):
                     sorted_indices=sort,
                 )
 
+                if mx.default_device() != mx.gpu:
+                    # Global scale is only supported on the GPU.
+                    with self.assertRaises(ValueError):
+                        mx.gather_qmm(x, wq, s, global_scale=gs, **kwargs)
+                    continue
+
                 out = mx.gather_qmm(x, wq, s, global_scale=gs, **kwargs)
                 tol = (
                     1e-5 if dtype == mx.float32 and not mx.cuda.is_available() else 3e-2
@@ -2868,15 +2898,18 @@ class TestQuantized(mlx_tests.MLXTestCase):
                 x = (mx.random.normal((2, 1, K)) / K**0.5).astype(mx.bfloat16)
                 lhs = mx.array([0, 1, 0, 1, 0, 1], mx.uint32)
                 expected = x[lhs] @ w_hat[indices].swapaxes(-1, -2)
-                out = mx.gather_qmm(
-                    x,
-                    wq,
-                    s,
+                kwargs = dict(
                     lhs_indices=lhs,
                     rhs_indices=indices,
                     mode="nvfp4",
                     global_scale=gs,
                 )
+                if mx.default_device() != mx.gpu:
+                    # Global scale is only supported on the GPU.
+                    with self.assertRaises(ValueError):
+                        mx.gather_qmm(x, wq, s, **kwargs)
+                    continue
+                out = mx.gather_qmm(x, wq, s, **kwargs)
                 self.assertLess(rel_err(out, expected), 3e-2)
 
     def test_quantize_strided(self):

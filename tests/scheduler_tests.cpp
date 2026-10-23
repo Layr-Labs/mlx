@@ -1,5 +1,7 @@
 // Copyright © 2023 Apple Inc.
 
+#include <future>
+
 #include "doctest/doctest.h"
 
 #include "mlx/mlx.h"
@@ -303,4 +305,24 @@ TEST_CASE("test cross stream fence ordering") {
       CHECK_EQ(y.item<float>(), doctest::Approx(64 * 64 * 21.0f));
     }
   }
+}
+
+TEST_CASE("test async_eval does not throw a stored stream error") {
+  // A failed CPU task stores its error in the stream. Wait for the task
+  // without synchronize, so the error is still stored when async_eval runs.
+  auto s = new_stream(Device::cpu);
+  scheduler::enqueue(s, []() { throw std::runtime_error("task failed"); });
+  auto done = std::make_shared<std::promise<void>>();
+  auto finished = done->get_future();
+  scheduler::enqueue(s, [done]() { done->set_value(); });
+  finished.wait();
+
+  auto x = add(array(1.0f), array(2.0f), s);
+  CHECK_NOTHROW(async_eval(x));
+  CHECK_THROWS_AS(synchronize(s), std::runtime_error);
+
+  // The error is cleared, so the stream works again.
+  auto y = add(array(1.0f), array(2.0f), s);
+  eval(y);
+  CHECK_EQ(y.item<float>(), 3.0f);
 }

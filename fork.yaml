@@ -290,6 +290,34 @@ def:
         - "mlx/backend/cpu/gemms/cblas.cpp"
         - "mlx/backend/cpu/masked_mm.cpp"
         - "mlx/backend/cpu/conv.cpp"
+    - title: "Reference uniqueness without buffer ownership"
+      description: |
+        Upstream [ml-explore/mlx#4634](https://github.com/ml-explore/mlx/pull/4634) (`5dbe9991`)
+        makes `is_donatable()` also require that MLX owns the buffer, so the allocator never
+        reuses a wrapped external buffer. The fork's C API (`mlx_array_get_buffer_info`, field
+        `unique`) used `is_donatable()` to prove that no other array references a buffer.
+        Callers in mlx-swift-lm use that proof for paged KV segments, checkpoint memory
+        accounting and the MTP state, also for wrapped host pages. The fork adds
+        `array::is_uniquely_referenced()`: the same reference-count test without the ownership
+        test. `is_donatable()` and buffer donation do not change.
+      globs:
+        - "mlx/array.h"
+    - title: "async_eval does not throw a stream task error"
+      description: |
+        Upstream #4338 raises a CPU stream task error from `synchronize`, and its test
+        expects `async_eval` not to throw. But `StreamThread::enqueue` throws the stored
+        error on the main thread (#3742). `async_eval` enqueues several tasks: when the
+        stream thread runs a failing task before `async_eval` enqueues the next one, that
+        enqueue throws. This is a race. It failed `test_async_eval_error_in_synchronize`
+        in the fork's CPU test pass on some runs. `async_eval` now holds a
+        `scheduler::DeferStreamErrors` guard, and `enqueue` does not throw while the guard
+        lives on the thread. `synchronize` throws the error later. `eval` does not change.
+        A C++ test stores the error first, so it fails without the fix on every run.
+      globs:
+        - "mlx/scheduler.h"
+        - "mlx/scheduler.cpp"
+        - "mlx/transforms.cpp"
+        - "tests/scheduler_tests.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

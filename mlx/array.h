@@ -287,6 +287,13 @@ class MLX_API array {
         (array_desc_->data.use_count() == 1) && array_desc_->data->is_owned();
   }
 
+  /** True when no other array references this array or its data. Unlike
+   * is_donatable(), this does not require MLX to own the buffer, so a wrapped
+   * external buffer can be unique. */
+  bool is_uniquely_referenced() const {
+    return array_desc_.use_count() == 1 && (array_desc_->data.use_count() == 1);
+  }
+
   /** The array's siblings. */
   const std::vector<array>& siblings() const {
     return array_desc_->siblings;

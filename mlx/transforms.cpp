@@ -375,6 +375,9 @@ void async_eval(std::vector<array> outputs) {
     return;
   }
 
+  // A stream task can fail while async_eval still enqueues later tasks.
+  // synchronize raises that error, not async_eval.
+  scheduler::DeferStreamErrors defer;
   eval_impl(std::move(outputs), true);
 }
 

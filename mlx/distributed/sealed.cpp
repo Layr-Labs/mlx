@@ -1,6 +1,8 @@
 // Copyright © 2026 Darkbloom.
 
+#ifdef __APPLE__
 #include <dispatch/dispatch.h>
+#endif
 #include <algorithm>
 #include <cstring>
 #include <mutex>
@@ -166,11 +168,19 @@ void add_in_rank_order(const T* rank0, const T* rank1, T* out, size_t n) {
     return;
   }
   size_t spans = (n + kSpan - 1) / kSpan;
+#ifdef __APPLE__
   dispatch_apply(spans, DISPATCH_APPLY_AUTO, ^(size_t i) {
     size_t begin = i * kSpan;
     size_t count = std::min(kSpan, n - begin);
     add_span(rank0 + begin, rank1 + begin, out + begin, count);
   });
+#else
+  for (size_t i = 0; i < spans; ++i) {
+    size_t begin = i * kSpan;
+    size_t count = std::min(kSpan, n - begin);
+    add_span(rank0 + begin, rank1 + begin, out + begin, count);
+  }
+#endif
 }
 } // namespace
 

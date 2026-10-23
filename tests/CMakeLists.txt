@@ -36,6 +36,7 @@ target_sources(
           custom_vjp_tests.cpp
           creations_tests.cpp
           device_tests.cpp
+          distributed_sealed_stream_tests.cpp
           einsum_tests.cpp
           export_import_tests.cpp
           eval_tests.cpp

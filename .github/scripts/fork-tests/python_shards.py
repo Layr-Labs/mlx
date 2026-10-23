@@ -84,13 +84,17 @@ def check_static(shards):
             if not found:
                 errors.append(f"{name}: {TESTS}/{file}.py is in no shard")
             elif "whole" in kinds and len(found) > 1:
-                errors.append(f"{name}: {TESTS}/{file}.py is in more than one shard or entry ({where})")
+                errors.append(
+                    f"{name}: {TESTS}/{file}.py is in more than one shard "
+                    f"or entry ({where})"
+                )
             elif kinds.count("rest") > 1:
-                errors.append(f"{name}: {TESTS}/{file}.py has more than one rest entry ({where})")
+                errors.append(
+                    f"{name}: {TESTS}/{file}.py has more than one rest entry ({where})"
+                )
         for file, found in sorted(uses.items()):
-            errors.append(
-                f"{name}: {', '.join(e for _, _, e in found)} names no file {TESTS}/{file}.py"
-            )
+            names = ", ".join(e for _, _, e in found)
+            errors.append(f"{name}: {names} names no file {TESTS}/{file}.py")
     return errors
 
 
@@ -147,7 +151,9 @@ def expand(shards, name):
         if f"{file}:rest" in entries:
             rest_ids[file] = missing
         elif missing:
-            errors.append(f"{name}: these tests of {file}.py are in no shard: {missing}")
+            errors.append(
+                f"{name}: these tests of {file}.py are in no shard: {missing}"
+            )
     plan = []
     for shard in shards[name]:
         units = []
@@ -201,10 +207,12 @@ def run(args):
     if errors:
         report(errors)
     if args.count != len(shards[args.name]):
-        report([
-            f"the workflow runs {args.count} {args.name} shard jobs, "
-            f"but {MAP.name} has {len(shards[args.name])} {args.name} shards"
-        ])
+        report(
+            [
+                f"the workflow runs {args.count} {args.name} shard jobs, "
+                f"but {MAP.name} has {len(shards[args.name])} {args.name} shards"
+            ]
+        )
     plan, errors = expand(shards, args.name)
     if errors:
         report(errors)
@@ -232,10 +240,17 @@ def run(args):
             # Print the end of a failed log at once. The full logs print
             # after all entries finish, and a killed job never gets there.
             if code != 0:
-                tail = (logs / f"{name}.log").read_text(errors="replace").splitlines()[-80:]
+                tail = (
+                    (logs / f"{name}.log")
+                    .read_text(errors="replace")
+                    .splitlines()[-80:]
+                )
                 print("\n".join(f"  | {line}" for line in tail), flush=True)
 
-    print(f"{args.name} shard {args.shard}: {len(units)} entries, {args.jobs} at a time", flush=True)
+    print(
+        f"{args.name} shard {args.shard}: {len(units)} entries, {args.jobs} at a time",
+        flush=True,
+    )
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         list(pool.map(one, units))
 
@@ -255,7 +270,11 @@ def run(args):
         "shard": args.shard,
         "count": args.count,
         "entries": {
-            e: {"exit": results[e][0], "seconds": round(results[e][1], 1), "tests": ran[e]}
+            e: {
+                "exit": results[e][0],
+                "seconds": round(results[e][1], 1),
+                "tests": ran[e],
+            }
             for e, _ in units
         },
     }
@@ -273,14 +292,20 @@ def run(args):
             total = sum(len(t) for t in ran.values())
             f.write(f"\nTests started: {total}\n\n")
     if failed:
-        print(f"::error::Python test entries that failed ({args.name} pass): {' '.join(failed)}")
+        names = " ".join(failed)
+        print(f"::error::Python test entries that failed ({args.name} pass): {names}")
         sys.exit(1)
 
 
 def verify(args):
     shards = load_map()
     errors = []
-    lines = ["### Python tests in all shards", "", "| Pass | Shards | Tests started |", "|---|---|---|"]
+    lines = [
+        "### Python tests in all shards",
+        "",
+        "| Pass | Shards | Tests started |",
+        "|---|---|---|",
+    ]
     for name in PASSES:
         seen = {}
         found = 0

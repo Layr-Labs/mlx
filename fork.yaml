@@ -337,13 +337,17 @@ def:
         the queued work completes. On a two-rank JACCL mesh the sum streams in 256 KiB
         pieces, each with its own AES-256-GCM tag, over `MeshImpl::exchange`: a piece is
         sent as soon as it is sealed and opened and added as soon as it lands. Other
-        groups keep the seal-gather-open path.
+        groups keep the seal-gather-open path. Non-Apple builds use synchronous
+        piece sealing and opening without Apple dispatch or QoS APIs, preserving
+        the authenticated wire format and rank-ordered arithmetic. Apple keeps
+        its existing parallel path.
       globs:
         - "mlx/distributed/CMakeLists.txt"
         - "mlx/distributed/primitives.h"
         - "mlx/distributed/sealed.cpp"
         - "mlx/distributed/sealed.h"
         - "mlx/distributed/sealed_stream.h"
+        - "tests/distributed_sealed_stream_tests.cpp"
     - title: "Fused cross-device fence update"
       description: |
         Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU

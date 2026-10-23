@@ -271,6 +271,18 @@ def:
         GPU" on a stream that is not a GPU stream, as `gather_qmm` already does.
       globs:
         - "mlx/ops.cpp"
+    - title: "CPU BLAS matmul clears C when beta is 0"
+      description: |
+        The CPU float32, float64 and complex64 matmuls call Accelerate (or another CBLAS)
+        with beta = 0. Accelerate can still read C (seen with M = 1), and an output buffer
+        from the allocator cache can hold old data, for example packed fp4 weights that
+        read as NaN. The result is NaN * 0 = NaN in the output. Upstream's
+        `test_fp_gather_qmm_non_multiple_of_32` found it in the fork's CPU test pass: its
+        float32 reference `x @ w_sel` reused the 266240-byte buffer of the previous
+        subtest's packed weights. The fork now fills C with zeros before the BLAS call when
+        beta is 0. MLX's own SIMD gemm already skips C when beta is 0.
+      globs:
+        - "mlx/backend/cpu/gemms/cblas.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

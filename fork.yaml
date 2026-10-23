@@ -331,12 +331,23 @@ def:
         not the merge-base with upstream, when a file the fork changes is not described by a
         section above, or when a section names files the fork no longer changes.
 
-        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on a
-        GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
-        because the organization blocks actions that are not pinned. The organization also
-        blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
-        the ccache files with `actions/cache`. It then runs the same tests a second time with
-        the CPU as the default device. Three Python tests check behavior that exists only in
+        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on
+        GitHub-hosted macOS runners. Two jobs build in parallel. One job builds the Python
+        wheel. The other job builds the C++ library and tests, and runs the C++ tests with the
+        GPU and then with the CPU as the default device. The Python tests run in shard jobs:
+        one set with the GPU as the default device, and one set with the CPU.
+        `.github/scripts/fork-tests/python-shards.json` gives the shards.
+        `python_shards.py` fails a job when a test file is in no shard or in two shards, and
+        the last job fails when a test ran in two shards. The last job also merges the coverage
+        profiles of all jobs into one report. The `setup` action pins its actions to full
+        commit SHAs, because the organization blocks actions that are not pinned. The
+        organization also blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with
+        Homebrew and restores the ccache files with `actions/cache`. The `fork-build-cache`
+        action saves the ccache files. It also keeps a cache of the compiled Metal kernels: the
+        build jobs put `metal-cache/xcrun` first in `PATH`, and that script gives the kernel
+        compile and link commands a cache. The key of a kernel is its preprocessed source,
+        its arguments, the metal compiler version and the SDK build. The ccache key holds
+        the clang version, and ccache checks the compiler content of each object. Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
         so they skip when the default device is not the GPU. Upstream's
         `test_init_reduce_large_output` skips only when the default device cannot hold its
@@ -345,8 +356,8 @@ def:
         3.5 GiB. The test cannot be smaller: it is the regression test for ml-explore/mlx
         #4437, which needs 2^32 output elements (more than one 32-bit grid dimension), and
         bool outputs of one byte each give 4 GiB. David ruled on 2026-10-23 to keep this skip
-        and not to use a larger runner. When a CPU test file fails, the job prints the end of its log
-        at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
+        and not to use a larger runner. When a Python test entry fails, the job prints the end of
+        its log at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actions/build/action.yml"
@@ -365,6 +376,10 @@ def:
         - "FORKDIFF.md"
         - "README.md"
         - ".github/actions/setup/action.yml"
+        - ".github/actions/fork-build-cache/action.yml"
+        - ".github/scripts/fork-tests/metal-cache/xcrun"
+        - ".github/scripts/fork-tests/python-shards.json"
+        - ".github/scripts/fork-tests/python_shards.py"
         - ".github/workflows/fork-tests.yml"
         - "python/tests/test_conv.py"
         - "python/tests/test_fft.py"

@@ -26,11 +26,22 @@ inputs:
     description: 'Use this instead of inputs.toolkit in the ccache key'
     required: false
     default: ''
+  ccache-fallback:
+    description: 'A second restore-keys prefix for the ccache files'
+    required: false
+    default: ''
+  install-macos-deps:
+    description: 'Whether to run brew update and install openmpi on macOS'
+    required: false
+    default: 'true'
 
 outputs:
   cmake-args:
     description: 'The args for generating CMake project'
     value: ${{ steps.cmake-args.outputs.cmakeArgs }}
+  ccache-save-key:
+    description: 'The key for actions/cache/save of the ccache files (macOS)'
+    value: ${{ steps.ccache-keys.outputs.save }}
 
 runs:
   using: 'composite'
@@ -46,7 +57,7 @@ runs:
             openmpi-bin openmpi-common libopenmpi-dev
 
     - name: Install macOS dependencies
-      if: runner.os == 'macOS'
+      if: runner.os == 'macOS' && inputs.install-macos-deps == 'true'
       shell: bash
       run: |
         brew update
@@ -108,24 +119,32 @@ runs:
         ccache --set-config=compiler_check=content
         ccache -p
 
+    - name: Make the ccache keys
+      id: ccache-keys
+      if: runner.os == 'macOS' && inputs.use-ccache == 'true'
+      shell: bash
+      env:
+        PREFIX: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
+        FALLBACK: ${{ inputs.ccache-fallback }}
+      run: |
+        {
+          echo "restore=$PREFIX$GITHUB_SHA"
+          echo "save=$PREFIX$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "restore-keys<<EOF"
+          echo "$PREFIX"
+          if [ -n "$FALLBACK" ]; then echo "$FALLBACK"; fi
+          echo "EOF"
+        } | tee -a "$GITHUB_OUTPUT"
+
     - name: Restore the ccache files
-      # Pull requests only restore the cache. They do not save it.
-      if: runner.os == 'macOS' && inputs.use-ccache == 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ccache-save != 'false')
+      # This action only restores the cache. The workflow saves it with
+      # actions/cache/save and the key in the ccache-save-key output.
+      if: runner.os == 'macOS' && inputs.use-ccache == 'true'
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: ${{ github.workspace }}/.ccache
-        key: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-${{ github.sha }}
-        restore-keys: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
-
-    - name: Restore the ccache files and save them at the end of the job
-      # Pushes to main restore the cache. actions/cache saves it at the end
-      # of the job, and only when the job succeeds.
-      if: runner.os == 'macOS' && inputs.use-ccache == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.ccache-save != 'false'
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-      with:
-        path: ${{ github.workspace }}/.ccache
-        key: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-${{ github.sha }}
-        restore-keys: ccache-${{ inputs.ccache-key }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.ccache-toolkit || inputs.toolkit }}-
+        key: ${{ steps.ccache-keys.outputs.restore }}
+        restore-keys: ${{ steps.ccache-keys.outputs.restore-keys }}
 
     - name: Cache JIT-compiled CUDA kernels
       if: runner.os == 'Linux' && startsWith(inputs.toolkit, 'cuda')

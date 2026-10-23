@@ -281,7 +281,11 @@ def:
         the ccache files with `actions/cache`. It then runs the same tests a second time with
         the CPU as the default device. Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
-        so they skip when the default device is not the GPU.
+        so they skip when the default device is not the GPU. Upstream's
+        `test_init_reduce_large_output` makes a 4 GiB output. The GitHub-hosted runner has a
+        3.5 GiB Metal buffer limit and 7 GB of memory, so the test skips on a device that
+        cannot hold the output. When a CPU test file fails, the job prints the end of its log
+        at once.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
@@ -302,6 +306,7 @@ def:
         - ".github/workflows/fork-tests.yml"
         - "python/tests/test_conv.py"
         - "python/tests/test_fft.py"
+        - "python/tests/test_reduce.py"
 
 # ignored globally, does not count towards line count
 ignore:

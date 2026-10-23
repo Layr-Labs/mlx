@@ -363,6 +363,16 @@ class TestReduce(mlx_tests.MLXTestCase):
 
     @unittest.skipIf(not mx.metal.is_available(), "requires Metal")
     def test_init_reduce_large_output(self):
+        # The output is 4 GiB. The macOS runners of the fork CI have a 3.5 GiB
+        # Metal buffer limit and 7 GB of memory, so skip where it cannot fit.
+        size = 4 * 2**30
+        info = mx.device_info(mx.gpu)
+        if mx.default_device() == mx.gpu:
+            fits = info["max_buffer_length"] >= size
+        else:
+            fits = info["memory_size"] >= 4 * size
+        if not fits:
+            self.skipTest("the 4 GiB output does not fit on this device")
         out = mx.all(mx.zeros((0, 4, 2**30), dtype=mx.bool_), axis=0)
         mx.eval(out)
         self.assertTrue(mx.all(out).item())

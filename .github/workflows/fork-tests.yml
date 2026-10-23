@@ -96,6 +96,12 @@ jobs:
                   ).returncode
               result = "passed" if code == 0 else f"failed (exit code {code})"
               print(f"{name}: {result}", flush=True)
+              # Print the end of a failed log at once. The full logs print
+              # after all files finish, and a killed job never gets there.
+              if code != 0:
+                  with open(os.path.join(os.environ["LOGS"], name + ".log")) as log:
+                      tail = log.read().splitlines()[-80:]
+                  print("\n".join(f"  | {line}" for line in tail), flush=True)
               sys.exit(0)
 
           os.environ["MLX_ENABLE_TF32"] = "0"

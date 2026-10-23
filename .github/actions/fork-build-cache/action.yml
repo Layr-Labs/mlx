@@ -4,7 +4,8 @@ description: 'Set up a fork-tests build job with ccache and the Metal kernel cac
 # phase: restore runs the setup action, restores the ccache files and the
 # Metal kernel cache, and points the build at the cache script in
 # .github/scripts/fork-tests/metal-cache. phase: save prints the cache
-# statistics and saves both caches on pull requests and on pushes to main.
+# statistics and saves each cache on pull requests and on pushes to main
+# when the build had cache misses.
 #
 # Cache keys:
 #   ccache  ccache-fork-tests-KIND-TOOLCHAIN-FLAGS-macOS-ARM64-metal-SHA-RUN-ATTEMPT
@@ -117,26 +118,34 @@ runs:
         ccache -z
 
     - name: Show the cache statistics
+      id: stats
       if: inputs.phase == 'save'
       shell: bash
       run: |
         ccache -s -v
+        ccache_misses=$(ccache -s | awk '$1 == "Misses:" { print $2; exit }')
+        ccache_misses=${ccache_misses:-unknown}
+        metal_misses=0
         log="$MLX_METAL_CACHE_OUT.log"
         if [ -f "$log" ]; then
-          echo "Metal cache: $(grep -c '^hit ' "$log" || true) hits, $(grep -c '^miss ' "$log" || true) misses"
+          metal_misses=$(grep -c '^miss ' "$log" || true)
+          echo "Metal cache: $(grep -c '^hit ' "$log" || true) hits, $metal_misses misses"
           grep '^miss ' "$log" || true
         fi
         du -sh .ccache .metal-cache || true
+        # A build with no misses adds nothing, so it does not save a copy.
+        echo "ccache-misses=$ccache_misses" | tee -a "$GITHUB_OUTPUT"
+        echo "metal-misses=$metal_misses" | tee -a "$GITHUB_OUTPUT"
 
     - name: Save the ccache files
-      if: inputs.phase == 'save' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      if: inputs.phase == 'save' && steps.stats.outputs.ccache-misses != '0' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: ${{ github.workspace }}/.ccache
         key: ${{ inputs.ccache-save-key }}
 
     - name: Save the Metal kernel cache
-      if: inputs.phase == 'save' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      if: inputs.phase == 'save' && steps.stats.outputs.metal-misses != '0' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: ${{ github.workspace }}/.metal-cache

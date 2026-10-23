@@ -1527,7 +1527,8 @@ void ScaledDotProductAttention::eval_gpu(
         // If either the batch or head dimension is a singleton, the other can
         // be transposed with the sequence dimension
         auto bidx = shape[0] == 1 ? 1 : 0;
-        return (strides[3] == 1) && (strides[2] == shape[3] * shape[bidx]) &&
+        return (strides[3] == 1) &&
+            (strides[2] == static_cast<int64_t>(shape[3]) * shape[bidx]) &&
             (strides[bidx] == shape[3]);
       }
       return false;

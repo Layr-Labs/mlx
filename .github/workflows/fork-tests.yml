@@ -44,80 +44,6 @@ jobs:
           # builds all Metal kernels.
           macos-target: '26.2'
 
-      # TEMPORARY diagnostic for PR 38. Remove it in the next push.
-      - name: Diagnose the CPU NaN in test_fp_gather_qmm_non_multiple_of_32
-        continue-on-error: true
-        run: |
-          uv pip install dist/*.whl
-          cat > "$RUNNER_TEMP/diag.py" <<'EOF'
-          import sys
-
-          import mlx.core as mx
-
-          mode = sys.argv[1]
-          dev = mx.gpu if mode == "gpu" else mx.cpu
-          mx.set_default_device(dev)
-          print(f"===== mode={mode} device={dev}", flush=True)
-          if mode == "cpu_nocache":
-              mx.set_cache_limit(0)
-          if mode == "cpu_warm_nan":
-              # Fill the allocator cache with NaN buffers of many sizes.
-              keep = []
-              for n in (1 << 12, 1 << 16, 1 << 20, 1 << 22, 1 << 24, 1 << 25):
-                  for _ in range(3):
-                      a = mx.full((n,), float("nan"))
-                      mx.eval(a)
-                      keep.append(a)
-              del keep, a
-              print("cache after warm-up:", mx.get_cache_memory(), flush=True)
-
-          def nans(name, a):
-              mx.eval(a)
-              n = mx.isnan(a).sum().item()
-              msg = f"{name}: shape={a.shape} nan={n}"
-              if n:
-                  first = mx.argmax(mx.isnan(a).flatten()).item()
-                  msg += f" first_flat_index={first}"
-              print(msg, flush=True)
-
-          key = mx.random.key(0)
-          k1, k2, k3 = mx.random.split(key, 3)
-          E, K, N, T = 4, 512, 1040, 64
-          w = mx.random.normal(shape=(E, K, N), key=k2).astype(mx.float32)
-          w_q, scales = mx.quantize(w, mode="nvfp4")
-          w_hat = mx.dequantize(w_q, scales, mode="nvfp4")
-          for e in range(E):
-              nans(f"w[{e}]", w[e])
-              nans(f"w_hat[{e}]", w_hat[e])
-          x = (mx.random.normal(shape=(T, 1, K), key=k1) / K**0.5).astype(mx.float32)
-          rhs = mx.sort(mx.random.randint(0, E, shape=(T,), key=k3)).astype(mx.uint32)
-          print("rhs counts", [(rhs == e).sum().item() for e in range(E)], flush=True)
-          nans("x", x)
-          for srt in (True, False):
-              y_q = mx.gather_qmm(
-                  x, w_q, scales, rhs_indices=rhs, transpose=False,
-                  mode="nvfp4", sorted_indices=srt,
-              )
-              nans(f"y_q sorted={srt}", y_q)
-              for e in range(E):
-                  rows = [i for i in range(T) if rhs[i].item() == e]
-                  if rows:
-                      nans(f"  y_q sorted={srt} expert {e}", y_q[mx.array(rows)])
-          w_sel = mx.take(w_hat, rhs, axis=0)
-          nans("w_sel", w_sel)
-          y_hat = x @ w_sel
-          nans("y_hat", y_hat)
-          for e in range(E):
-              rows = [i for i in range(T) if rhs[i].item() == e]
-              if rows:
-                  nans(f"  y_hat expert {e}", y_hat[mx.array(rows)])
-          y_ref = mx.stack([x[i] @ w_hat[rhs[i].item()] for i in range(T)])
-          nans("y_ref (per row matmul)", y_ref)
-          EOF
-          for mode in cpu_fresh cpu_warm_nan cpu_nocache gpu; do
-            python "$RUNNER_TEMP/diag.py" $mode || echo "mode $mode exited with $?"
-          done
-
       - uses: ./.github/actions/test-macos
         id: tests
         env:
@@ -332,3 +258,113 @@ jobs:
         with:
           name: coverage-report
           path: ${{ runner.temp }}/coverage/report.txt
+
+  # TEMPORARY diagnostic job for PR 38. Remove it in the next push.
+  diag-cpu-nan:
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CFLAGS: -fprofile-instr-generate -fcoverage-mapping
+      CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup
+        id: setup
+        with:
+          toolkit: metal
+          ccache-key: fork-tests
+
+      - uses: ./.github/actions/build-macos
+        with:
+          cmake-args: ${{ steps.setup.outputs.cmake-args }}
+          macos-target: '26.2'
+
+      - name: Diagnose the CPU NaN in test_fp_gather_qmm_non_multiple_of_32
+        env:
+          DEVICE: cpu
+          MLX_ENABLE_TF32: '0'
+          MLX_ENABLE_CACHE_THRASHING_CHECK: '0'
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
+        run: |
+          uv pip install dist/*.whl
+          cd python/tests
+          T=test_quantized.TestQuantized
+          note() { echo "::notice title=$1::$2"; }
+
+          echo "::group::A. the real subtest alone"
+          if python -m unittest -v $T.test_fp_gather_qmm_non_multiple_of_32 > "$RUNNER_TEMP/a.log" 2>&1; then r=pass; else r=FAIL; fi
+          cat "$RUNNER_TEMP/a.log"; echo "::endgroup::"
+          note "A alone" "$r: $(grep -E 'FAIL:|nan|Ran ' "$RUNNER_TEMP/a.log" | tr '\n' ' ' | cut -c1-400)"
+
+          prev=$(python - <<'EOF'
+          import unittest, test_quantized
+          names = unittest.defaultTestLoader.getTestCaseNames(test_quantized.TestQuantized)
+          i = names.index("test_fp_gather_qmm_non_multiple_of_32")
+          print(" ".join("test_quantized.TestQuantized." + n for n in names[: i + 1]))
+          EOF
+          )
+          echo "::group::B. the subtest after the tests before it ($prev)"
+          if python -m unittest -v $prev > "$RUNNER_TEMP/b.log" 2>&1; then r=pass; else r=FAIL; fi
+          cat "$RUNNER_TEMP/b.log"; echo "::endgroup::"
+          note "B after preceding tests" "$r: $(grep -E 'FAIL:|nan|Ran ' "$RUNNER_TEMP/b.log" | tr '\n' ' ' | cut -c1-400)"
+
+          echo "::group::C. instrumented copy of the test body"
+          cat > "$RUNNER_TEMP/c.py" <<'EOF'
+          import sys
+
+          import mlx.core as mx
+
+          mx.set_default_device(mx.cpu)
+          order = sys.argv[1]  # "full" runs the shapes in the test order
+          out = []
+
+          def nan_rows(a):
+              m = mx.isnan(a).reshape(a.shape[0], -1).any(axis=1)
+              return [i for i in range(a.shape[0]) if m[i].item()]
+
+          key = mx.random.key(0)
+          k1, k2, k3 = mx.random.split(key, 3)
+          mode, E, dtype = "nvfp4", 4, mx.float32
+          shapes = [(1040, 128, True), (512, 1040, False)]
+          cases = [(K, N, t, s) for K, N, t in shapes for s in (True, False)]
+          if order == "only":
+              cases = [(512, 1040, False, True)]
+          for K, N, transpose, sorted_indices in cases:
+              w_shape = (E, N, K) if transpose else (E, K, N)
+              w = mx.random.normal(shape=w_shape, key=k2).astype(dtype)
+              w_q, scales = mx.quantize(w, mode=mode)
+              w_hat = mx.dequantize(w_q, scales, mode=mode)
+              if sorted_indices:
+                  T = 64
+                  x = (mx.random.normal(shape=(T, 1, K), key=k1) / K**0.5).astype(dtype)
+                  rhs = mx.sort(mx.random.randint(0, E, shape=(T,), key=k3)).astype(mx.uint32)
+                  lhs = None
+              else:
+                  B, M = 8, 50
+                  x = (mx.random.normal(shape=(B, M, K), key=k1) / K**0.5).astype(dtype)
+                  rhs = mx.random.randint(0, E, shape=(B,), key=k3).astype(mx.uint32)
+                  lhs = mx.arange(B, dtype=mx.uint32)
+              y_q = mx.gather_qmm(x, w_q, scales, lhs_indices=lhs, rhs_indices=rhs,
+                                  transpose=transpose, mode=mode, sorted_indices=sorted_indices)
+              w_sel = mx.take(w_hat, rhs, axis=0)
+              y_hat = x @ (mx.swapaxes(w_sel, -1, -2) if transpose else w_sel)
+              d = (y_q - y_hat).abs().max()
+              mx.eval(d)  # one graph, as in the test
+              tag = f"K={K} N={N} t={transpose} s={sorted_indices}"
+              res = f"{tag}: max={d.item()} nan(y_q)={mx.isnan(y_q).sum().item()} nan(y_hat)={mx.isnan(y_hat).sum().item()} nan(w)={mx.isnan(w).sum().item()} nan(w_hat)={mx.isnan(w_hat).sum().item()} nan(x)={mx.isnan(x).sum().item()}"
+              for name, a in (("y_q", y_q), ("y_hat", y_hat)):
+                  rows = nan_rows(a)
+                  if rows:
+                      res += f" | {name} nan rows {rows[:8]} rhs={[rhs[r].item() for r in rows[:8]]}"
+              print(res, flush=True)
+              out.append(res)
+          EOF
+          for order in only full; do
+            python "$RUNNER_TEMP/c.py" $order > "$RUNNER_TEMP/c-$order.log" 2>&1 || echo "exit $?" >> "$RUNNER_TEMP/c-$order.log"
+            cat "$RUNNER_TEMP/c-$order.log"
+            note "C $order" "$(tr '\n' ' ' < "$RUNNER_TEMP/c-$order.log" | cut -c1-900)"
+          done
+          echo "::endgroup::"

@@ -44,6 +44,80 @@ jobs:
           # builds all Metal kernels.
           macos-target: '26.2'
 
+      # TEMPORARY diagnostic for PR 38. Remove it in the next push.
+      - name: Diagnose the CPU NaN in test_fp_gather_qmm_non_multiple_of_32
+        continue-on-error: true
+        run: |
+          uv pip install dist/*.whl
+          cat > "$RUNNER_TEMP/diag.py" <<'EOF'
+          import sys
+
+          import mlx.core as mx
+
+          mode = sys.argv[1]
+          dev = mx.gpu if mode == "gpu" else mx.cpu
+          mx.set_default_device(dev)
+          print(f"===== mode={mode} device={dev}", flush=True)
+          if mode == "cpu_nocache":
+              mx.set_cache_limit(0)
+          if mode == "cpu_warm_nan":
+              # Fill the allocator cache with NaN buffers of many sizes.
+              keep = []
+              for n in (1 << 12, 1 << 16, 1 << 20, 1 << 22, 1 << 24, 1 << 25):
+                  for _ in range(3):
+                      a = mx.full((n,), float("nan"))
+                      mx.eval(a)
+                      keep.append(a)
+              del keep, a
+              print("cache after warm-up:", mx.get_cache_memory(), flush=True)
+
+          def nans(name, a):
+              mx.eval(a)
+              n = mx.isnan(a).sum().item()
+              msg = f"{name}: shape={a.shape} nan={n}"
+              if n:
+                  first = mx.argmax(mx.isnan(a).flatten()).item()
+                  msg += f" first_flat_index={first}"
+              print(msg, flush=True)
+
+          key = mx.random.key(0)
+          k1, k2, k3 = mx.random.split(key, 3)
+          E, K, N, T = 4, 512, 1040, 64
+          w = mx.random.normal(shape=(E, K, N), key=k2).astype(mx.float32)
+          w_q, scales = mx.quantize(w, mode="nvfp4")
+          w_hat = mx.dequantize(w_q, scales, mode="nvfp4")
+          for e in range(E):
+              nans(f"w[{e}]", w[e])
+              nans(f"w_hat[{e}]", w_hat[e])
+          x = (mx.random.normal(shape=(T, 1, K), key=k1) / K**0.5).astype(mx.float32)
+          rhs = mx.sort(mx.random.randint(0, E, shape=(T,), key=k3)).astype(mx.uint32)
+          print("rhs counts", [(rhs == e).sum().item() for e in range(E)], flush=True)
+          nans("x", x)
+          for srt in (True, False):
+              y_q = mx.gather_qmm(
+                  x, w_q, scales, rhs_indices=rhs, transpose=False,
+                  mode="nvfp4", sorted_indices=srt,
+              )
+              nans(f"y_q sorted={srt}", y_q)
+              for e in range(E):
+                  rows = [i for i in range(T) if rhs[i].item() == e]
+                  if rows:
+                      nans(f"  y_q sorted={srt} expert {e}", y_q[mx.array(rows)])
+          w_sel = mx.take(w_hat, rhs, axis=0)
+          nans("w_sel", w_sel)
+          y_hat = x @ w_sel
+          nans("y_hat", y_hat)
+          for e in range(E):
+              rows = [i for i in range(T) if rhs[i].item() == e]
+              if rows:
+                  nans(f"  y_hat expert {e}", y_hat[mx.array(rows)])
+          y_ref = mx.stack([x[i] @ w_hat[rhs[i].item()] for i in range(T)])
+          nans("y_ref (per row matmul)", y_ref)
+          EOF
+          for mode in cpu_fresh cpu_warm_nan cpu_nocache gpu; do
+            python "$RUNNER_TEMP/diag.py" $mode || echo "mode $mode exited with $?"
+          done
+
       - uses: ./.github/actions/test-macos
         id: tests
         env:

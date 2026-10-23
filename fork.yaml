@@ -292,9 +292,13 @@ def:
         the CPU as the default device. Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
         so they skip when the default device is not the GPU. Upstream's
-        `test_init_reduce_large_output` makes a 4 GiB output. The GitHub-hosted runner has a
-        3.5 GiB Metal buffer limit and 7 GB of memory, so the test skips on a device that
-        cannot hold the output. When a CPU test file fails, the job prints the end of its log
+        `test_init_reduce_large_output` skips only when the default device cannot hold its
+        4 GiB output: on the GPU when `max_buffer_length` is less than 4 GiB, on the CPU when
+        `memory_size` is less than 16 GiB. The hosted `macos-26` runner caps Metal buffers at
+        3.5 GiB. The test cannot be smaller: it is the regression test for ml-explore/mlx
+        #4437, which needs 2^32 output elements (more than one 32-bit grid dimension), and
+        bool outputs of one byte each give 4 GiB. David ruled on 2026-10-23 to keep this skip
+        and not to use a larger runner. When a CPU test file fails, the job prints the end of its log
         at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:

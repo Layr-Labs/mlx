@@ -11,6 +11,15 @@ if(MLX_BUILD_METAL OR MLX_BUILD_CUDA)
 endif()
 
 if(MLX_BUILD_METAL)
+  add_executable(metal_fence_chain metal_fence_chain.cpp)
+  target_link_libraries(metal_fence_chain PRIVATE mlx)
+  foreach(ops IN ITEMS 8 50 1024)
+    add_test(NAME metal_fence_chain_${ops} COMMAND metal_fence_chain)
+    set_tests_properties(
+      metal_fence_chain_${ops}
+      PROPERTIES TIMEOUT 60 ENVIRONMENT
+                 "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
+  endforeach()
   list(APPEND METAL_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp)
 endif()
 

@@ -73,6 +73,8 @@ void encode_wait(
   // forever. Waiting on every pending pass costs nothing here: the CPU work
   // this spin waits for already follows them.
   compute_encoder.wait_for_all_pending();
+  // Order the spin after earlier GPU producers in this concurrent pass too.
+  compute_encoder.barrier();
 
   auto kernel = d.get_kernel("fence_wait");
   MTL::Size kernel_dims = MTL::Size(1, 1, 1);

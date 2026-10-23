@@ -267,6 +267,14 @@ Simd<T, N> floor_divide(Simd<T, N> a, Simd<T, N> b) {
     return q;
   } else if constexpr (is_complex<T>) {
     return a / b;
+  } else if constexpr (is_half_v<T>) {
+    // See exact_floor_divide in base_simd.h.
+    Simd<T, N> q;
+    for (int i = 0; i < N; ++i) {
+      q[i] = T(exact_floor_divide(
+          static_cast<float>(a[i]), static_cast<float>(b[i])));
+    }
+    return q;
   } else {
     return floor(divide(a, b));
   }

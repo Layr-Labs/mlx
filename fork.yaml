@@ -318,6 +318,27 @@ def:
         - "mlx/scheduler.cpp"
         - "mlx/transforms.cpp"
         - "tests/scheduler_tests.cpp"
+    - title: "half and bfloat16 floor divide in float32"
+      description: |
+        Upstream computes float16 and bfloat16 `floor_divide`, and the `divmod` quotient, as
+        `floor(a / b)` in the half type. The quotient is rounded to the half type before the
+        floor, so a true quotient that is less than half an ulp below an integer n rounds
+        to n, and the result is n instead of n - 1. numpy's float16 divmod computes in
+        float32 from `fmod` (`npy_divmodf`) and gives n - 1. Upstream's unseeded
+        `test_divmod` fails for this reason in about 4% of runs per device. The fork now
+        computes these two operations for float16 and bfloat16 in float32 with the same
+        method as `npy_divmodf` (`mod = fmod(a, b)`, `div = (a - mod) / b`, then a floor
+        with the sign correction), and rounds the result once to the output type: in the
+        Metal `FloorDivide` (which `DivMod` uses), in the CPU scalar and SIMD
+        `floor_divide`, and in the CPU `DivMod`. float32, float64 and integer paths do not
+        change. `test_floor_divide_half_rounding_window` uses pairs in the rounding window
+        and compares with numpy on the CPU and the GPU. The CUDA kernels do not change; no
+        workflow in this fork builds CUDA.
+      globs:
+        - "mlx/backend/metal/kernels/binary_ops.h"
+        - "mlx/backend/cpu/simd/base_simd.h"
+        - "mlx/backend/cpu/simd/accelerate_simd.h"
+        - "mlx/backend/cpu/binary.cpp"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

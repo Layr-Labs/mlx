@@ -33,7 +33,8 @@ target_include_directories(startup_wait_budget_api_tests PRIVATE ../..)
 jaccl_test(exchange_tests)
 target_include_directories(exchange_tests PRIVATE ../..)
 add_test(NAME exchange COMMAND exchange_tests)
-set_tests_properties(exchange PROPERTIES ENVIRONMENT "JACCL_TIMEOUT_ACTION=throw")
+set_tests_properties(exchange PROPERTIES ENVIRONMENT
+                                         "JACCL_TIMEOUT_ACTION=throw")
 add_test(NAME startup_wait_budget_api COMMAND startup_wait_budget_api_tests)
 add_test(NAME startup_wait_budget_groups
          COMMAND startup_wait_budget_group_tests)

@@ -57,7 +57,9 @@ class MeshImpl {
     int64_t N = buffer_size / sizeof(T);
     // Frames in flight per peer (staging holds this many; NUM_BUFFERS >= it).
     constexpr int PIPELINE = MESH_PIPELINE;
-    static_assert(MESH_PIPELINE <= NUM_BUFFERS, "mesh pipeline exceeds registered buffers");
+    static_assert(
+        MESH_PIPELINE <= NUM_BUFFERS,
+        "mesh pipeline exceeds registered buffers");
     constexpr int WC_NUM = PIPELINE * MESH_MAX_PEERS * 2;
     int64_t total = static_cast<int64_t>(size);
     int num_peers = size_ - 1;

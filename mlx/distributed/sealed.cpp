@@ -1,8 +1,8 @@
 // Copyright © 2026 Darkbloom.
 
+#include <dispatch/dispatch.h>
 #include <algorithm>
 #include <cstring>
-#include <dispatch/dispatch.h>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -32,8 +32,7 @@ void set_seal_codec(SealCodec codec) {
   if (codec.seal != nullptr && codec.open != nullptr &&
       (codec.seal_piece != nullptr || codec.open_piece != nullptr)) {
     if (!codec.streamed() || codec.piece_bytes < 4096 ||
-        codec.piece_bytes > (size_t(16) << 20) ||
-        codec.piece_bytes % 16 != 0) {
+        codec.piece_bytes > (size_t(16) << 20) || codec.piece_bytes % 16 != 0) {
       throw std::invalid_argument(
           "[set_seal_codec] a streamed codec needs both piece callbacks and "
           "piece_bytes: a multiple of 16 in [4 KiB, 16 MiB]");
@@ -90,7 +89,8 @@ void require_rows(const array& x, Group& group, const char* name, bool even) {
   if (x.ndim() < 2 || x.shape(0) != 1 || x.shape(1) < 1 ||
       (even && x.shape(1) % 2 != 0)) {
     throw std::invalid_argument(
-        std::string(name) + " needs [1, T, ...]" + (even ? " with T even" : ""));
+        std::string(name) + " needs [1, T, ...]" +
+        (even ? " with T even" : ""));
   }
 }
 SealCodec require_codec(const char* name) {
@@ -495,12 +495,30 @@ void SealedReduceScatter::eval_cpu(
   auto group = this->group();
   if (codec_.streamed() && group.raw_group()->supports_exchange()) {
     run_streamed(
-        codec_, group, stream(), in, out, half, send, mine, out.data<char>(),
-        add, "[reduce_scatter_sealed]");
+        codec_,
+        group,
+        stream(),
+        in,
+        out,
+        half,
+        send,
+        mine,
+        out.data<char>(),
+        add,
+        "[reduce_scatter_sealed]");
   } else {
     run_gathered(
-        codec_, group, stream(), in, out, half, send, mine, out.data<char>(),
-        add, "[reduce_scatter_sealed]");
+        codec_,
+        group,
+        stream(),
+        in,
+        out,
+        half,
+        send,
+        mine,
+        out.data<char>(),
+        add,
+        "[reduce_scatter_sealed]");
   }
   if (!inputs[0].flags().row_contiguous) {
     cpu::get_command_encoder(stream()).add_temporary(in);
@@ -536,12 +554,30 @@ void SealedAllGather::eval_cpu(
   auto group = this->group();
   if (codec_.streamed() && group.raw_group()->supports_exchange()) {
     run_streamed(
-        codec_, group, stream(), in, out, n, in.data<char>(), nullptr, theirs,
-        nullptr, "[all_gather_sealed]");
+        codec_,
+        group,
+        stream(),
+        in,
+        out,
+        n,
+        in.data<char>(),
+        nullptr,
+        theirs,
+        nullptr,
+        "[all_gather_sealed]");
   } else {
     run_gathered(
-        codec_, group, stream(), in, out, n, in.data<char>(), nullptr, theirs,
-        nullptr, "[all_gather_sealed]");
+        codec_,
+        group,
+        stream(),
+        in,
+        out,
+        n,
+        in.data<char>(),
+        nullptr,
+        theirs,
+        nullptr,
+        "[all_gather_sealed]");
   }
   if (!inputs[0].flags().row_contiguous) {
     encoder.add_temporary(in);

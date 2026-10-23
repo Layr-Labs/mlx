@@ -202,8 +202,7 @@ struct Codec {
   static uint64_t key(uint64_t counter, int sender, uint32_t piece) {
     return mix(counter * 0x10001 ^ uint64_t(sender) << 60 ^ uint64_t(piece));
   }
-  static void
-  crypt(const char* in, char* out, size_t len, uint64_t key) {
+  static void crypt(const char* in, char* out, size_t len, uint64_t key) {
     for (size_t i = 0; i < len; ++i) {
       out[i] = char(in[i] ^ char(mix(key ^ (i / 8)) >> (8 * (i % 8))));
     }
@@ -340,7 +339,8 @@ std::vector<char> reference(const SumResult& r) {
   auto b = reinterpret_cast<const T*>(r.partial[1].data());
   auto out = reinterpret_cast<T*>(sum.data());
   for (size_t i = 0; i < sum.size() / sizeof(T); ++i) {
-    out[i] = static_cast<T>(static_cast<float>(a[i]) + static_cast<float>(b[i]));
+    out[i] =
+        static_cast<T>(static_cast<float>(a[i]) + static_cast<float>(b[i]));
   }
   return sum;
 }
@@ -444,8 +444,8 @@ int main() {
   passed &= group(
       streamed_sum_identical, "streamed sum bit-identical to gathered sum");
   passed &= group(streamed_sum_tamper, "streamed sum refuses a changed byte");
-  passed &= group(
-      streamed_sum_seal_failure, "streamed sum seal failure sends zeros");
+  passed &=
+      group(streamed_sum_seal_failure, "streamed sum seal failure sends zeros");
   passed &= group(exchange_failure, "exchange failure closes the group");
   const auto& ledger = fixture::ledger();
   if (ledger.queue_pairs != 0 || ledger.completion_queues != 0 ||

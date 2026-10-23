@@ -225,7 +225,9 @@ class StreamedSum {
     QosOverride()
         : token_(
               raise_qos() ? pthread_override_qos_class_start_np(
-                                pthread_self(), QOS_CLASS_USER_INTERACTIVE, 0)
+                                pthread_self(),
+                                QOS_CLASS_USER_INTERACTIVE,
+                                0)
                           : nullptr) {}
     QosOverride(const QosOverride&) = delete;
     QosOverride& operator=(const QosOverride&) = delete;

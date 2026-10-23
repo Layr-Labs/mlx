@@ -26,7 +26,7 @@ to `main` (`.github/workflows/forkdiff-check.yml`) and fails on both:
 
 | Drift | Check | Why it matters |
 |-------|-------|----------------|
-| **Rebase onto newer upstream** | `base.hash` must equal `git merge-base HEAD upstream/main` and be an ancestor of upstream `main` | After a rebase the old base makes upstream's own commits look like fork changes: thousands of files, none of them ours. |
+| **Merge of newer upstream** | `base.hash` must equal `git merge-base HEAD upstream/main` and be an ancestor of upstream `main` | After a merge the old base makes upstream's own commits look like fork changes: thousands of files, none of them ours. |
 | **New fork change nobody described** | every path in `git diff --name-only base.hash HEAD` must match a section glob or a global `ignore` | An undescribed file is a change the page can't explain. |
 | **Section describing code we no longer carry** | every glob must match at least one changed path | Stale sections are as misleading as missing ones. |
 
@@ -42,10 +42,19 @@ section with a short description). Files that are not code go under the
 top-level `ignore`. Keep globs specific: a `mlx/**` catch-all would swallow
 upstream's changes after a bad rebase and defeat the gate.
 
-**Upstream sync policy (2026-09-25).** This fork does not merge or rebase onto
-upstream. `base.hash` stays fixed. An upstream fix the fork needs is ported as
-its own commit and described in its own `fork.yaml` section. The check keeps
-comparing the fork against the fixed base:
+**Upstream sync policy (2026-10-22).** The fork merges upstream `main` when
+David directs it. Use a merge commit. Do not rebase. Each merge does these steps:
+
+1. Set `base.hash` to the new merge-base, `git merge-base HEAD upstream/main`.
+2. Read each `fork.yaml` section again. Remove a section when upstream now has
+   the same change. Change a section when the merge changed the fork code.
+3. Delete again the upstream workflows and actions that the fork removes. The
+   "Fork tooling" section lists them.
+4. Run the check below until it passes.
+
+Between merges, port an upstream fix that the fork needs as its own commit.
+Describe the port in its own `fork.yaml` section. The check compares the fork
+with `base.hash`:
 
 ```
 python3 -m pip install pyyaml

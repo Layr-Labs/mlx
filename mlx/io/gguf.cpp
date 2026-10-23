@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <numeric>
 
 #include "mlx/io/gguf.h"
@@ -47,16 +48,35 @@ std::optional<Dtype> gguf_type_to_dtype(const uint32_t& gguf_type) {
   }
 }
 
+[[noreturn]] void tensor_error(
+    const gguf_tensor& tensor,
+    const std::string& what) {
+  std::ostringstream msg;
+  msg << "[load_gguf] Tensor '" << std::string(tensor.name, tensor.namelen)
+      << "' " << what << ". Perhaps an incomplete download or corrupt file?";
+  throw std::runtime_error(msg.str());
+}
+
 Shape get_shape(const gguf_tensor& tensor) {
   Shape shape;
+  uint64_t num_weights = 1;
   // The dimension order in GGML is the reverse of the order used in MLX.
   for (int i = tensor.ndim - 1; i >= 0; i--) {
-    shape.push_back(tensor.dim[i]);
+    auto dim = tensor.dim[i];
+    if (dim > std::numeric_limits<ShapeElem>::max()) {
+      tensor_error(tensor, "has a dimension that is too large");
+    }
+    if (dim != 0 && num_weights > std::numeric_limits<uint64_t>::max() / dim) {
+      tensor_error(
+          tensor, "has a dimension product that does not fit in 64 bits");
+    }
+    num_weights *= dim;
+    shape.push_back(dim);
   }
   return shape;
 }
 
-std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
+std::tuple<allocator::Data, Dtype> extract_tensor_data(gguf_tensor* tensor) {
   if (tensor == nullptr) {
     throw std::invalid_argument(
         "[extract_tensor_data] Input tensor pointer is null.");
@@ -67,12 +87,12 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
     if (tensor->weights_data == nullptr) {
       throw std::runtime_error("[load_gguf] NULL tensor data pointer");
     }
-    allocator::Buffer buffer = allocator::malloc(tensor->bsize);
+    auto out = allocator::malloc(tensor->bsize);
     memcpy(
-        buffer.raw_ptr(),
+        out.buffer().raw_ptr(),
         tensor->weights_data,
         tensor->num_weights * equivalent_dtype.value().size());
-    return {buffer, equivalent_dtype.value()};
+    return {std::move(out), equivalent_dtype.value()};
   }
   // Otherwise, we convert to float16.
   // TODO: Add other dequantization options.
@@ -81,10 +101,10 @@ std::tuple<allocator::Buffer, Dtype> extract_tensor_data(gguf_tensor* tensor) {
     throw std::runtime_error("[load_gguf] gguf_tensor_to_f16 failed");
   }
   const size_t new_size = tensor->num_weights * sizeof(int16_t);
-  allocator::Buffer buffer = allocator::malloc(new_size);
-  memcpy(buffer.raw_ptr(), data, new_size);
+  auto out = allocator::malloc(new_size);
+  memcpy(out.buffer().raw_ptr(), data, new_size);
   free(data);
-  return {buffer, float16};
+  return {std::move(out), float16};
 }
 
 void set_mx_value_from_gguf(
@@ -303,20 +323,14 @@ std::unordered_map<std::string, GGUFMetaData> load_metadata(gguf_ctx* ctx) {
 }
 
 void check_tensor_in_file(const gguf_ctx* ctx, const gguf_tensor& tensor) {
-  auto fail = [&tensor](const std::string& what) {
-    std::ostringstream msg;
-    msg << "[load_gguf] Tensor '" << std::string(tensor.name, tensor.namelen)
-        << "' " << what << ". Perhaps an incomplete download or corrupt file?";
-    throw std::runtime_error(msg.str());
-  };
   if (tensor.offset < ctx->data_off) {
-    fail("has a data offset that overflows the data section");
+    tensor_error(tensor, "has a data offset that overflows the data section");
   }
   if (tensor.offset > ctx->size) {
-    fail("has a data offset past the end of the file");
+    tensor_error(tensor, "has a data offset past the end of the file");
   }
   if (tensor.bsize > ctx->size - tensor.offset) {
-    fail("extends past the end of the file");
+    tensor_error(tensor, "extends past the end of the file");
   }
 }
 
@@ -340,8 +354,8 @@ std::unordered_map<std::string, array> load_arrays(gguf_ctx* ctx) {
       gguf_load_quantized(array_map, tensor);
     } else {
       std::string name(tensor.name, tensor.namelen);
-      const auto& [data, dtype] = extract_tensor_data(&tensor);
-      array loaded_array = array(data, get_shape(tensor), dtype);
+      auto [data, dtype] = extract_tensor_data(&tensor);
+      array loaded_array = array(std::move(data), get_shape(tensor), dtype);
       check_insert(array_map.insert({name, loaded_array}));
     }
   }

@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "mlx/backend/common/broadcasting.h"
+#include "mlx/backend/common/compiled.h"
 #include "mlx/backend/common/matmul.h"
 #include "mlx/backend/gpu/copy.h"
 #include "mlx/backend/metal/binary.h"
@@ -208,11 +209,25 @@ void steel_matmul_regular_axpby_nax(
 
   // Temp routing for larger devices
   char devc = d.get_architecture().back();
-  if (devc == 's' || devc == 'c' || devc == 'd') {
+  if (devc == 's' || devc == 'c') {
     bk = (K >= 8192 && K > (M + N)) ? 64 : 256;
 
     bm = 64;
     wm = 2;
+  } else if (devc == 'd') {
+    if (N > M) {
+      bm = 128;
+      bn = 64;
+
+      wm = 4;
+      wn = 2;
+    } else {
+      bm = 64;
+      bn = 128;
+
+      wm = 2;
+      wn = 4;
+    }
   }
 
   // Prepare kernel name
@@ -279,8 +294,10 @@ void steel_matmul_regular_axpby_nax(
 
   // TODO: Explore device-based tuning for swizzle
   int swizzle_log = tm <= 3 ? 0 : 1;
-  if (devc == 's' || devc == 'c' || devc == 'd') {
+  if (devc == 's' || devc == 'c') {
     swizzle_log = 2;
+  } else if (devc == 'd') {
+    swizzle_log = (M > N) ? 0 : 2;
   }
 
   // Prepare steel matmul params
@@ -681,6 +698,33 @@ void steel_gemm_splitk_axpby_nax(
   int wm = 4, wn = 4;
   int split_k_partition_size = 4096;
 
+  // Temp routing for larger devices
+  char devc = d.get_architecture().back();
+  if (devc == 'd') {
+    if (M <= 2048 && N <= 2048) {
+      bm = 64;
+      bn = 64;
+
+      wm = 2;
+      wn = 2;
+
+      split_k_partition_size = 2048;
+      bk = 256;
+    } else if (N > M) {
+      bm = 128;
+      bn = 64;
+
+      wm = 4;
+      wn = 2;
+    } else {
+      bm = 64;
+      bn = 128;
+
+      wm = 2;
+      wn = 4;
+    }
+  }
+
   if ((M + N) / 2 < 512 || K <= 4096) {
     bm = bn = 64;
     bk = 256;
@@ -754,6 +798,9 @@ void steel_gemm_splitk_axpby_nax(
   int tm = (M + bm - 1) / bm;
 
   int swizzle_log = tm <= 3 ? 0 : 1;
+  if (devc == 'd') {
+    swizzle_log = (M > N) ? 0 : 1;
+  }
 
   // Compute swizzled tile counts
   int tile = 1 << swizzle_log;
@@ -944,7 +991,62 @@ void steel_matmul_axpby(
         /* float beta = */ beta);
   }
 
-  // Case 2: Large K with sufficient M, N, and NAX is available, use NAX split-K
+  // Case 2: Few output rows or columns, small tiles with A in registers
+  if (use_nax && batch_size_out == 1 && !transpose_a &&
+      (N <= 64 || (M <= 64 && transpose_b)) && out.dtype() != float32 &&
+      (transpose_b || int64_t(K) * ldb <= INT_MAX)) {
+    int sn = M < 2048 ? 1 : 2, ks = 4 / sn;
+    std::ostringstream kname;
+    kname << "steel_gemm_thin_nax_n" << (transpose_b ? 't' : 'n') << "_"
+          << type_to_name(out) << "_um2_un2_sm1_sn" << sn << "_ks" << ks;
+    auto base_name = kname.str();
+    bool use_out_source = CHECK_AB && (alpha != 0.0f || beta != 1.0f);
+    bool do_axpby = use_out_source && (alpha != 1.0f || beta != 1.0f);
+    bool align_M = M % 32 == 0, align_N = N % (32 * sn) == 0;
+    bool align_K = K % 64 == 0;
+    kname << "_" << use_out_source << do_axpby << align_M << align_N << align_K;
+    auto kernel = get_steel_gemm_thin_nax_kernel(
+        d,
+        base_name,
+        kname.str(),
+        {{&use_out_source, MTL::DataType::DataTypeBool, 100},
+         {&do_axpby, MTL::DataType::DataTypeBool, 110},
+         {&align_M, MTL::DataType::DataTypeBool, 200},
+         {&align_N, MTL::DataType::DataTypeBool, 201},
+         {&align_K, MTL::DataType::DataTypeBool, 202}},
+        get_template_definition(
+            base_name,
+            "gemm_thin_nax",
+            get_type_string(out.dtype()),
+            2,
+            2,
+            1,
+            sn,
+            ks,
+            transpose_b));
+    auto& compute_encoder = metal::get_command_encoder(s);
+    compute_encoder.set_compute_pipeline_state(kernel);
+    int tm = (M + 31) / 32, tn = (N + 32 * sn - 1) / (32 * sn);
+    int k_iters = ((K + 63) / 64 + ks - 1) / ks;
+    steel::GEMMParams params{
+        M, N, K, lda, ldb, N, tn, tm, 0, 0, 0, 0, k_iters, 0};
+    compute_encoder.set_input_array(a, 0);
+    compute_encoder.set_input_array(b, 1);
+    compute_encoder.set_output_array(out, 3);
+    compute_encoder.set_bytes(params, 4);
+    if (use_out_source) {
+      int ldc = c.strides()[c.ndim() - 2], fdc = c.strides()[c.ndim() - 1];
+      steel::GEMMAddMMParams addmm_params{ldc, fdc, 0, alpha, beta};
+      compute_encoder.set_input_array(c, 2);
+      compute_encoder.set_bytes(addmm_params, 5);
+    }
+    compute_encoder.dispatch_threadgroups(
+        MTL::Size(tm * tn, 1, 1), MTL::Size(32 * sn * ks, 1, 1));
+    compute_encoder.add_temporaries(std::move(copies));
+    return;
+  }
+
+  // Case 3: Large K with sufficient M, N, and NAX is available, use NAX split-K
   if (use_nax && batch_size_out == 1 &&
       (K >= 3 * std::max(M, N) ||
        (std::max(M, N) <= 1024 && K > 2 * std::max(M, N)))) {

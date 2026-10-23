@@ -7,9 +7,11 @@
 
 #pragma once
 
+#ifdef __APPLE__
 #include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <pthread/qos.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -155,6 +157,7 @@ class StreamedSum {
           });
       return !failed_.load();
     }
+#ifdef __APPLE__
     QosOverride boost;
     Workers workers;
     StreamedSum* self = this;
@@ -164,6 +167,12 @@ class StreamedSum {
         self->seal_in_order();
       });
     }
+#else
+    // The portable path uses no background workers or platform QoS APIs.
+    for (size_t k = 0; k < layout_.count; ++k) {
+      seal(k);
+    }
+#endif
     size_t sealed_prefix = 0;
     size_t dispatched = 0;
     exchange(
@@ -183,16 +192,23 @@ class StreamedSum {
                layout_.sealed_end(dispatched) <= end;
                ++dispatched) {
             size_t k = dispatched;
+#ifdef __APPLE__
             workers.async(^{
               self->open_and_add(k);
             });
+#else
+            open_and_add(k);
+#endif
           }
         });
+#ifdef __APPLE__
     workers.wait();
+#endif
     return !failed_.load();
   }
 
  private:
+#ifdef __APPLE__
   // Waits for every block before the frames and `out` can be released.
   class Workers {
    public:
@@ -225,7 +241,9 @@ class StreamedSum {
     QosOverride()
         : token_(
               raise_qos() ? pthread_override_qos_class_start_np(
-                                pthread_self(), QOS_CLASS_USER_INTERACTIVE, 0)
+                                pthread_self(),
+                                QOS_CLASS_USER_INTERACTIVE,
+                                0)
                           : nullptr) {}
     QosOverride(const QosOverride&) = delete;
     QosOverride& operator=(const QosOverride&) = delete;
@@ -238,6 +256,8 @@ class StreamedSum {
    private:
     pthread_override_t token_;
   };
+
+#endif
 
   void seal_in_order() {
     for (size_t k; (k = next_seal_.fetch_add(1)) < layout_.count;) {

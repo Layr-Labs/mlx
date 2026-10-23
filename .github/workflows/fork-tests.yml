@@ -44,6 +44,11 @@ jobs:
           # builds all Metal kernels.
           macos-target: '26.2'
 
+      - name: Run bounded Metal fence chains
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/fence-%p-%m.profraw
+        run: ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure --no-tests=error
+
       - uses: ./.github/actions/test-macos
         id: tests
         env:

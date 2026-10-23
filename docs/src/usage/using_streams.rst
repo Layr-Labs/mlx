@@ -16,3 +16,17 @@ the operation is run on the default stream of the default device:
 be a :obj:`Device` (e.g. ``stream=my_device``) in which case the operation is
 run on the default stream of the provided device
 ``mx.default_stream(my_device)``.
+
+Cross-device fence ordering
+---------------------------
+
+With fast Metal synchronization, a GPU consumer can wait for work on a CPU
+stream. Its wait must follow both earlier command passes and earlier kernels
+in the current concurrent pass. The CPU work can depend on those GPU kernels.
+``Fence::wait`` therefore inserts both dependencies before the GPU wait.
+
+The standalone ``metal_fence_chain`` test checks exact GPU-to-CPU-to-GPU chains
+with shared side roots and request-array retirement. CTest runs separate
+processes with fast synchronization and several command-buffer sizes, with a
+60-second timeout per process. This component test does not qualify distributed
+collective order, a transport, or an installed model service.

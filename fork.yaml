@@ -297,13 +297,35 @@ def:
         the queued work completes. On a two-rank JACCL mesh the sum streams in 256 KiB
         pieces, each with its own AES-256-GCM tag, over `MeshImpl::exchange`: a piece is
         sent as soon as it is sealed and opened and added as soon as it lands. Other
-        groups keep the seal-gather-open path.
+        groups keep the seal-gather-open path. Non-Apple builds use synchronous
+        piece sealing and opening without Apple dispatch or QoS APIs, preserving
+        the authenticated wire format and rank-ordered arithmetic. Apple keeps
+        its existing parallel path.
       globs:
         - "mlx/distributed/CMakeLists.txt"
         - "mlx/distributed/primitives.h"
         - "mlx/distributed/sealed.cpp"
         - "mlx/distributed/sealed.h"
         - "mlx/distributed/sealed_stream.h"
+        - "tests/distributed_sealed_stream_tests.cpp"
+    - title: "Fast fence waits order earlier kernels in the same Metal pass"
+      description: |
+        An ordinary fast-synchronization GPU fence wait follows both pending
+        command passes and earlier kernels in the current concurrent encoder.
+        The in-pass buffer barrier matches the existing fenced-input consumer
+        path. Without it, a spinning wait can run before a GPU producer needed
+        by the CPU work it awaits. Arithmetic and command-buffer limits do not
+        change. A standalone bounded test checks exact GPU-to-CPU-to-GPU chains,
+        shared side roots and request-array retirement at several buffer sizes.
+        Fork Tests executes the three CTest processes on its Metal runner and
+        rejects a missing test registration. This component coverage does not
+        establish an installed RDMA model fix.
+      globs:
+        - "mlx/backend/metal/fence.cpp"
+        - "tests/metal_fence_chain.cpp"
+        - "tests/CMakeLists.txt"
+        - "docs/src/usage/using_streams.rst"
+        - ".github/workflows/fork-tests.yml"
     - title: "Fused cross-device fence update"
       description: |
         Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU

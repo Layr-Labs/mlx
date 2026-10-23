@@ -1,0 +1,90 @@
+#!/bin/bash
+# A cache for the Metal kernel build of fork-tests.yml.
+#
+# The build jobs put this folder first in PATH. The kernel rules in
+# mlx/backend/metal/kernels/CMakeLists.txt call "xcrun -sdk macosx metal"
+# to compile each .metal file to an .air file and to link the .air files to
+# mlx.metallib. This script gives those two calls a cache. It sends all other
+# calls to /usr/bin/xcrun without a change.
+#
+# The key of an .air file is the SHA-256 of the toolchain ID, the arguments
+# without "-o FILE", and the preprocessed source. The key of a .metallib file
+# is the SHA-256 of the toolchain ID and the arguments, with each .air input
+# replaced by the SHA-256 of its content.
+#
+# Environment:
+#   MLX_METAL_CACHE_TOOLCHAIN  the toolchain ID (Xcode, SDK and Metal versions)
+#   MLX_METAL_CACHE_IN         the folder with the restored entries
+#   MLX_METAL_CACHE_OUT        the folder that gets every entry that this
+#                              build uses; the job saves this folder
+# If one of them is not set, the script only calls /usr/bin/xcrun.
+set -euo pipefail
+
+real=/usr/bin/xcrun
+
+if [[ -z "${MLX_METAL_CACHE_TOOLCHAIN:-}" || -z "${MLX_METAL_CACHE_IN:-}" ||
+      -z "${MLX_METAL_CACHE_OUT:-}" || $# -lt 4 ||
+      "$1" != "-sdk" || "$2" != "macosx" || "$3" != "metal" ]]; then
+  exec "$real" "$@"
+fi
+
+out=""
+compile=0
+key_args=()
+pre_args=()
+args=("${@:4}")
+i=0
+while (( i < ${#args[@]} )); do
+  arg=${args[i]}
+  if [[ $arg == "-o" && $(( i + 1 )) -lt ${#args[@]} ]]; then
+    out=${args[i + 1]}
+    pre_args+=(-o -)
+    i=$(( i + 2 ))
+    continue
+  fi
+  if [[ $arg == "-c" ]]; then
+    compile=1
+    key_args+=(-c)
+    pre_args+=(-E)
+  elif [[ $arg == *.air && -f $arg ]]; then
+    key_args+=("air:$(shasum -a 256 < "$arg" | cut -d ' ' -f 1)")
+    pre_args+=("$arg")
+  else
+    key_args+=("$arg")
+    pre_args+=("$arg")
+  fi
+  i=$(( i + 1 ))
+done
+
+if [[ $compile == 1 && $out == *.air ]]; then
+  mode=compile
+elif [[ $compile == 0 && $out == *.metallib ]]; then
+  mode=link
+else
+  exec "$real" "$@"
+fi
+
+{
+  printf '%s\0' "$MLX_METAL_CACHE_TOOLCHAIN" "$mode" "${key_args[@]}"
+  if [[ $mode == compile ]]; then
+    "$real" -sdk macosx metal "${pre_args[@]}" 2>/dev/null
+  fi
+} > "$out.key" || {
+  rm -f "$out.key"
+  exec "$real" "$@"
+}
+key=$(shasum -a 256 < "$out.key" | cut -d ' ' -f 1)
+rm -f "$out.key"
+
+mkdir -p "$MLX_METAL_CACHE_OUT"
+log="$MLX_METAL_CACHE_OUT.log"
+if [[ -f "$MLX_METAL_CACHE_IN/$key" ]]; then
+  cp "$MLX_METAL_CACHE_IN/$key" "$out"
+  echo "hit $mode $(basename "$out")" >> "$log"
+else
+  "$real" "$@"
+  echo "miss $mode $(basename "$out")" >> "$log"
+fi
+tmp="$MLX_METAL_CACHE_OUT/$key.$$"
+cp "$out" "$tmp"
+mv "$tmp" "$MLX_METAL_CACHE_OUT/$key"

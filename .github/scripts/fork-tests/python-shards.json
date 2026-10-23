@@ -1,0 +1,38 @@
+{
+  "gpu": [
+    [
+      "test_ops", "test_reduce", "test_nn", "test_threads", "test_autograd",
+      "test_vmap", "test_conv", "test_optimizers", "test_fast", "test_linalg",
+      "test_load", "test_eval", "test_einsum", "test_export_import",
+      "test_upsample", "test_memory", "test_init", "test_random", "test_losses",
+      "test_zero_copy", "test_bf16", "test_conv_transpose", "test_double",
+      "test_constants", "test_device", "test_extension", "test_graph",
+      "test_metal_threadgroup_bounds", "test_tree"
+    ],
+    ["test_quantized", "test_fft", "test_compile", "test_blas"],
+    ["test_fast_gated_delta", "test_fast_sdpa", "test_array"]
+  ],
+  "cpu": [
+    [
+      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_nax",
+      "test_quantized", "test_fft", "test_optimizers", "test_conv",
+      "test_autograd", "test_vmap", "test_random", "test_linalg", "test_bf16",
+      "test_constants", "test_conv_transpose"
+    ],
+    [
+      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_sequential",
+      "test_fast_sdpa", "test_export_import", "test_upsample", "test_threads",
+      "test_eval", "test_double", "test_device", "test_einsum"
+    ],
+    [
+      "test_fast_gated_delta.TestGatedDelta.test_gated_delta_simdgroup",
+      "test_reduce", "test_compile", "test_load", "test_zero_copy",
+      "test_extension", "test_graph", "test_init", "test_losses", "test_memory",
+      "test_metal_threadgroup_bounds", "test_tree"
+    ],
+    [
+      "test_fast_gated_delta:rest", "test_ops", "test_blas", "test_nn",
+      "test_fast", "test_array"
+    ]
+  ]
+}

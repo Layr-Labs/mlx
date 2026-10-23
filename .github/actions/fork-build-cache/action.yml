@@ -1,0 +1,143 @@
+name: 'Fork build caches'
+description: 'Set up a fork-tests build job with ccache and the Metal kernel cache, and save the caches'
+
+# phase: restore runs the setup action, restores the ccache files and the
+# Metal kernel cache, and points the build at the cache script in
+# .github/scripts/fork-tests/metal-cache. phase: save prints the cache
+# statistics and saves both caches on pull requests and on pushes to main.
+#
+# Cache keys:
+#   ccache  ccache-fork-tests-KIND-TOOLCHAIN-FLAGS-macOS-ARM64-metal-SHA-RUN-ATTEMPT
+#   Metal   metal-TOOLCHAIN-KERNELS-KIND-RUN-ATTEMPT
+# TOOLCHAIN is a hash of the Xcode, clang, Metal and SDK versions. FLAGS is a
+# hash of CFLAGS, CXXFLAGS, the deployment target and KIND. KIND sets the
+# CMake arguments of the build step.
+# KERNELS is the hash of mlx/backend/metal/kernels. A restore takes the
+# newest cache with the same prefix. ccache and the Metal cache script check
+# the content of each entry, so an older cache gives only fewer hits.
+
+inputs:
+  phase:
+    description: 'restore or save'
+    required: true
+  kind:
+    description: 'The build kind: wheel or cpp'
+    required: true
+  ccache-save-key:
+    description: 'phase save: the ccache-save-key output of phase restore'
+    required: false
+    default: ''
+  metal-save-key:
+    description: 'phase save: the metal-save-key output of phase restore'
+    required: false
+    default: ''
+
+outputs:
+  cmake-args:
+    description: 'The args for generating CMake project'
+    value: ${{ steps.setup.outputs.cmake-args }}
+  ccache-save-key:
+    description: 'The key to save the ccache files with'
+    value: ${{ steps.setup.outputs.ccache-save-key }}
+  metal-save-key:
+    description: 'The key to save the Metal kernel cache with'
+    value: ${{ steps.keys.outputs.metal-save }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Make the cache keys
+      id: keys
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+        KERNELS: ${{ hashFiles('mlx/backend/metal/kernels/**') }}
+      run: |
+        toolchain=$({
+          xcodebuild -version
+          xcrun clang --version
+          xcrun -sdk macosx metal --version
+          xcrun -sdk macosx --show-sdk-build-version
+        } 2>&1 | shasum -a 256 | cut -c 1-16)
+        # The setup action makes the same CMake arguments for each metal
+        # build. The build steps add the rest.
+        flags=$(printf '%s\n' "$CFLAGS" "$CXXFLAGS" "$MACOSX_DEPLOYMENT_TARGET" "$KIND" \
+          | shasum -a 256 | cut -c 1-16)
+        kernels=${KERNELS:0:16}
+        {
+          echo "toolchain=$toolchain"
+          echo "ccache-key=fork-tests-$KIND-$toolchain-$flags"
+          echo "metal-prefix=metal-$toolchain-"
+          echo "metal-restore=metal-$toolchain-$kernels-"
+          echo "metal-save=metal-$toolchain-$kernels-$KIND-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        } | tee -a "$GITHUB_OUTPUT"
+
+    - uses: ./.github/actions/setup
+      id: setup
+      if: inputs.phase == 'restore'
+      with:
+        toolkit: metal
+        ccache-key: ${{ steps.keys.outputs.ccache-key }}
+        # The build and the C++ tests do not use openmpi. Only the
+        # distributed test in python-gpu shard 0 does.
+        install-macos-deps: 'false'
+
+    - name: Restore the Metal kernel cache
+      if: inputs.phase == 'restore'
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/.metal-cache
+        key: ${{ steps.keys.outputs.metal-restore }}
+        restore-keys: |
+          ${{ steps.keys.outputs.metal-restore }}
+          ${{ steps.keys.outputs.metal-prefix }}
+
+    - name: Prepare the caches
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        TOOLCHAIN: ${{ steps.keys.outputs.toolchain }}
+      run: |
+        # The script reads the restored entries from MLX_METAL_CACHE_IN and
+        # writes each entry that the build uses to MLX_METAL_CACHE_OUT. The
+        # saved cache then holds no entries that the build does not use.
+        in="$RUNNER_TEMP/metal-cache-in"
+        if [ -d .metal-cache ]; then
+          mv .metal-cache "$in"
+        else
+          mkdir -p "$in"
+        fi
+        echo "Restored Metal cache entries: $(ls "$in" | wc -l)"
+        {
+          echo "MLX_METAL_CACHE_TOOLCHAIN=$TOOLCHAIN"
+          echo "MLX_METAL_CACHE_IN=$in"
+          echo "MLX_METAL_CACHE_OUT=$GITHUB_WORKSPACE/.metal-cache"
+        } >> "$GITHUB_ENV"
+        ccache -z
+
+    - name: Show the cache statistics
+      if: inputs.phase == 'save'
+      shell: bash
+      run: |
+        ccache -s -v
+        log="$MLX_METAL_CACHE_OUT.log"
+        if [ -f "$log" ]; then
+          echo "Metal cache: $(grep -c '^hit ' "$log" || true) hits, $(grep -c '^miss ' "$log" || true) misses"
+          grep '^miss ' "$log" || true
+        fi
+        du -sh .ccache .metal-cache || true
+
+    - name: Save the ccache files
+      if: inputs.phase == 'save' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/.ccache
+        key: ${{ inputs.ccache-save-key }}
+
+    - name: Save the Metal kernel cache
+      if: inputs.phase == 'save' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+      with:
+        path: ${{ github.workspace }}/.metal-cache
+        key: ${{ inputs.metal-save-key }}

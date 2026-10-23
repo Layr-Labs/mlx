@@ -67,7 +67,11 @@ fi
 {
   printf '%s\0' "$MLX_METAL_CACHE_TOOLCHAIN" "$mode" "${key_args[@]}"
   if [[ $mode == compile ]]; then
-    "$real" -sdk macosx metal "${pre_args[@]}" 2>/dev/null
+    # The toolchain mount folder has a random suffix on each runner, for
+    # example MetalToolchain-v17.6.109.0.oxYh3g. Remove it from the line
+    # markers, and keep the version.
+    "$real" -sdk macosx metal "${pre_args[@]}" 2>/dev/null |
+      sed -E 's#(MetalToolchain-v[0-9.]*[0-9])\.[A-Za-z0-9]+/#\1/#g'
   fi
 } > "$out.key" || {
   rm -f "$out.key"

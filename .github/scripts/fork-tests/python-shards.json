@@ -44,7 +44,6 @@
   "cpu": [
     [
       "test_fast_gated_delta.TestGatedDelta.test_gated_delta_simdgroup",
-      "test_quantized:rest",
       "test_fast_sdpa.TestFastSDPA.test_sdpa_vector_gqa_long",
       "test_fft",
       "test_fast_gated_delta:rest",
@@ -61,6 +60,7 @@
       "test_memory"
     ],
     [
+      "test_quantized:rest",
       "test_reduce",
       "test_fast_gated_delta.TestGatedDelta.test_gated_delta_sequential",
       "test_compile",

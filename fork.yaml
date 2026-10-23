@@ -6,12 +6,12 @@ footer: |
 base:
   name: ml-explore/mlx
   url: https://github.com/ml-explore/mlx
-  # The upstream commit this fork is based on: upstream main on 2026-10-22, the
+  # The upstream commit this fork is based on: upstream main on 2026-10-23, the
   # head that the fork merged on that date. CI (`scripts/check_forkdiff.py`)
   # requires this hash to equal `git merge-base HEAD upstream/main`. Each upstream
   # merge moves the merge-base, so the gate fails until this hash and the
   # sections below are brought up to date.
-  hash: c6abf0dbb4fc141fad739b32ae486c06728e49e5
+  hash: afc03c51105a8e25e70fa2ba0befb214e4f5ec6f
 fork:
   name: Layr-Labs/mlx
   url: https://github.com/Layr-Labs/mlx

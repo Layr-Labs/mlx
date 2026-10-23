@@ -289,7 +289,7 @@ jobs:
           MLX_ENABLE_CACHE_THRASHING_CHECK: '0'
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
         run: |
-          uv pip install dist/*.whl
+          uv pip install dist/*.whl numpy
           cd python/tests
           T=test_quantized.TestQuantized
           note() { echo "::notice title=$1::$2"; }

@@ -87,5 +87,11 @@ if(MLX_BUILD_METAL)
     registration-ordinary-foreign)
     add_test(NAME process_allocation_cap_metal.${case}
              COMMAND process_allocation_cap_metal ${case})
+    # The registration cases exit with 77 when the device has no residency sets,
+    # so ctest reports them as skipped.
+    if(case MATCHES "^registration-")
+      set_tests_properties(process_allocation_cap_metal.${case}
+                           PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
   endforeach()
 endif()

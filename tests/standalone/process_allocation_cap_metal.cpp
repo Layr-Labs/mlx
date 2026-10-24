@@ -437,6 +437,17 @@ int main(int argc, char** argv) {
       gpu_footprint_case();
     } else if (mode == "concurrent") {
       concurrent_case(page);
+    } else if (
+        mode.find("registration-") == 0 &&
+        !metal::device(Device::gpu).residency_sets().enabled()) {
+      // These cases inject a failure into the creation of a residency set.
+      // Without residency sets (no Metal 3 GPU family or macOS < 15, as on a
+      // virtual GPU) the allocator registers nothing, so the path under test
+      // does not exist. Exit code 77 is SKIP_RETURN_CODE in
+      // tests/CMakeLists.txt.
+      std::cout << "SKIP " << mode
+                << ": residency sets are disabled on this device\n";
+      return 77;
     } else if (mode.find("registration-") == 0 || mode == "nil-foreign") {
       failure_case(mode, page);
     } else if (mode == "late") {

@@ -124,6 +124,11 @@ def:
         cases check the heap charge and heap use that match the device. The registration cases
         fill one residency set with a page first, so that the injected failure of a new set is
         reached with or without the heap in set 0.
+        When the device has no residency sets (`ResidencySets::enabled()` is false: no Metal 3
+        GPU family or macOS before 15, as on the virtual GPU of the hosted runner), the path
+        these cases test does not exist. They then print the reason and exit with 77, which
+        ctest reports as skipped (`SKIP_RETURN_CODE`). David ruled on 2026-10-24 to skip by
+        capability, like the 4 GiB capability skip below.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.

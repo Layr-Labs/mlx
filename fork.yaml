@@ -172,6 +172,20 @@ def:
         - "mlx/compile.cpp"
         - "mlx/compile_impl.h"
         - "tests/compile_tests.cpp"
+    - title: "Freed compiled closures leave every thread cache"
+      description: |
+        `compile(std::function)` keys a closure by the address of a heap copy of it. Upstream,
+        the deleter of that copy erases the key only from the cache of the thread that called
+        `compile()`. Each call records its trace in the cache of the calling thread, so a trace
+        from another thread stayed after the copy was freed. The trace kept its arrays alive,
+        and a later closure at the same address could replay it. The deleter now erases the key
+        from every live thread cache through the registry above, before the delete. The test
+        `test freeing a compiled closure erases every thread cache` records a trace on a second
+        thread, frees the closure, and checks that the captured array is uniquely referenced.
+        (PR #43)
+      globs:
+        - "mlx/compile.cpp"
+        - "tests/compile_tests.cpp"
     - title: "Integer floor_divide tests"
       description: |
         The fork keeps its regression tests for integer `floor_divide` from PR #32. Upstream

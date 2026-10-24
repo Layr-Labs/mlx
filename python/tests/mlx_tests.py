@@ -54,6 +54,12 @@ class MLXTestCase(unittest.TestCase):
         if device is not None:
             device = getattr(mx, device)
             mx.set_default_device(device)
+        # Each test draws the same random input in every run. Many tests
+        # compare with a reference under a fixed tolerance, and some random
+        # inputs fall outside it (for example a near-zero element under a
+        # relative tolerance), so unseeded input made them fail now and then.
+        mx.random.seed(0)
+        np.random.seed(0)
 
     def tearDown(self):
         mx.set_default_device(self.default)

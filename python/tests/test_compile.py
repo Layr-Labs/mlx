@@ -186,11 +186,20 @@ class TestCompile(mlx_tests.MLXTestCase):
         traced = threading.Event()
         released = threading.Event()
         errors = []
+        worker_traces = []
 
         def worker():
             try:
-                # Record a trace in the cache of this thread.
+                # Make the default stream of this thread first. A trace is
+                # cached under the default stream of the calling thread, and
+                # the first op of a new thread makes that stream. A trace
+                # recorded before it exists never matches a later call.
+                mx.default_stream(mx.default_device())
+                # Record a trace in the cache of this thread. The second call
+                # must use it, which shows that this thread finds the entry.
                 mx.eval(holder["fn"](mx.array([1.0])))
+                mx.eval(holder["fn"](mx.array([1.0])))
+                worker_traces.append(len(traces))
                 traced.set()
                 self.assertTrue(released.wait(10))
                 # The same callable, so the same id.
@@ -216,6 +225,7 @@ class TestCompile(mlx_tests.MLXTestCase):
 
         if errors:
             raise errors[0]
+        self.assertEqual(worker_traces, [1])
         # One trace on each thread, and one more on the worker after the free.
         self.assertEqual(len(traces), 3)
 

@@ -51,3 +51,41 @@ target_link_options(tests PRIVATE ${SANITIZER_LINK_FLAGS})
 
 doctest_discover_tests(tests)
 add_test(NAME tests COMMAND tests)
+
+# The standalone tests of the process allocation cap. The cap is install-once in
+# each process, so these tests are not in the tests binary. Each ctest entry
+# runs in a fresh process, and the Metal test runs one case in each process.
+if(MLX_BUILD_METAL)
+  add_executable(
+    process_allocation_cap
+    ${PROJECT_SOURCE_DIR}/tests/standalone/process_allocation_cap.cpp)
+  target_link_libraries(process_allocation_cap PRIVATE mlx)
+  # The test checks its results with assert().
+  target_compile_options(process_allocation_cap PRIVATE -UNDEBUG)
+  add_test(NAME process_allocation_cap COMMAND process_allocation_cap)
+
+  add_executable(
+    process_allocation_cap_metal
+    ${PROJECT_SOURCE_DIR}/tests/standalone/process_allocation_cap_metal.cpp)
+  # The test replaces Metal device methods with the Objective-C runtime.
+  target_link_libraries(process_allocation_cap_metal PRIVATE mlx objc)
+  foreach(
+    case
+    install
+    retained
+    churn
+    foreign
+    gpu
+    late
+    concurrent
+    footprint-delta
+    gpu-footprint
+    nil-foreign
+    registration-capped
+    registration-foreign
+    registration-ordinary
+    registration-ordinary-foreign)
+    add_test(NAME process_allocation_cap_metal.${case}
+             COMMAND process_allocation_cap_metal ${case})
+  endforeach()
+endif()

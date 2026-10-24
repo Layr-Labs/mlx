@@ -7,6 +7,8 @@ name: Fork Tests
 #   build-wheel    builds the Python wheel and uploads it.
 #   build-cpp      builds the C++ library and tests, and runs the C++ tests
 #                  with the GPU and then with the CPU as the default device.
+#                  Then it runs the standalone allocation cap tests, one
+#                  process for each case.
 #   python-gpu     runs the Python tests with the GPU as the default device.
 #   python-cpu     runs the Python tests with the CPU as the default device.
 #   metal-build-and-test
@@ -137,6 +139,17 @@ jobs:
           DEVICE: cpu
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
         run: ./build/tests/tests
+
+      - name: Run the standalone allocation cap tests
+        # The process allocation cap is install-once in each process. ctest
+        # runs each entry in a fresh process, and the Metal test runs one case
+        # in each entry (tests/CMakeLists.txt). The build step built them.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cap-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^process_allocation_cap' \
+            --output-on-failure --no-tests=error
 
       - name: Merge the coverage profiles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

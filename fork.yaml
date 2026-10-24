@@ -116,6 +116,8 @@ def:
         memory limits are unchanged. Residency insertion rolls back failed registration before
         callers release buffers, including ordinary uncapped allocations. Standalone CPU and
         real-Metal tests cover delayed release, churn, and injected construction failures.
+        `tests/CMakeLists.txt` builds them as their own executables, because the cap is
+        install-once in each process, and gives one ctest entry to each case of the Metal test.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.
@@ -124,6 +126,7 @@ def:
         - "mlx/backend/common/allocation_footprint.h"
         - "mlx/backend/common/process_allocation_cap.h"
         - "tests/standalone/process_allocation_cap*.cpp"
+        - "tests/CMakeLists.txt"
         - "mlx/backend/common/buffer_cache.h"
         - "mlx/backend/metal/allocator.h"
         - "mlx/backend/metal/allocator.cpp"
@@ -369,7 +372,8 @@ def:
         `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on
         GitHub-hosted macOS runners. Two jobs build in parallel. One job builds the Python
         wheel. The other job builds the C++ library and tests, and runs the C++ tests with the
-        GPU and then with the CPU as the default device. The Python tests run in shard jobs:
+        GPU and then with the CPU as the default device. Then it runs the standalone allocation
+        cap tests with ctest, one process for each case. The Python tests run in shard jobs:
         one set with the GPU as the default device, and one set with the CPU.
         `.github/scripts/fork-tests/python-shards.json` gives the shards.
         `python_shards.py` fails a job when a test file is in no shard or in two shards, and

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
+#include <string>
 #include <thread>
 #include "mlx/allocator.h"
 #include "mlx/backend/metal/device.h"
@@ -33,6 +34,12 @@ void refuses(F f) {
 }
 auto snapshot() {
   return get_process_allocation_cap_snapshot();
+}
+// The allocator makes no fixed heap on a virtual GPU, such as the one of a
+// GitHub-hosted macOS runner (metal/allocator.cpp).
+bool paravirtual() {
+  return std::get<std::string>(gpu::device_info(0).at("device_name")) ==
+      "Apple Paravirtual device";
 }
 void settled(size_t expected) {
   for (int i = 0; i < 200 && snapshot().charged_bytes != expected; ++i) {
@@ -174,7 +181,7 @@ void concurrent_case(size_t page) {
     for (size_t i = 0; i < workers.size(); ++i) {
       workers[i] = std::thread([&, i] {
         try {
-          buffers[i] = a::malloc(chunk);
+          buffers[i] = a::allocator().malloc(chunk);
         } catch (...) {
           errors[i] = std::current_exception();
         }
@@ -192,7 +199,7 @@ void concurrent_case(size_t page) {
     pending_snapshot = snapshot();
     if (both_pending) {
       try {
-        contender = a::malloc(page);
+        contender = a::allocator().malloc(page);
       } catch (const std::exception&) {
         contender_refused = true;
       }
@@ -225,21 +232,21 @@ void concurrent_case(size_t page) {
           snapshot().live_bytes == 2 * chunk,
       "pending-to-live transfer changed cap charge");
   for (auto buffer : buffers) {
-    a::free(buffer);
+    a::allocator().free(buffer);
   }
   clear_cache();
   require(
       snapshot().unreclaimed_bytes == 2 * chunk &&
           snapshot().charged_bytes == cap,
       "allocator release refunded externally retained Metal backing");
-  refuses([&] { a::malloc(page); });
+  refuses([&] { a::allocator().malloc(page); });
   state.retained[0]->release();
   settled(heap + chunk);
-  auto recovered = a::malloc(chunk);
+  auto recovered = a::allocator().malloc(chunk);
   require(
       snapshot().charged_bytes == cap && snapshot().peak_bytes == cap,
       "callback recovery failed exact-cap replacement");
-  a::free(recovered);
+  a::allocator().free(recovered);
   clear_cache();
   settled(heap + chunk);
   state.retained[1]->release();
@@ -289,6 +296,13 @@ void failure_case(const std::string& mode, size_t page) {
   }
   set_wired_limit(8 << 20);
   sets.set_max_bytes_per_set(page);
+  require(sets.enabled(), "residency sets are disabled on this device");
+  // The failure is injected where a new residency set is made. Fill one set
+  // with a page first, so that the next page needs a new set. On a device with
+  // the fixed heap, set 0 holds the heap and the filler gets a new set; on a
+  // device without it, the filler goes into the empty set 0.
+  auto filler = a::allocator().malloc(page);
+  const auto filled = capped ? snapshot().charged_bytes : 0;
   const auto wired = sets.wired_size();
   const auto resources = get_num_resources();
   const auto active = get_active_memory();
@@ -318,7 +332,7 @@ void failure_case(const std::string& mode, size_t page) {
       if (foreign) {
         (void)a::make_buffer(foreign_pages, page);
       } else {
-        (void)a::malloc(page);
+        (void)a::allocator().malloc(page);
       }
     });
   }
@@ -336,7 +350,7 @@ void failure_case(const std::string& mode, size_t page) {
       "failed registration changed allocator counters");
   if (capped) {
     require(
-        snapshot().charged_bytes == baseline + page,
+        snapshot().charged_bytes == filled + page,
         "retained failure refunded early");
   }
   require(
@@ -345,10 +359,15 @@ void failure_case(const std::string& mode, size_t page) {
   retained_failure_buffer->release();
   retained_failure_buffer = nullptr;
   if (capped) {
-    settled(baseline);
+    settled(filled);
   }
   if (foreign) {
     require(munmap(foreign_pages, page) == 0, "foreign pages lost ownership");
+  }
+  a::allocator().free(filler);
+  clear_cache();
+  if (capped) {
+    settled(baseline);
   }
 }
 // Capped backing is owned no-copy VM. Pages first written by the GPU must
@@ -404,17 +423,36 @@ int main(int argc, char** argv) {
     require(argc == 2, "one fresh-process case required");
     const std::string mode = argv[1];
     const size_t page = static_cast<size_t>(getpagesize());
+    // Facts of the device that decide which paths the cases take.
+    std::cout << "device: "
+              << std::get<std::string>(gpu::device_info(0).at("device_name"))
+              << ", residency sets: "
+              << (metal::device(Device::gpu).residency_sets().enabled()
+                      ? "enabled"
+                      : "disabled")
+              << '\n';
     if (mode == "footprint-delta") {
       footprint_delta_case();
     } else if (mode == "gpu-footprint") {
       gpu_footprint_case();
     } else if (mode == "concurrent") {
       concurrent_case(page);
+    } else if (
+        mode.find("registration-") == 0 &&
+        !metal::device(Device::gpu).residency_sets().enabled()) {
+      // These cases inject a failure into the creation of a residency set.
+      // Without residency sets (no Metal 3 GPU family or macOS < 15, as on a
+      // virtual GPU) the allocator registers nothing, so the path under test
+      // does not exist. Exit code 77 is SKIP_RETURN_CODE in
+      // tests/CMakeLists.txt.
+      std::cout << "SKIP " << mode
+                << ": residency sets are disabled on this device\n";
+      return 77;
     } else if (mode.find("registration-") == 0 || mode == "nil-foreign") {
       failure_case(mode, page);
     } else if (mode == "late") {
-      auto b = a::malloc(page);
-      a::free(b);
+      auto b = a::allocator().malloc(page);
+      a::allocator().free(b);
       clear_cache();
       refuses([] { install_process_allocation_cap(8 << 20); });
       require(!snapshot().installed, "late install mutated state");
@@ -426,62 +464,67 @@ int main(int argc, char** argv) {
       install_process_allocation_cap(cap);
       const auto baseline = snapshot();
       const auto heap = baseline.heap_bytes;
-      require(
-          heap > 0 && baseline.charged_bytes == heap,
-          "existing heap not charged");
+      require((heap > 0) == !paravirtual(), "fixed heap does not match device");
+      require(baseline.charged_bytes == heap, "existing heap not charged");
       require(baseline.limit_bytes == cap, "wrong cap");
       if (mode == "install") {
         refuses([&] { install_process_allocation_cap(cap); });
         refuses([&] { install_process_allocation_cap(cap + page); });
         require(snapshot().limit_bytes == cap, "limit changed");
-        refuses([] { a::malloc(SIZE_MAX); });
+        refuses([] { a::allocator().malloc(SIZE_MAX); });
         require(
             snapshot().charged_bytes == heap, "overflow leaked reservation");
-        auto exact = a::malloc(cap - heap);
+        auto exact = a::allocator().malloc(cap - heap);
         require(snapshot().charged_bytes == cap, "exact fill mismatch");
-        refuses([&] { a::malloc(page); });
-        a::free(exact);
+        refuses([&] { a::allocator().malloc(page); });
+        a::allocator().free(exact);
         clear_cache();
         settled(heap);
       } else if (mode == "retained") {
-        auto b = a::malloc(cap - heap);
+        auto b = a::allocator().malloc(cap - heap);
         auto* metal = static_cast<MTL::Buffer*>(b.ptr());
         metal->retain();
-        a::free(b);
+        a::allocator().free(b);
         clear_cache();
         require(
             snapshot().unreclaimed_bytes == cap - heap,
             "release refunded early");
         require(snapshot().charged_bytes == cap, "extra reference lost charge");
-        refuses([&] { a::malloc(page); });
+        refuses([&] { a::allocator().malloc(page); });
         metal->release();
         settled(heap);
-        auto replacement = a::malloc(cap - heap);
-        a::free(replacement);
+        auto replacement = a::allocator().malloc(cap - heap);
+        a::allocator().free(replacement);
         clear_cache();
         settled(heap);
       } else if (mode == "churn") {
-        auto tiny = a::malloc(8);
+        auto tiny = a::allocator().malloc(8);
+        const bool from_heap =
+            static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr;
         require(
-            static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr,
-            "fixed heap unused");
-        require(snapshot().charged_bytes == heap, "heap double charged");
-        a::free(tiny);
+            from_heap == (heap > 0), "fixed heap use does not match device");
+        // A small buffer from the heap adds no charge. Without the heap it is
+        // a capped buffer of its own, charged one page.
+        require(
+            snapshot().charged_bytes == heap + (from_heap ? 0 : page),
+            "small buffer charge wrong");
+        a::allocator().free(tiny);
         clear_cache();
+        settled(heap);
         for (size_t i = 0; i < 1000; ++i) {
           const auto size = page * (1 + i % 31);
-          auto b = a::malloc(size);
+          auto b = a::allocator().malloc(size);
           const auto bytes = snapshot().charged_bytes;
           auto pointer = b.ptr();
-          a::free(b);
+          a::allocator().free(b);
           require(
               snapshot().cached_bytes > 0 && snapshot().charged_bytes == bytes,
               "cache transfer refunded credit");
-          auto reused = a::malloc(size);
+          auto reused = a::allocator().malloc(size);
           require(
               reused.ptr() == pointer && snapshot().charged_bytes == bytes,
               "cache reuse allocated new backing");
-          a::free(reused);
+          a::allocator().free(reused);
           clear_cache();
           settled(heap);
         }

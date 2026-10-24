@@ -186,6 +186,21 @@ def:
       globs:
         - "mlx/compile.cpp"
         - "tests/compile_tests.cpp"
+    - title: "Freed Python compiled functions leave every thread cache"
+      description: |
+        The Python binding keys the traces of `mx.compile(fun)` by the address of `fun`. Upstream,
+        `PyCompiledFun` keeps the cache of the thread that called it last, and its destructor
+        erases the key only from that cache. Each call records its trace in the cache of the
+        calling thread, so a trace from another thread stayed after the free. The trace kept its
+        arrays alive, and a later compile of a callable at the same address replayed it without a
+        new trace. The destructor now erases the key from every live thread cache through the
+        registry above, before it releases `fun`, and `PyCompiledFun` no longer keeps a cache.
+        The test `test_compile_free_erases_every_thread_cache` calls a compiled function on two
+        threads, frees it on the thread that called it last, and compiles the same callable
+        again on the other thread. It expects a new trace there. (PR #44)
+      globs:
+        - "python/src/transforms.cpp"
+        - "python/tests/test_compile.py"
     - title: "Integer floor_divide tests"
       description: |
         The fork keeps its regression tests for integer `floor_divide` from PR #32. Upstream

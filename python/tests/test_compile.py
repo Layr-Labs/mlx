@@ -169,6 +169,56 @@ class TestCompile(mlx_tests.MLXTestCase):
             raise errors[0]
         self.assertEqual(len(traces), 2)
 
+    def test_compile_free_erases_every_thread_cache(self):
+        # Each call of a compiled function records its trace in the cache of
+        # the calling thread. When the function is freed, its entry must go
+        # from every thread cache, not only from the cache of the thread that
+        # called it last. Otherwise a later compile of the same callable (so
+        # the same id) on another thread gets the old tape and is not traced
+        # again.
+        traces = []
+
+        def fun(x):
+            traces.append(1)
+            return x + 1
+
+        holder = {"fn": mx.compile(fun)}
+        traced = threading.Event()
+        released = threading.Event()
+        errors = []
+
+        def worker():
+            try:
+                # Record a trace in the cache of this thread.
+                mx.eval(holder["fn"](mx.array([1.0])))
+                traced.set()
+                self.assertTrue(released.wait(10))
+                # The same callable, so the same id.
+                fn = mx.compile(fun)
+                mx.eval(fn(mx.array([1.0])))
+            except Exception as e:
+                errors.append(e)
+            finally:
+                traced.set()
+            mx.clear_streams()
+
+        # The worker has to outlive the release. On exit it would tear down
+        # its cache anyway.
+        thread = threading.Thread(target=worker)
+        thread.start()
+        self.assertTrue(traced.wait(10))
+        # Call the function last on this thread, then free it here.
+        mx.eval(holder["fn"](mx.array([1.0])))
+        holder.clear()
+        gc.collect()
+        released.set()
+        thread.join()
+
+        if errors:
+            raise errors[0]
+        # One trace on each thread, and one more on the worker after the free.
+        self.assertEqual(len(traces), 3)
+
     def test_compile_grad(self):
         def loss_fn(x):
             return mx.exp(x).sum()

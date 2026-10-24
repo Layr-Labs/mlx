@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
+#include <string>
 #include <thread>
 #include "mlx/allocator.h"
 #include "mlx/backend/metal/device.h"
@@ -33,6 +34,12 @@ void refuses(F f) {
 }
 auto snapshot() {
   return get_process_allocation_cap_snapshot();
+}
+// The allocator makes no fixed heap on a virtual GPU, such as the one of a
+// GitHub-hosted macOS runner (metal/allocator.cpp).
+bool paravirtual() {
+  return std::get<std::string>(gpu::device_info(0).at("device_name")) ==
+      "Apple Paravirtual device";
 }
 void settled(size_t expected) {
   for (int i = 0; i < 200 && snapshot().charged_bytes != expected; ++i) {
@@ -289,6 +296,13 @@ void failure_case(const std::string& mode, size_t page) {
   }
   set_wired_limit(8 << 20);
   sets.set_max_bytes_per_set(page);
+  require(sets.enabled(), "residency sets are disabled on this device");
+  // The failure is injected where a new residency set is made. Fill one set
+  // with a page first, so that the next page needs a new set. On a device with
+  // the fixed heap, set 0 holds the heap and the filler gets a new set; on a
+  // device without it, the filler goes into the empty set 0.
+  auto filler = a::allocator().malloc(page);
+  const auto filled = capped ? snapshot().charged_bytes : 0;
   const auto wired = sets.wired_size();
   const auto resources = get_num_resources();
   const auto active = get_active_memory();
@@ -336,7 +350,7 @@ void failure_case(const std::string& mode, size_t page) {
       "failed registration changed allocator counters");
   if (capped) {
     require(
-        snapshot().charged_bytes == baseline + page,
+        snapshot().charged_bytes == filled + page,
         "retained failure refunded early");
   }
   require(
@@ -345,10 +359,15 @@ void failure_case(const std::string& mode, size_t page) {
   retained_failure_buffer->release();
   retained_failure_buffer = nullptr;
   if (capped) {
-    settled(baseline);
+    settled(filled);
   }
   if (foreign) {
     require(munmap(foreign_pages, page) == 0, "foreign pages lost ownership");
+  }
+  a::allocator().free(filler);
+  clear_cache();
+  if (capped) {
+    settled(baseline);
   }
 }
 // Capped backing is owned no-copy VM. Pages first written by the GPU must
@@ -404,6 +423,14 @@ int main(int argc, char** argv) {
     require(argc == 2, "one fresh-process case required");
     const std::string mode = argv[1];
     const size_t page = static_cast<size_t>(getpagesize());
+    // Facts of the device that decide which paths the cases take.
+    std::cout << "device: "
+              << std::get<std::string>(gpu::device_info(0).at("device_name"))
+              << ", residency sets: "
+              << (metal::device(Device::gpu).residency_sets().enabled()
+                      ? "enabled"
+                      : "disabled")
+              << '\n';
     if (mode == "footprint-delta") {
       footprint_delta_case();
     } else if (mode == "gpu-footprint") {
@@ -426,9 +453,8 @@ int main(int argc, char** argv) {
       install_process_allocation_cap(cap);
       const auto baseline = snapshot();
       const auto heap = baseline.heap_bytes;
-      require(
-          heap > 0 && baseline.charged_bytes == heap,
-          "existing heap not charged");
+      require((heap > 0) == !paravirtual(), "fixed heap does not match device");
+      require(baseline.charged_bytes == heap, "existing heap not charged");
       require(baseline.limit_bytes == cap, "wrong cap");
       if (mode == "install") {
         refuses([&] { install_process_allocation_cap(cap); });
@@ -463,8 +489,9 @@ int main(int argc, char** argv) {
       } else if (mode == "churn") {
         auto tiny = a::allocator().malloc(8);
         require(
-            static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr,
-            "fixed heap unused");
+            (static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr) ==
+                (heap > 0),
+            "fixed heap use does not match device");
         require(snapshot().charged_bytes == heap, "heap double charged");
         a::allocator().free(tiny);
         clear_cache();

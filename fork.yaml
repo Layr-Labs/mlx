@@ -120,6 +120,10 @@ def:
         install-once in each process, and gives one ctest entry to each case of the Metal test.
         The Metal test uses `allocator().malloc` / `allocator().free`, which return and free a
         plain `Buffer`, because upstream #4634 made `allocator::malloc` return an owning `Data`.
+        The allocator makes no fixed heap on a virtual GPU (the GitHub-hosted runner), so the
+        cases check the heap charge and heap use that match the device. The registration cases
+        fill one residency set with a page first, so that the injected failure of a new set is
+        reached with or without the heap in set 0.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.

@@ -3960,6 +3960,72 @@ class TestOps(mlx_tests.MLXTestCase):
             np.outer,
         )
 
+    def test_floor_divide_half_rounding_window(self):
+        # Pairs whose true quotient is just below an integer n. Rounded to
+        # float16 or bfloat16, that quotient becomes n, so floor(a / b) in the
+        # half type gives n. The floor of the exact quotient is n - 1, which
+        # is what numpy's float16 divmod gives.
+        def window_pairs(bits):
+            # bits: stored mantissa bits (10 for float16, 7 for bfloat16).
+            pairs = []
+            for k in range(1, 2**bits):
+                b = 1.0 + k * 2.0**-bits
+                for n in range(2, 24):
+                    exact = n * b
+                    if bits == 10:
+                        a = float(np.float16(exact))
+                        if a > exact:
+                            a = float(np.nextafter(np.float16(a), np.float16(0)))
+                    else:
+                        # Keep the top 16 bits of the float32 value: the
+                        # largest bfloat16 value at or below it.
+                        f = np.array([exact], dtype=np.float32).view(np.uint32)
+                        a = float((f & np.uint32(0xFFFF0000)).view(np.float32)[0])
+                    if a == exact:
+                        continue
+                    q = a / b
+                    ulp = 2.0 ** (math.floor(math.log2(q)) - bits)
+                    if 0 < n - q < ulp / 4:
+                        pairs.append((a, b))
+                    if len(pairs) == 24:
+                        return pairs
+            return pairs
+
+        devices = [mx.cpu]
+        if mx.metal.is_available():
+            devices.append(mx.gpu)
+        for dtype, bits in ((mx.float16, 10), (mx.bfloat16, 7)):
+            pairs = window_pairs(bits)
+            self.assertGreater(len(pairs), 8)
+            av = [a for a, _ in pairs]
+            bv = [b for _, b in pairs]
+            expected_q = np.floor_divide(np.array(av), np.array(bv))
+            if dtype == mx.float16:
+                np_q, np_r = np.divmod(
+                    np.array(av, np.float16), np.array(bv, np.float16)
+                )
+                self.assertEqual(np_q.astype(np.float64).tolist(), expected_q.tolist())
+            for device in devices:
+                with self.subTest(dtype=dtype, device=device):
+                    a = mx.array(av, dtype)
+                    b = mx.array(bv, dtype)
+                    self.assertEqual(a.astype(mx.float32).tolist(), av)
+                    self.assertEqual(b.astype(mx.float32).tolist(), bv)
+                    for q in (
+                        mx.floor_divide(a, b, stream=device),
+                        mx.divmod(a, b, stream=device)[0],
+                    ):
+                        self.assertEqual(
+                            q.astype(mx.float32).tolist(), expected_q.tolist()
+                        )
+                    q, r = mx.divmod(a, b, stream=device)
+                    r = np.array(r.astype(mx.float32))
+                    if dtype == mx.float16:
+                        self.assertEqual(r.tolist(), np_r.astype(np.float32).tolist())
+                    self.assertTrue(np.all((r >= 0) & (r < np.array(bv))))
+                    q = np.array(q.astype(mx.float32), np.float64)
+                    self.assertTrue(np.allclose(q * np.array(bv) + r, av))
+
     def test_divmod(self):
         # A few sizes for the inputs with and without broadcasting
         sizes = [

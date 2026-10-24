@@ -58,11 +58,23 @@ void DivMod::eval_cpu(
       return std::make_pair(q, r);
     };
     auto float_op = [](auto x, auto y) {
-      auto r = std::fmod(x, y);
-      if (r != 0 && (r < 0) != (y < 0)) {
-        r += y;
+      using T = decltype(x);
+      if constexpr (simd::is_half_v<T>) {
+        // Compute in float32 and round once. See exact_floor_divide.
+        float xf = static_cast<float>(x);
+        float yf = static_cast<float>(y);
+        float r = std::fmod(xf, yf);
+        if (r != 0 && (r < 0) != (yf < 0)) {
+          r += yf;
+        }
+        return std::make_pair(T(simd::exact_floor_divide(xf, yf)), T(r));
+      } else {
+        auto r = std::fmod(x, y);
+        if (r != 0 && (r < 0) != (y < 0)) {
+          r += y;
+        }
+        return std::make_pair(std::floor(x / y), r);
       }
-      return std::make_pair(std::floor(x / y), r);
     };
 
     dispatch_all_types(out_a.dtype(), [&](auto type_tag) {

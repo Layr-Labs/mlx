@@ -219,6 +219,33 @@ Simd<T, 1> divide(Simd<T, 1> a_, Simd<T, 1> b_) {
   return a / b;
 }
 
+// The floor of a / b, computed as numpy's npy_divmodf does: from fmod, so the
+// quotient is not rounded before the floor. float16 and bfloat16 use it in
+// float32: floor(a / b) in the half type rounds a quotient that is just below
+// an integer up to that integer.
+inline float exact_floor_divide(float a, float b) {
+  if (b == 0) {
+    return a / b;
+  }
+  float mod = std::fmod(a, b);
+  float div = (a - mod) / b;
+  if (mod != 0 && ((b < 0) != (mod < 0))) {
+    div -= 1.0f;
+  }
+  if (div == 0) {
+    return std::copysign(0.0f, a / b);
+  }
+  float floordiv = std::floor(div);
+  if (div - floordiv > 0.5f) {
+    floordiv += 1.0f;
+  }
+  return floordiv;
+}
+
+template <typename T>
+constexpr bool is_half_v =
+    std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>;
+
 template <typename T>
 Simd<T, 1> floor_divide(Simd<T, 1> a_, Simd<T, 1> b_) {
   T a = a_.value;
@@ -243,6 +270,8 @@ Simd<T, 1> floor_divide(Simd<T, 1> a_, Simd<T, 1> b_) {
     return q;
   } else if constexpr (is_complex<T>) {
     return a / b;
+  } else if constexpr (is_half_v<T>) {
+    return T(exact_floor_divide(static_cast<float>(a), static_cast<float>(b)));
   } else {
     return floor(divide(a_, b_));
   }

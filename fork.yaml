@@ -162,6 +162,22 @@ def:
         - "mlx/backend/common/metal_kernel.cpp"
         - "mlx/backend/metal/custom_kernel.cpp"
         - "mlx/export.cpp"
+    - title: "Cached custom-kernel sources"
+      description: |
+        A custom Metal kernel function rebuilt its whole generated source (header,
+        signature, body, template instantiation) on every call and every dispatch hashed
+        that source to name its library. A one-token decode step of a large model calls
+        the same few kernels hundreds of times, so this was host time on the step's
+        critical path. Each kernel function now keeps its generated sources keyed by the
+        kernel name (template values, input dtypes and address spaces, output dtypes) and
+        the template parameter names, and hands the source's hash to the primitive, which
+        names the library from it instead of hashing again. Same sources, same libraries,
+        same dispatches.
+      globs:
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "python/tests/test_fast.py"
     - title: "Cross-thread compile-cache cleanup"
       description: |
         Compile caches became thread-local upstream; bindings built before that (the mlx-c /

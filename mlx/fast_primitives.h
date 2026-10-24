@@ -448,7 +448,8 @@ class CustomKernel : public Primitive {
       bool is_precompiled,
       int shared_memory,
       CompileOptions::Data compile_options = {},
-      std::vector<int> mutable_inputs = {})
+      std::vector<int> mutable_inputs = {},
+      size_t source_hash = 0)
       : Primitive(stream),
         name_(std::move(name)),
         source_(std::move(source)),
@@ -461,6 +462,7 @@ class CustomKernel : public Primitive {
         is_precompiled_(is_precompiled),
         shared_memory_(shared_memory),
         compile_options_(compile_options),
+        source_hash_(source_hash),
         mutable_inputs_(std::move(mutable_inputs)) {}
 
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
@@ -499,6 +501,9 @@ class CustomKernel : public Primitive {
   bool is_precompiled_;
   int shared_memory_;
   CompileOptions::Data compile_options_;
+  // std::hash of source_ computed once by the kernel function's source cache
+  // (0: compute it here). Only names the compiled library.
+  size_t source_hash_;
 
  protected:
   std::vector<int> mutable_inputs_;

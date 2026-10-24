@@ -1239,6 +1239,35 @@ class TestFast(mlx_tests.MLXTestCase):
         out = call_kernel(a).astype(mx.float32) + call_kernel(b)
         self.assertTrue(mx.allclose(out, mx.full((32,), 8.0)))
 
+    @unittest.skipIf(not mx.metal.is_available(), "Metal is not available")
+    def test_custom_kernel_reuses_sources_per_specialization(self):
+        # One kernel function caches its generated sources: repeated and
+        # interleaved calls with other template values and input dtypes must
+        # each still run their own specialization.
+        kernel = mx.fast.metal_kernel(
+            name="cached_specializations",
+            input_names=["inp"],
+            output_names=["out"],
+            source="""
+                uint e = thread_position_in_grid.x;
+                out[e] = inp[e] * static_cast<T>(V);
+            """,
+        )
+        for _ in range(3):
+            for v in (2, 3):
+                for dtype in (mx.float16, mx.float32, mx.int32):
+                    a = mx.arange(8, dtype=dtype)
+                    (out,) = kernel(
+                        inputs=[a],
+                        template=[("T", dtype), ("V", v)],
+                        grid=(8, 1, 1),
+                        threadgroup=(8, 1, 1),
+                        output_shapes=[(8,)],
+                        output_dtypes=[dtype],
+                    )
+                    self.assertTrue(mx.array_equal(out, a * v))
+
+
 
 if __name__ == "__main__":
     mlx_tests.MLXTestRunner()

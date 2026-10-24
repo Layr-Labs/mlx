@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
 
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/metal/metal.h"
@@ -17,6 +20,21 @@ namespace {
 
 // Inputs with fewer elements are passed in the constant address space
 constexpr int max_constant_array_size = 8;
+
+// Generated sources of one kernel function, keyed by everything they depend
+// on beyond the function's fixed name, header, body and argument names: the
+// kernel name (template values, input dtypes and address spaces, output
+// dtypes) and the template parameter names. A decode step calls the same few
+// kernels hundreds of times; each call otherwise rebuilt the full source and
+// each dispatch hashed it. Bounded: a function sees a handful of keys.
+struct KernelSourceCache {
+  struct Entry {
+    std::string source;
+    size_t hash;
+  };
+  std::mutex mutex;
+  std::unordered_map<std::string, std::shared_ptr<const Entry>> entries;
+};
 
 Stream resolve_metal_kernel_stream(StreamOrDevice s) {
   if (metal::is_available()) {
@@ -313,9 +331,11 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     }
   }
 
+  auto source_cache = std::make_shared<KernelSourceCache>();
   return [=,
           shape_infos = std::move(shape_infos),
-          attributes = std::move(attributes)](
+          attributes = std::move(attributes),
+          source_cache = std::move(source_cache)](
              const std::vector<array>& inputs,
              const std::vector<Shape>& output_shapes,
              const std::vector<Dtype>& output_dtypes,
@@ -371,30 +391,55 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
       kernel_name += get_type_string(dtype);
     }
 
-    std::string kernel_source = write_signature(
-        kernel_name,
-        header,
-        source,
-        input_names,
-        inputs,
-        output_names,
-        output_dtypes,
-        template_args,
-        attributes,
-        shape_infos,
-        atomic_outputs,
-        mutable_inputs);
-
-    if (!template_args.empty()) {
-      template_def = kernel_name + template_def;
-      kernel_source += "\ntemplate [[host_name(\"";
-      kernel_source += kernel_name;
-      kernel_source += "\")]] [[kernel]] decltype(";
-      kernel_source += template_def;
-      kernel_source += ") ";
-      kernel_source += template_def;
-      kernel_source += ";\n";
+    std::string cache_key = kernel_name;
+    for (const auto& [arg_name, arg] : template_args) {
+      cache_key += '|';
+      cache_key += arg_name;
     }
+    std::shared_ptr<const KernelSourceCache::Entry> cached;
+    {
+      std::lock_guard<std::mutex> lock(source_cache->mutex);
+      auto it = source_cache->entries.find(cache_key);
+      if (it != source_cache->entries.end()) {
+        cached = it->second;
+      }
+    }
+    if (!cached) {
+      std::string kernel_source = write_signature(
+          kernel_name,
+          header,
+          source,
+          input_names,
+          inputs,
+          output_names,
+          output_dtypes,
+          template_args,
+          attributes,
+          shape_infos,
+          atomic_outputs,
+          mutable_inputs);
+
+      if (!template_args.empty()) {
+        template_def = kernel_name + template_def;
+        kernel_source += "\ntemplate [[host_name(\"";
+        kernel_source += kernel_name;
+        kernel_source += "\")]] [[kernel]] decltype(";
+        kernel_source += template_def;
+        kernel_source += ") ";
+        kernel_source += template_def;
+        kernel_source += ";\n";
+      }
+      auto hash = std::hash<std::string>{}(kernel_source);
+      auto entry = std::make_shared<const KernelSourceCache::Entry>(
+          KernelSourceCache::Entry{std::move(kernel_source), hash});
+      std::lock_guard<std::mutex> lock(source_cache->mutex);
+      if (source_cache->entries.size() >= 256) {
+        source_cache->entries.clear();
+      }
+      cached = source_cache->entries.emplace(cache_key, std::move(entry))
+                   .first->second;
+    }
+    std::string kernel_source = cached->source;
 
     if (verbose) {
       std::cout << "Generated source code for `" << name << "`:" << std::endl
@@ -420,7 +465,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
               false,
               0,
               compile_options.serialize(),
-              mutable_inputs),
+              mutable_inputs,
+              cached->hash),
           inputs);
     }
     return array::make_arrays(
@@ -438,7 +484,9 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
             std::vector<ScalarArg>{},
             false,
             0,
-            compile_options.serialize()),
+            compile_options.serialize(),
+            std::vector<int>{},
+            cached->hash),
         std::move(inputs));
   };
 }

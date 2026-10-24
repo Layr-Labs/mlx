@@ -2935,45 +2935,6 @@ class TestOps(mlx_tests.MLXTestCase):
                     mx.eval(out)
                     self.assertEqual(out.shape, a.shape)
 
-    def test_scans_seed_search(self):
-        # Diagnostic, removed by the next commit. Run the unchanged test_scans
-        # under fixed seeds and report each seed where it fails, with the line
-        # and, for the float16/bfloat16 cumsum check, the worst element.
-        import traceback
-
-        failing = []
-        for seed in range(100):
-            mx.random.seed(seed)
-            np.random.seed(seed)
-            try:
-                self.test_scans()
-            except AssertionError as e:
-                line = traceback.extract_tb(e.__traceback__)[-1].lineno
-                # The same draws as test_scans before its float16 check.
-                mx.random.seed(seed)
-                mx.random.randint(shape=(32, 32, 32), low=-100, high=100)
-                mx.random.randint(shape=(32, 32, 32), low=-100, high=100)
-                a = mx.random.uniform(shape=(8, 32))
-                mat = mx.tri(32)
-                worst = []
-                for t in [mx.float16, mx.bfloat16]:
-                    a_t = a.astype(t)
-                    out = mx.cumsum(a_t, axis=-1).astype(mx.float32)
-                    expected = (mat.astype(t) * a_t[:, None, :]).sum(axis=-1)
-                    out = np.array(out).astype(np.float64)
-                    expected = np.array(expected.astype(mx.float32))
-                    expected = expected.astype(np.float64)
-                    err = np.abs(out - expected)
-                    tol = 1e-3 + 0.02 * np.abs(expected)
-                    i = np.unravel_index(np.argmax(err / tol), err.shape)
-                    worst.append(
-                        f"{t}: element {tuple(int(k) for k in i)} "
-                        f"tri-sum {expected[i]:.6g} cumsum {out[i]:.6g} "
-                        f"|diff| {err[i]:.3g} tolerance {tol[i]:.3g}"
-                    )
-                failing.append(f"seed {seed}: line {line}; " + "; ".join(worst))
-        self.assertEqual(failing, [], "\n" + "\n".join(failing))
-
     def test_scan_size_one_axis(self):
         # A size one axis can carry any stride and still be row contiguous, so
         # the scan must not take its row count from that stride.

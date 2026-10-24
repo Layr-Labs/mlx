@@ -118,6 +118,8 @@ def:
         real-Metal tests cover delayed release, churn, and injected construction failures.
         `tests/CMakeLists.txt` builds them as their own executables, because the cap is
         install-once in each process, and gives one ctest entry to each case of the Metal test.
+        The Metal test uses `allocator().malloc` / `allocator().free`, which return and free a
+        plain `Buffer`, because upstream #4634 made `allocator::malloc` return an owning `Data`.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.

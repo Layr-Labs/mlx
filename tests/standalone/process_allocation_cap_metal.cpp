@@ -174,7 +174,7 @@ void concurrent_case(size_t page) {
     for (size_t i = 0; i < workers.size(); ++i) {
       workers[i] = std::thread([&, i] {
         try {
-          buffers[i] = a::malloc(chunk);
+          buffers[i] = a::allocator().malloc(chunk);
         } catch (...) {
           errors[i] = std::current_exception();
         }
@@ -192,7 +192,7 @@ void concurrent_case(size_t page) {
     pending_snapshot = snapshot();
     if (both_pending) {
       try {
-        contender = a::malloc(page);
+        contender = a::allocator().malloc(page);
       } catch (const std::exception&) {
         contender_refused = true;
       }
@@ -225,21 +225,21 @@ void concurrent_case(size_t page) {
           snapshot().live_bytes == 2 * chunk,
       "pending-to-live transfer changed cap charge");
   for (auto buffer : buffers) {
-    a::free(buffer);
+    a::allocator().free(buffer);
   }
   clear_cache();
   require(
       snapshot().unreclaimed_bytes == 2 * chunk &&
           snapshot().charged_bytes == cap,
       "allocator release refunded externally retained Metal backing");
-  refuses([&] { a::malloc(page); });
+  refuses([&] { a::allocator().malloc(page); });
   state.retained[0]->release();
   settled(heap + chunk);
-  auto recovered = a::malloc(chunk);
+  auto recovered = a::allocator().malloc(chunk);
   require(
       snapshot().charged_bytes == cap && snapshot().peak_bytes == cap,
       "callback recovery failed exact-cap replacement");
-  a::free(recovered);
+  a::allocator().free(recovered);
   clear_cache();
   settled(heap + chunk);
   state.retained[1]->release();
@@ -318,7 +318,7 @@ void failure_case(const std::string& mode, size_t page) {
       if (foreign) {
         (void)a::make_buffer(foreign_pages, page);
       } else {
-        (void)a::malloc(page);
+        (void)a::allocator().malloc(page);
       }
     });
   }
@@ -413,8 +413,8 @@ int main(int argc, char** argv) {
     } else if (mode.find("registration-") == 0 || mode == "nil-foreign") {
       failure_case(mode, page);
     } else if (mode == "late") {
-      auto b = a::malloc(page);
-      a::free(b);
+      auto b = a::allocator().malloc(page);
+      a::allocator().free(b);
       clear_cache();
       refuses([] { install_process_allocation_cap(8 << 20); });
       require(!snapshot().installed, "late install mutated state");
@@ -434,54 +434,54 @@ int main(int argc, char** argv) {
         refuses([&] { install_process_allocation_cap(cap); });
         refuses([&] { install_process_allocation_cap(cap + page); });
         require(snapshot().limit_bytes == cap, "limit changed");
-        refuses([] { a::malloc(SIZE_MAX); });
+        refuses([] { a::allocator().malloc(SIZE_MAX); });
         require(
             snapshot().charged_bytes == heap, "overflow leaked reservation");
-        auto exact = a::malloc(cap - heap);
+        auto exact = a::allocator().malloc(cap - heap);
         require(snapshot().charged_bytes == cap, "exact fill mismatch");
-        refuses([&] { a::malloc(page); });
-        a::free(exact);
+        refuses([&] { a::allocator().malloc(page); });
+        a::allocator().free(exact);
         clear_cache();
         settled(heap);
       } else if (mode == "retained") {
-        auto b = a::malloc(cap - heap);
+        auto b = a::allocator().malloc(cap - heap);
         auto* metal = static_cast<MTL::Buffer*>(b.ptr());
         metal->retain();
-        a::free(b);
+        a::allocator().free(b);
         clear_cache();
         require(
             snapshot().unreclaimed_bytes == cap - heap,
             "release refunded early");
         require(snapshot().charged_bytes == cap, "extra reference lost charge");
-        refuses([&] { a::malloc(page); });
+        refuses([&] { a::allocator().malloc(page); });
         metal->release();
         settled(heap);
-        auto replacement = a::malloc(cap - heap);
-        a::free(replacement);
+        auto replacement = a::allocator().malloc(cap - heap);
+        a::allocator().free(replacement);
         clear_cache();
         settled(heap);
       } else if (mode == "churn") {
-        auto tiny = a::malloc(8);
+        auto tiny = a::allocator().malloc(8);
         require(
             static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr,
             "fixed heap unused");
         require(snapshot().charged_bytes == heap, "heap double charged");
-        a::free(tiny);
+        a::allocator().free(tiny);
         clear_cache();
         for (size_t i = 0; i < 1000; ++i) {
           const auto size = page * (1 + i % 31);
-          auto b = a::malloc(size);
+          auto b = a::allocator().malloc(size);
           const auto bytes = snapshot().charged_bytes;
           auto pointer = b.ptr();
-          a::free(b);
+          a::allocator().free(b);
           require(
               snapshot().cached_bytes > 0 && snapshot().charged_bytes == bytes,
               "cache transfer refunded credit");
-          auto reused = a::malloc(size);
+          auto reused = a::allocator().malloc(size);
           require(
               reused.ptr() == pointer && snapshot().charged_bytes == bytes,
               "cache reuse allocated new backing");
-          a::free(reused);
+          a::allocator().free(reused);
           clear_cache();
           settled(heap);
         }

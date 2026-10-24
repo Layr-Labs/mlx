@@ -144,12 +144,14 @@ jobs:
         # The process allocation cap is install-once in each process. ctest
         # runs each entry in a fresh process, and the Metal test runs one case
         # in each entry (tests/CMakeLists.txt). The build step built them.
+        # -V prints the output of every case, so the log shows why a case
+        # was skipped (a few lines for each case).
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cap-%p-%m.profraw
         run: |
-          ctest --test-dir build -R '^process_allocation_cap' \
-            --output-on-failure --no-tests=error
+          ctest --test-dir build -R '^process_allocation_cap' -V \
+            --no-tests=error
 
       - name: Merge the coverage profiles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

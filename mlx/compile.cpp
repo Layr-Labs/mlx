@@ -1302,8 +1302,13 @@ std::function<std::vector<array>(const std::vector<array>&)> compile(
     auto pfun = std::shared_ptr<
         std::function<std::vector<array>(const std::vector<array>&)>>(
         new std::function<std::vector<array>(const std::vector<array>&)>{fun},
-        [cache = detail::compile_cache()](auto* p) {
-          detail::compile_erase(cache, reinterpret_cast<std::uintptr_t>(p));
+        [](auto* p) {
+          // The compiled function can be called on any thread, and each call
+          // records its trace in the cache of the calling thread. Erase the
+          // key from every live thread cache, and do it before the delete so
+          // that no new function can get this address while a trace for it
+          // is still cached.
+          detail::compile_erase(reinterpret_cast<std::uintptr_t>(p));
           delete p;
         });
     fun_id = reinterpret_cast<std::uintptr_t>(pfun.get());

@@ -488,13 +488,18 @@ int main(int argc, char** argv) {
         settled(heap);
       } else if (mode == "churn") {
         auto tiny = a::allocator().malloc(8);
+        const bool from_heap =
+            static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr;
         require(
-            (static_cast<MTL::Buffer*>(tiny.ptr())->heap() != nullptr) ==
-                (heap > 0),
-            "fixed heap use does not match device");
-        require(snapshot().charged_bytes == heap, "heap double charged");
+            from_heap == (heap > 0), "fixed heap use does not match device");
+        // A small buffer from the heap adds no charge. Without the heap it is
+        // a capped buffer of its own, charged one page.
+        require(
+            snapshot().charged_bytes == heap + (from_heap ? 0 : page),
+            "small buffer charge wrong");
         a::allocator().free(tiny);
         clear_cache();
+        settled(heap);
         for (size_t i = 0; i < 1000; ++i) {
           const auto size = page * (1 + i % 31);
           auto b = a::allocator().malloc(size);

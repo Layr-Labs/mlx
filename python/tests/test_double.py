@@ -171,6 +171,38 @@ class TestDouble(mlx_tests.MLXTestCase):
             mx.allclose(y, y_double.astype(mx.float32, mx.cpu), equal_nan=True)
         )
 
+    def test_gemm_seed_search(self):
+        # Diagnostic, removed by the next commit. Run the unchanged test_gemm
+        # under fixed seeds and report each seed where it fails, with the
+        # element that fails mx.allclose (rtol 1e-5, atol 1e-8).
+        if mx.default_device() == mx.gpu:
+            return  # test_gemm checks only the error on the GPU.
+        failing = []
+        for seed in range(2000):
+            mx.random.seed(seed)
+            np.random.seed(seed)
+            try:
+                self.test_gemm()
+            except AssertionError:
+                mx.random.seed(seed)
+                a = mx.random.normal(shape=(8, 8))
+                b = mx.random.normal(shape=(8, 8))
+                y = np.array(a @ b).astype(np.float64)
+                y_double = (
+                    a.astype(mx.float64, stream=mx.cpu)
+                    @ b.astype(mx.float64, stream=mx.cpu)
+                ).astype(mx.float32, mx.cpu)
+                y_double = np.array(y_double).astype(np.float64)
+                err = np.abs(y - y_double)
+                tol = 1e-8 + 1e-5 * np.abs(y_double)
+                i = np.unravel_index(np.argmax(err / tol), err.shape)
+                failing.append(
+                    f"seed {seed}: element {tuple(int(k) for k in i)} "
+                    f"float64 {y_double[i]:.9g} float32 {y[i]:.9g} "
+                    f"|diff| {err[i]:.3g} tolerance {tol[i]:.3g}"
+                )
+        self.assertEqual(failing, [], "\n" + "\n".join(failing))
+
     def test_type_promotion(self):
         import mlx.core as mx
 

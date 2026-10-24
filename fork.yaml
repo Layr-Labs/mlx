@@ -353,6 +353,14 @@ def:
         - "mlx/backend/cpu/simd/base_simd.h"
         - "mlx/backend/cpu/simd/accelerate_simd.h"
         - "mlx/backend/cpu/binary.cpp"
+    - title: "Seeded Python tests"
+      description: |
+        Diagnostic (draft PR): `test_gemm_seed_search` and `test_scans_seed_search` run the
+        unchanged upstream `test_gemm` and `test_scans` under fixed seeds and report the seeds
+        where they fail.
+      globs:
+        - "python/tests/test_double.py"
+        - "python/tests/test_ops.py"
     - title: "Fork tooling"
       description: |
         The fork deletes the upstream workflows that cannot run here: the PyPI release build,

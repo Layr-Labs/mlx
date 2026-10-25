@@ -9,12 +9,13 @@
 namespace mlx::core {
 
 struct FenceImpl {
-  FenceImpl(Stream stream) : cpu_stream(stream.device == Device::cpu) {
+  FenceImpl(Stream stream, bool allow_fast = true)
+      : cpu_stream(stream.device == Device::cpu) {
     auto d = metal::device(stream.device).mtl_device();
     if (!d->supportsFamily(MTL::GPUFamilyMetal3)) {
       use_fast = false;
     } else if (__builtin_available(macOS 15, iOS 18, *)) {
-      use_fast = env::metal_fast_synch();
+      use_fast = allow_fast && env::metal_fast_synch();
     }
 
     if (!use_fast) {
@@ -93,6 +94,10 @@ void encode_wait(
 
 Fence::Fence(Stream stream) {
   fence_ = std::make_shared<FenceImpl>(stream);
+}
+
+Fence::Fence(Stream stream, bool fast) {
+  fence_ = std::make_shared<FenceImpl>(stream, fast);
 }
 
 void Fence::wait(Stream stream, const array& x) {

@@ -20,6 +20,8 @@ Fence::Fence(Stream s) {
   cast<FenceImpl>().event.cast<cu::EventImpl>().ensure_created(s, 2);
 }
 
+Fence::Fence(Stream s, bool) : Fence(s) {}
+
 void Fence::wait(Stream s, const array&) {
   cast<FenceImpl>().event.wait();
 }

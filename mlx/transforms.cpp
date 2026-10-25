@@ -196,8 +196,19 @@ array eval_impl(std::vector<array> outputs, bool async) {
     }
   }
 
-  // Map of array id that needs fence and stream it's computed on
-  std::unordered_map<uintptr_t, std::pair<uint32_t, bool>> needs_fence;
+  // Arrays read on another stream: the stream they are computed on, whether
+  // a reader waits on the fence (`fast`, a spinning wait under fast synch) or
+  // on an event fence (`event`), and whether a reader is on another device.
+  struct FenceNeed {
+    uint32_t stream;
+    bool producer_gpu;
+    bool cross_device{false};
+    bool fast{false};
+    bool event{false};
+  };
+  std::unordered_map<uintptr_t, FenceNeed> needs_fence;
+  // GPU streams that read a CPU array, per CPU array (decided after the walk).
+  std::unordered_map<uintptr_t, std::vector<uint32_t>> cpu_to_gpu_readers;
 
   // GPU streams with an array that a CPU primitive reads
   std::unordered_set<uint32_t> gpu_to_cpu;
@@ -207,6 +218,15 @@ array eval_impl(std::vector<array> outputs, bool async) {
 
   // Stream fences for inter-stream synchronization
   std::unordered_map<uint32_t, Fence> fences;
+  // Event fences for readers that must not spin. Under fast synch a GPU
+  // fence wait is a kernel that spins until its producer's timestamp
+  // arrives, and Metal does not guarantee that another command queue runs
+  // while a pass of this queue spins. So a GPU stream never spins on another
+  // GPU stream, nor on CPU work that can itself wait for another GPU stream
+  // (the starved queue would hold back the timestamp the spin waits for).
+  // Both wait on a shared event instead. CPU waits keep the fast path: a CPU
+  // stream is a thread and always progresses.
+  std::unordered_map<uint32_t, Fence> event_fences;
 
   // Stream events for synchronization after eval
   std::unordered_map<uint32_t, Event> events;
@@ -254,11 +274,24 @@ array eval_impl(std::vector<array> outputs, bool async) {
           if (a.primitive().stream() != in.primitive().stream()) {
             bool device_switch =
                 a.primitive().stream().device != in.primitive().stream().device;
-            auto [it, inserted] = needs_fence.emplace(
-                in.id(),
-                std::make_pair(in.primitive().stream().index, device_switch));
-            if (!inserted) {
-              it->second.second |= device_switch;
+            auto& need = needs_fence
+                             .emplace(
+                                 in.id(),
+                                 FenceNeed{
+                                     static_cast<uint32_t>(
+                                         in.primitive().stream().index),
+                                     in.primitive().device() == Device::gpu})
+                             .first->second;
+            need.cross_device |= device_switch;
+            bool gpu_reader = a.primitive().device() == Device::gpu;
+            if (in.primitive().device() == Device::gpu) {
+              // Another GPU stream waits on an event; the CPU spins.
+              (gpu_reader ? need.event : need.fast) = true;
+            } else if (gpu_reader) {
+              cpu_to_gpu_readers[in.id()].push_back(
+                  static_cast<uint32_t>(a.primitive().stream().index));
+            } else {
+              need.fast = true;
             }
             if (device_switch && in.primitive().device() == Device::gpu) {
               gpu_to_cpu.insert(in.primitive().stream().index);
@@ -288,6 +321,17 @@ array eval_impl(std::vector<array> outputs, bool async) {
         a.detach();
       }
       dfs.pop();
+    }
+
+    // A GPU stream may spin on CPU work only when that CPU work can wait for
+    // no GPU stream but this one.
+    for (auto& [id, readers] : cpu_to_gpu_readers) {
+      auto& need = needs_fence.at(id);
+      for (auto reader : readers) {
+        bool alone = gpu_to_cpu.empty() ||
+            (gpu_to_cpu.size() == 1 && gpu_to_cpu.count(reader) == 1);
+        (alone ? need.fast : need.event) = true;
+      }
     }
 
     // Build the tape in BFS order with a width limit
@@ -369,7 +413,19 @@ array eval_impl(std::vector<array> outputs, bool async) {
           // Use fence to wait within a single eval
           // Get the input array's stream fence and wait on the
           // output arrays stream
-          auto& fence = fences[it->second.first];
+          auto& need = it->second;
+          // On the producer's own stream, wait on the fence its update used
+          // (as before: the update precedes in this stream). Across streams,
+          // a GPU stream waits on the event for another GPU stream's array,
+          // or for CPU work that can wait for another GPU stream: never spin.
+          bool same_stream = need.stream == static_cast<uint32_t>(stream.index);
+          if (same_stream ? !need.fast
+                          : (stream.device == Device::gpu &&
+                             (need.producer_gpu || !one_gpu_stream))) {
+            event_fences[need.stream].wait(stream, in);
+            continue;
+          }
+          auto& fence = fences[need.stream];
           if (!one_gpu_stream || !fence.wait_in_consumer(stream, arr, i)) {
             fence.wait(stream, in);
           }
@@ -405,25 +461,36 @@ array eval_impl(std::vector<array> outputs, bool async) {
         }
       }
 
-      auto maybe_update_fence =
-          [&fences, &needs_fence, stream](const array& a) {
-            if (auto nf = needs_fence.find(a.id()); nf != needs_fence.end()) {
-              auto it = fences.find(stream.index);
-              if (it == fences.end()) {
-                it = fences.emplace(stream.index, Fence{stream}).first;
-              }
-              it->second.update(stream, a, nf->second.second);
-              // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
-              // CPU stream starts when `a` is ready, not when the buffer is
-              // full.
-              static const bool eager_commit =
-                  env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
-              if (eager_commit && nf->second.second &&
-                  stream.device == Device::gpu) {
-                gpu::finalize(stream);
-              }
+      auto maybe_update_fence = [&fences, &event_fences, &needs_fence, stream](
+                                    const array& a) {
+        if (auto nf = needs_fence.find(a.id()); nf != needs_fence.end()) {
+          if (nf->second.event) {
+            auto it = event_fences.find(stream.index);
+            if (it == event_fences.end()) {
+              it = event_fences
+                       .emplace(stream.index, Fence{stream, /* fast */ false})
+                       .first;
             }
-          };
+            it->second.update(stream, a, false);
+          }
+          if (nf->second.fast) {
+            auto it = fences.find(stream.index);
+            if (it == fences.end()) {
+              it = fences.emplace(stream.index, Fence{stream}).first;
+            }
+            it->second.update(stream, a, nf->second.cross_device);
+            // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
+            // CPU stream starts when `a` is ready, not when the buffer is
+            // full.
+            static const bool eager_commit =
+                env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
+            if (eager_commit && nf->second.cross_device &&
+                stream.device == Device::gpu) {
+              gpu::finalize(stream);
+            }
+          }
+        }
+      };
 
       arr.set_status(array::Status::evaluated);
       // TODO Maybe always want the fence coherent kernel in the same cbuf

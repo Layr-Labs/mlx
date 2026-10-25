@@ -65,12 +65,50 @@ int main(int argc, char** argv) {
                   << ",\"logical_active_bytes\":0}" << std::endl;
       }
     }
+    // A second GPU stream in the same chain: each layer's partial is read by
+    // the CPU and by another GPU stream, and the producer stream reads both
+    // results back. The producer waits for the other GPU stream on an event
+    // (a spinning wait there could starve that stream's queue).
+    if (!cpu_only) {
+      auto side = new_stream(Device::gpu);
+      for (int width : {1, 2, 4}) {
+        {
+          auto x = zeros({width, 5120}, float32, producer);
+          for (int layer = 0; layer < layers; ++layer) {
+            auto partial = add(x, array(1.0f), producer);
+            auto reduced = add(partial, array(2.0f), host);
+            auto gate = add(partial, array(4.0f), side);
+            // (x + 3) + (x + 5) - (x + 5) = x + 3, exact in float32.
+            x = subtract(
+                add(reduced, gate, producer),
+                add(x, array(5.0f), producer),
+                producer);
+          }
+          eval(x);
+          synchronize(producer);
+          synchronize(side);
+          synchronize(host);
+          const float* values = x.data<float>();
+          for (size_t i = 0; i < x.size(); ++i) {
+            if (values[i] != layers * 3.0f) {
+              throw std::runtime_error("exact two-GPU-stream chain mismatch");
+            }
+            ++comparisons;
+          }
+        }
+        synchronize(producer);
+        synchronize(side);
+        synchronize(host);
+        std::cout << "{\"event\":\"case\",\"streams\":\"two-gpu\",\"width\":"
+                  << width << ",\"layers\":" << layers << "}" << std::endl;
+      }
+    }
     synchronize(producer);
     synchronize(host);
     clear_streams();
-    std::cout << "{\"event\":\"passed\",\"cases\":15,\"comparisons\":"
-              << comparisons << ",\"device\":\"" << (cpu_only ? "cpu" : "gpu")
-              << "\"}" << std::endl;
+    std::cout << "{\"event\":\"passed\",\"cases\":" << (cpu_only ? 15 : 18)
+              << ",\"comparisons\":" << comparisons << ",\"device\":\""
+              << (cpu_only ? "cpu" : "gpu") << "\"}" << std::endl;
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << std::endl;

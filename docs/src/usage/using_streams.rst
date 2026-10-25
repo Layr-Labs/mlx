@@ -25,6 +25,14 @@ stream. Its wait must follow both earlier command passes and earlier kernels
 in the current concurrent pass. The CPU work can depend on those GPU kernels.
 ``Fence::wait`` therefore inserts both dependencies before the GPU wait.
 
+A GPU stream never spins on another GPU stream. The fast wait is a kernel that
+spins until its producer's timestamp arrives, and Metal does not guarantee that
+a second command queue runs while a pass of the first one spins: the producing
+queue can starve and both stop. When an evaluation's graph spans two GPU
+streams, a consumer on one waits for the other on a shared event, and so does a
+GPU stream waiting for CPU work that can itself wait for another GPU stream.
+The other CPU-to-GPU and GPU-to-CPU waits keep the fast path.
+
 The standalone ``metal_fence_chain`` test checks exact GPU-to-CPU-to-GPU chains
 with shared side roots and request-array retirement. CTest runs separate
 processes with fast synchronization and several command-buffer sizes, with a

@@ -326,6 +326,36 @@ def:
         - "tests/CMakeLists.txt"
         - "docs/src/usage/using_streams.rst"
         - ".github/workflows/fork-tests.yml"
+    - title: "GPU streams wait for each other on events"
+      description: |
+        With fast synch (`MLX_METAL_FAST_SYNCH=1`) a fence wait on the GPU is a one-thread
+        kernel that spins until the producer's timestamp arrives. That is safe when the
+        producer is a CPU stream (a thread always progresses), but not when it is another
+        GPU stream: Metal does not promise that a second command queue runs while a pass of
+        the first one spins, so the producing queue can starve and both stop. An eval whose
+        graph spans two GPU streams therefore waits for the other GPU stream on a shared
+        event (the non-fast path), while CPU <-> GPU waits keep the fast path. An array read
+        both by the CPU and by another GPU stream updates both fences. Synchronization only:
+        results do not change.
+      globs:
+        - "mlx/fence.h"
+        - "mlx/transforms.cpp"
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/no_gpu/fence.cpp"
+        - "mlx/backend/cuda/fence.cpp"
+        - "docs/src/usage/using_streams.rst"
+    - title: "Helper ops keep the caller's stream"
+      description: |
+        `quantized_matmul` cast `x`, `scales` and `biases`, `gather` and `scatter` broadcast
+        their indices, the gather matmuls cast their indices, and `affine_quantize` selected
+        its scales on the thread's default stream instead of the stream the caller passed.
+        mlx-swift passes its own process-wide stream to every op, so each of these helpers
+        put a second GPU stream into the graph: a 4-bit projection with float32 input and
+        bfloat16 scales crossed streams twice, and every crossing is a fence wait. They now
+        use the caller's stream. Where an op runs does not change what it computes.
+      globs:
+        - "mlx/ops.cpp"
+        - "tests/ops_tests.cpp"
     - title: "Fused cross-device fence update"
       description: |
         Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU

@@ -281,10 +281,13 @@ def:
         `dispatch_wires`, which also reports the errors of the ring pool wires that it used
         to drop. A mesh with more than one wire (upstream's second cable) has one `MeshImpl`,
         and so one guard, for each wire: a failed wire closes its own queue pairs and buffers,
-        and later calls that use that wire are refused. Each completion queue has four times
-        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`, used by
-        `mesh.cpp` and `ring.cpp` when they create the queues). MLX's `jaccl.cpp` registers
-        the release hook each time it wraps a new JACCL group.
+        and later calls that use that wire are refused. The mesh runs its wires through the
+        shared `dispatch_wires` in `threadpool.h`, which upstream lets drop the error of a
+        pool wire; the fork throws that error after all wires returned. Each completion
+        queue has four times the entries its queue pair can have outstanding
+        (`COMPLETION_QUEUE_DEPTH`, used by `mesh.cpp` and `ring.cpp` when they create the
+        queues). MLX's `jaccl.cpp` registers the release hook each time it wraps a new JACCL
+        group.
 
         Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
@@ -305,6 +308,7 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/send_frame.h"
+        - "mlx/distributed/jaccl/lib/jaccl/threadpool.h"
         - "docs/src/usage/distributed.rst"
         - "docs/src/usage/environment_variables.rst"
         - "tests/jaccl/*"

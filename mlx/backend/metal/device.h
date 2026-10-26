@@ -453,6 +453,11 @@ class MLX_API Device {
 };
 
 MLX_API Device& device(mlx::core::Device);
+
+// The calling thread's steel quantized-matmul output tile (32, 64, 6432,
+// 3264 or 6464), or 0
+// for MLX_QMM_STEEL_TILE (mlx_metal_set_thread_qmm_steel_tile).
+int thread_qmm_steel_tile();
 MLX_API CommandEncoder& get_command_encoder(Stream s);
 
 std::unordered_map<int, CommandEncoder>& get_command_encoders();

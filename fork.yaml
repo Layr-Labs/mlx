@@ -90,6 +90,30 @@ def:
         - "mlx/backend/common/command_buffer_limits.h"
         - "mlx/backend/metal/device.h"
         - "mlx/backend/metal/device.cpp"
+    - title: "Steel affine quantized matmul: prompt-sized output tiles"
+      description: |
+        On a GPU without neural accelerators the steel `affine_qmm_t` kernel computed every
+        product in 32 x 32 output tiles (2 x 2 fragments a SIMD group). A product of at least
+        256 rows with a 64-aligned output width now takes a 64-row x 32-column tile for 16-bit
+        inputs and a 32 x 64 tile for FP32 inputs by default (measured on the M3 Ultra at 512
+        rows: BF16 products 4-6% faster; FP32's 64 x 64 tile was slower), JIT-instantiated from
+        the same `qmm_t_impl`. Every output element still accumulates the same 8-wide K slabs
+        in the same order with the same simdgroup multiply-accumulates over the same
+        dequantized values, so no bit changes; the split-K decision (made from 32 x 32 tiles)
+        and the NAX route are unchanged.
+        `MLX_QMM_STEEL_TILE` picks 32 (as before), 64, 6432, 3264 or 6464 (64 x 64 with K depth
+        64 for 16-bit inputs in groups of 64 or more; FP32 tiles that deep would exceed 32 KiB of
+        threadgroup memory); `MLX_QMM_STEEL_TILE_MIN_GROUPS` keeps 32 x 32 below a 64 x 64
+        threadgroup count; `mlx_metal_set_thread_qmm_steel_tile` overrides the tile for the
+        calling thread (tests and benches compare the tiles' bytes in one process). Both
+        variables are documented in `docs/src/usage/environment_variables.rst`.
+      globs:
+        - "mlx/backend/common/command_buffer_limits.h"
+        - "mlx/backend/metal/device.h"
+        - "mlx/backend/metal/device.cpp"
+        - "mlx/backend/metal/quantized.cpp"
+        - "mlx/utils.h"
+        - "docs/src/usage/environment_variables.rst"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

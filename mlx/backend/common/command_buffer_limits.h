@@ -23,6 +23,14 @@ MLX_API void mlx_metal_set_thread_command_buffer_limits(
     int* previous_ops,
     int* previous_mb);
 
+/// Output tile (32, 64, 6432, 3264 or 6464: rows x columns[, K depth]) of the
+/// steel affine quantized matmul for the
+/// products the calling thread encodes on a GPU without neural accelerators;
+/// any other value restores MLX_QMM_STEEL_TILE. Stores the thread's previous
+/// override (0 for none) in `previous_tile` when it is not null. The tile
+/// changes which threadgroup computes an element, never its bits.
+MLX_API void mlx_metal_set_thread_qmm_steel_tile(int tile, int* previous_tile);
+
 #ifdef __cplusplus
 }
 #endif

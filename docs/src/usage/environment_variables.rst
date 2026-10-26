@@ -163,6 +163,23 @@ users. Their behavior may change as the implementation evolves.
    dot-product attention kernel. Positive values are rounded up to a multiple
    of ``32``.
 
+.. envvar:: MLX_QMM_STEEL_TILE
+
+   Output tile of the Metal steel affine quantized matmul (``x @ w.T`` with
+   at least 64 rows and a multiple of 64 outputs) where no neural-accelerator
+   kernel serves the product. The default, ``0``, takes 64 rows x 32 columns
+   for 16-bit inputs and 32 x 64 for FP32 inputs from 256 rows, and 32 x 32
+   below. ``32`` (32 x 32, the previous tile), ``64`` (64 x 64), ``6432``
+   (64 rows x 32 columns), ``3264`` (32 x 64) or ``6464`` (64 x 64 at a K
+   depth of 64 for 16-bit inputs in groups of 64 or more) choose one tile for
+   every product from 64 rows. Every tile gives the same bits; only the speed
+   changes.
+
+.. envvar:: MLX_QMM_STEEL_TILE_MIN_GROUPS
+
+   Fewest 64 x 64 threadgroups a product must fill to take a tile other than
+   32 x 32; smaller products keep 32 x 32. The default is ``0``.
+
 CUDA
 ----
 

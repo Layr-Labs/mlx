@@ -1068,10 +1068,61 @@ void qmm(
 
   int B = out.size() / M / N;
 
+  // Prompt-sized products (256 rows or more) take a larger output tile than
+  // 32 x 32 on a GPU without neural accelerators (the NAX kernel above serves
+  // the rest): 64 rows x 32 columns for 16-bit inputs and 32 rows x 64
+  // columns for FP32 by default (measured on the M3 Ultra, 512-row products of
+  // a 4-bit 27B: 64 x 32 is 4-6% faster than 32 x 32 for BF16; FP32's
+  // threadgroup tiles are twice as large, and its 64 x 64 tile is slower while
+  // 32 x 64 rereads the FP32 rows half as often). Every output element still
+  // accumulates the same 8-wide K slabs in the same order with the same
+  // simdgroup multiply-accumulates, from the same dequantized values, whatever
+  // the tile's rows, columns or K depth: no element's bits change, only which
+  // threadgroup computes it. MLX_QMM_STEEL_TILE (or the calling thread's
+  // mlx_metal_set_thread_qmm_steel_tile) picks another tile: 32 (32 x 32, as
+  // before), 64 (64 x 64), 6432 (64 rows x 32 columns), 3264, or 6464 (64 x 64,
+  // K depth 64 for 16-bit inputs in groups of 64 or more).
+  int requested = metal::thread_qmm_steel_tile();
+  if (requested == 0) {
+    requested = env::qmm_steel_tile();
+    int groups =
+        (N / 64) * ((M + 63) / 64) * std::max(1, int(out.size() / M / N));
+    if (groups < env::qmm_steel_tile_min_groups()) {
+      requested = 32;
+    } else if (requested == 0) {
+      // Measured at prompt frames; fewer rows keep 32 x 32 (and their
+      // threadgroup count) unless a tile is chosen explicitly.
+      requested = M < 256 ? 32 : (x.itemsize() <= 2 ? 6432 : 3264);
+    }
+  }
+  int bm = 32, bn = 32, bk = 32;
+  if (transpose && mode == "affine" && M >= 64 && N % 64 == 0) {
+    switch (requested) {
+      case 64:
+        bm = 64, bn = 64;
+        break;
+      case 6432:
+        bm = 64;
+        break;
+      case 3264:
+        bn = 64;
+        break;
+      case 6464:
+        // A K depth of 64 needs groups of 64 or more, and both padded
+        // tiles in 32 KiB of threadgroup memory: 16-bit inputs only (FP32
+        // tiles would take 34 KiB), else 64 x 64 at a K depth of 32.
+        bm = 64, bn = 64;
+        if (group_size >= 64 && x.itemsize() <= 2) {
+          bk = 64;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  bool wide_tile = bm != 32 || bn != 32 || bk != 32;
   int wm = 2;
   int wn = 2;
-  int bm = 32;
-  int bn = 32;
   MTL::Size group_dims(32, wn, wm);
   MTL::Size grid_dims((N + bn - 1) / bn, (M + bm - 1) / bm, B);
 
@@ -1090,9 +1141,26 @@ void qmm(
       bits,
       transpose ? (aligned ? "_alN_true" : "_alN_false") : "",
       batched ? "_batch_1" : "_batch_0");
+  if (wide_tile) {
+    concatenate(kname, "_bm", bm, "_bk", bk, "_bn", bn);
+  }
   std::string template_def;
   MTL::ComputePipelineState* kernel;
-  if (transpose) {
+  if (transpose && wide_tile) {
+    kernel = get_quantized_kernel_wrapped(
+        d,
+        kname,
+        "qmm_t",
+        mode,
+        type_string,
+        group_size,
+        bits,
+        aligned,
+        batched,
+        bm,
+        bk,
+        bn);
+  } else if (transpose) {
     kernel = get_quantized_kernel_wrapped(
         d,
         kname,

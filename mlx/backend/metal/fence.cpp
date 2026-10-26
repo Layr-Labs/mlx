@@ -1,5 +1,8 @@
 // Copyright © 2024 Apple Inc.
 #include "mlx/fence.h"
+
+#include <optional>
+
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/fenced_input.h"
 #include "mlx/fast_primitives.h"
@@ -21,29 +24,26 @@ struct FenceImpl {
       event = std::make_unique<Event>(stream);
     } else {
       // The timestamp, then the fence_update_coherent arrival count.
-      auto buf = allocator::malloc(2 * sizeof(uint32_t)).ptr();
-      fence = static_cast<void*>(buf);
+      fence.emplace(allocator::malloc(2 * sizeof(uint32_t)));
       cpu_value()[0] = 0;
       cpu_value()[1] = 0;
     }
   }
 
-  ~FenceImpl() {
-    if (use_fast) {
-      allocator::free(allocator::Buffer{static_cast<MTL::Buffer*>(fence)});
-    }
-  }
   bool use_fast{false};
   bool cpu_stream;
   uint32_t count{0};
   // Threadgroups that fence_update_coherent counted in (mod 2^32).
   uint32_t arrivals{0};
-  void* fence;
+  std::optional<allocator::Data> fence;
   std::unique_ptr<Event> event;
 
+  MTL::Buffer* buffer() {
+    return static_cast<MTL::Buffer*>(fence->buffer().ptr());
+  }
+
   std::atomic_uint* cpu_value() {
-    return static_cast<std::atomic_uint*>(
-        static_cast<MTL::Buffer*>(fence)->contents());
+    return static_cast<std::atomic_uint*>(buffer()->contents());
   }
 };
 
@@ -58,7 +58,7 @@ void encode_wait(
     Stream stream,
     const array& x,
     const std::shared_ptr<void>& fence,
-    uint32_t count) {
+    uint32_t value) {
   auto& f = *static_cast<FenceImpl*>(fence.get());
   auto& d = metal::device(stream.device);
   auto& compute_encoder = metal::get_command_encoder(stream);
@@ -73,14 +73,15 @@ void encode_wait(
   // forever. Waiting on every pending pass costs nothing here: the CPU work
   // this spin waits for already follows them.
   compute_encoder.wait_for_all_pending();
+  // Order the spin after earlier GPU producers in this concurrent pass too.
+  compute_encoder.barrier();
 
   auto kernel = d.get_kernel("fence_wait");
   MTL::Size kernel_dims = MTL::Size(1, 1, 1);
   compute_encoder.set_compute_pipeline_state(kernel);
 
-  auto buf = static_cast<MTL::Buffer*>(f.fence);
-  compute_encoder.set_buffer(buf, 0);
-  compute_encoder.set_bytes(count, 1);
+  compute_encoder.set_buffer(f.buffer(), 0);
+  compute_encoder.set_bytes(value, 1);
   compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
 
   // The fence buffer must outlive the pass that spins on it.
@@ -93,34 +94,36 @@ Fence::Fence(Stream stream) {
   fence_ = std::make_shared<FenceImpl>(stream);
 }
 
-void Fence::wait(Stream stream, const array& x) {
+void Fence::wait(Stream stream, const array& x, uint32_t value) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
 
   if (!f.use_fast) {
-    f.event->wait(stream);
+    auto& event = *f.event;
+    event.set_value(value);
+    event.wait(stream);
     return;
   }
 
   if (stream.device == Device::cpu) {
-    scheduler::enqueue(stream, [fence_ = fence_, count = f.count]() mutable {
+    scheduler::enqueue(stream, [fence_ = fence_, value]() mutable {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
-      while (f.cpu_value()[0] < count) {
+      while (f.cpu_value()[0] < value) {
       }
     });
     return;
   }
 
-  encode_wait(stream, x, fence_, f.count);
+  encode_wait(stream, x, fence_, value);
 }
 
-void Fence::update(Stream stream, const array& x, bool cross_device) {
+uint32_t Fence::update(Stream stream, const array& x, bool cross_device) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
   f.count++;
 
   if (!f.use_fast) {
     f.event->set_value(f.count);
     f.event->signal(stream);
-    return;
+    return f.count;
   }
 
   if (stream.device == Device::cpu) {
@@ -128,7 +131,7 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
       auto& f = *static_cast<FenceImpl*>(fence_.get());
       f.cpu_value()[0] = count;
     });
-    return;
+    return f.count;
   }
 
   auto& d = metal::device(stream.device);
@@ -150,7 +153,7 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
     compute_encoder.set_compute_pipeline_state(kernel);
     compute_encoder.set_input_array(x, 0);
     compute_encoder.set_bytes(words, 1);
-    auto buf = static_cast<MTL::Buffer*>(f.fence);
+    auto buf = f.buffer();
     compute_encoder.set_buffer(buf, 2);
     compute_encoder.set_bytes(f.count, 3);
     compute_encoder.set_buffer(buf, 4, sizeof(uint32_t));
@@ -161,7 +164,7 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
     compute_encoder.dispatch_threadgroups(
         MTL::Size(groups, 1, 1), MTL::Size(threads, 1, 1));
     compute_encoder.retain_until_completed(fence_);
-    return;
+    return f.count;
   }
 
   // Launch input visibility kernels
@@ -185,16 +188,20 @@ void Fence::update(Stream stream, const array& x, bool cross_device) {
   MTL::Size kernel_dims = MTL::Size(1, 1, 1);
   compute_encoder.set_compute_pipeline_state(kernel);
 
-  auto buf = static_cast<MTL::Buffer*>(f.fence);
-  compute_encoder.set_buffer(buf, 0);
+  compute_encoder.set_buffer(f.buffer(), 0);
   compute_encoder.set_bytes(f.count, 1);
   compute_encoder.dispatch_threads(kernel_dims, kernel_dims);
 
   // The fence buffer must outlive the pass that writes it.
   compute_encoder.retain_until_completed(fence_);
+  return f.count;
 }
 
-bool Fence::wait_in_consumer(Stream stream, const array& consumer, int input) {
+bool Fence::wait_in_consumer(
+    Stream stream,
+    const array& consumer,
+    int input,
+    uint32_t value) {
   auto& f = *static_cast<FenceImpl*>(fence_.get());
   if (!env::metal_fenced_inputs() || !f.use_fast || !f.cpu_stream ||
       stream.device != Device::gpu) {
@@ -204,7 +211,7 @@ bool Fence::wait_in_consumer(Stream stream, const array& consumer, int input) {
   if (!kernel || !kernel->fenced_input(input)) {
     return false;
   }
-  given_waits().push_back({&consumer.primitive(), input, fence_, f.count});
+  given_waits().push_back({&consumer.primitive(), input, fence_, value});
   return true;
 }
 
@@ -224,7 +231,7 @@ std::vector<FencedInput> take_fenced_inputs(const Primitive* consumer) {
 
 void bind_fenced_input(CommandEncoder& enc, const FencedInput& w, int index) {
   auto& f = *static_cast<FenceImpl*>(w.fence.get());
-  enc.set_buffer(static_cast<MTL::Buffer*>(f.fence), index);
+  enc.set_buffer(f.buffer(), index);
   enc.set_bytes(w.count, index + 1);
   enc.retain_until_completed(w.fence);
 }

@@ -187,17 +187,23 @@ thread_local int detail::RetainGraph::tracing_counter{0};
 array eval_impl(std::vector<array> outputs, bool async) {
   std::deque<array> tape;
 
-  // Make an effort to choose a good output stream
-  Stream stream = default_stream(default_device());
-  for (auto& o : outputs) {
-    if (o.status() == array::Status::unscheduled && o.has_primitive()) {
-      stream = o.primitive().stream();
-      break;
+  // Make an effort to choose a good output stream, and only create the default
+  // stream when there is no other choice.
+  Stream stream = [&outputs]() {
+    for (auto& o : outputs) {
+      if (o.status() == array::Status::unscheduled && o.has_primitive()) {
+        return o.primitive().stream();
+      }
     }
-  }
+    return default_stream(default_device());
+  }();
 
-  // Map of array id that needs fence and stream it's computed on
-  std::unordered_map<uintptr_t, std::pair<uint32_t, bool>> needs_fence;
+  struct FenceInfo {
+    int stream_index;
+    bool cross_device;
+    uint32_t value{0};
+  };
+  std::unordered_map<uintptr_t, FenceInfo> needs_fence;
 
   // GPU streams with an array that a CPU primitive reads
   std::unordered_set<uint32_t> gpu_to_cpu;
@@ -256,9 +262,9 @@ array eval_impl(std::vector<array> outputs, bool async) {
                 a.primitive().stream().device != in.primitive().stream().device;
             auto [it, inserted] = needs_fence.emplace(
                 in.id(),
-                std::make_pair(in.primitive().stream().index, device_switch));
+                FenceInfo{in.primitive().stream().index, device_switch});
             if (!inserted) {
-              it->second.second |= device_switch;
+              it->second.cross_device |= device_switch;
             }
             if (device_switch && in.primitive().device() == Device::gpu) {
               gpu_to_cpu.insert(in.primitive().stream().index);
@@ -369,9 +375,11 @@ array eval_impl(std::vector<array> outputs, bool async) {
           // Use fence to wait within a single eval
           // Get the input array's stream fence and wait on the
           // output arrays stream
-          auto& fence = fences[it->second.first];
-          if (!one_gpu_stream || !fence.wait_in_consumer(stream, arr, i)) {
-            fence.wait(stream, in);
+          auto& info = it->second;
+          auto& fence = fences.at(info.stream_index);
+          if (!one_gpu_stream ||
+              !fence.wait_in_consumer(stream, arr, i, info.value)) {
+            fence.wait(stream, in, info.value);
           }
         } else if (in.event().valid()) {
           if (in.event().is_signaled()) {
@@ -412,13 +420,14 @@ array eval_impl(std::vector<array> outputs, bool async) {
               if (it == fences.end()) {
                 it = fences.emplace(stream.index, Fence{stream}).first;
               }
-              it->second.update(stream, a, nf->second.second);
+              nf->second.value =
+                  it->second.update(stream, a, nf->second.cross_device);
               // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
               // CPU stream starts when `a` is ready, not when the buffer is
               // full.
               static const bool eager_commit =
                   env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
-              if (eager_commit && nf->second.second &&
+              if (eager_commit && nf->second.cross_device &&
                   stream.device == Device::gpu) {
                 gpu::finalize(stream);
               }
@@ -452,6 +461,15 @@ array eval_impl(std::vector<array> outputs, bool async) {
         e.signal(es);
         open_streams.insert(es);
       } catch (...) {
+      }
+    }
+    // Commit GPU streams before the wait.
+    for (auto& s : open_streams) {
+      if (s.device == Device::gpu) {
+        try {
+          gpu::finalize(s);
+        } catch (...) {
+        }
       }
     }
     for (auto& s : open_streams) {
@@ -488,6 +506,9 @@ void async_eval(std::vector<array> outputs) {
     return;
   }
 
+  // A stream task can fail while async_eval still enqueues later tasks.
+  // synchronize raises that error, not async_eval.
+  scheduler::DeferStreamErrors defer;
   eval_impl(std::move(outputs), true);
 }
 

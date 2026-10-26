@@ -58,6 +58,24 @@ TEST_CASE("test gpu full") {
   }
 }
 
+TEST_CASE("test gpu strided scan grid") {
+  // Regression for #4419 strided_scan writes out of bounds.
+  std::vector<float> values(72, 1.0f);
+  auto x = array(values.data(), {72});
+  x = transpose(reshape(x, {2, 9, 4}, Device::gpu), {0, 2, 1}, Device::gpu);
+  x = cumsum(x, -1, false, true, Device::gpu);
+
+  auto causal = tril(ones({9, 9}, float32, Device::gpu), 0, Device::gpu);
+  auto relative = subtract(
+      expand_dims(x, -1, Device::gpu),
+      expand_dims(x, -2, Device::gpu),
+      Device::gpu);
+  eval(relative, causal);
+
+  auto expected = tri(9, 9, 0, float32, Device::cpu);
+  CHECK(array_equal(causal, expected, Device::cpu).item<bool>());
+}
+
 TEST_CASE("test gpu astype") {
   array x = array({-4, -3, -2, -1, 0, 1, 2, 3});
   // Check all types work
@@ -445,6 +463,59 @@ TEST_CASE("test gpu matmul") {
     auto b = ones({3, 1, 2, 2});
     auto out = matmul(a, b, Device::gpu);
     CHECK(array_equal(out, full({3, 3, 2, 2}, 2.0f), Device::cpu).item<bool>());
+  }
+}
+
+TEST_CASE("test gpu gather/scatter indices") {
+  // Run with METAL_DEVICE_WRAPPER_TYPE=1 to validate the metadata bindings.
+
+  SUBCASE("scatter scalar indices") {
+    auto x = array({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, {3, 4});
+
+    SUBCASE("non-leading axis") {
+      auto out = take(x, array(2), 1, Device::gpu);
+      CHECK(array_equal(out, array({2, 6, 10}), Device::cpu).item<bool>());
+    }
+
+    SUBCASE("strided source") {
+      auto src = transpose(x, Device::gpu);
+      auto out = take(src, array(-1), 0, Device::gpu);
+      CHECK(array_equal(out, array({3, 7, 11}), Device::cpu).item<bool>());
+    }
+
+    SUBCASE("multiple scalar indices") {
+      auto out = gather(x, {array(1), array(-2)}, {0, 1}, {1, 1}, Device::gpu);
+      CHECK(array_equal(out, array({6}, {1, 1}), Device::cpu).item<bool>());
+    }
+  }
+
+  SUBCASE("gather without indices") {
+    SUBCASE("scalar source") {
+      auto out = gather(array(7), {}, std::vector<int>{}, {}, Device::gpu);
+      CHECK_EQ(out.item<int>(), 7);
+    }
+
+    SUBCASE("matrix source") {
+      auto x = array({0, 1, 2, 3}, {2, 2});
+      auto out = gather(x, {}, std::vector<int>{}, {2, 2}, Device::gpu);
+      CHECK(array_equal(out, x, Device::cpu).item<bool>());
+    }
+  }
+
+  SUBCASE("scatter without indices") {
+    SUBCASE("scalar update") {
+      auto out =
+          scatter_max(array(1), {}, array(2), std::vector<int>{}, Device::gpu);
+      CHECK_EQ(out.item<int>(), 2);
+    }
+
+    SUBCASE("strided update") {
+      auto x = array({0, 1, 2, 3}, {2, 2});
+      auto updates = transpose(array({1, 2, 3, 4}, {2, 2}), Device::gpu);
+      auto out = scatter_add(x, {}, updates, std::vector<int>{}, Device::gpu);
+      CHECK(array_equal(out, array({1, 4, 4, 7}, {2, 2}), Device::cpu)
+                .item<bool>());
+    }
   }
 }
 

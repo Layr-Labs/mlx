@@ -16,19 +16,22 @@ Fence::Fence(Stream s) {
   fence_ = std::make_shared<FenceImpl>(0, s);
 }
 
-void Fence::wait(Stream s, const array&) {
-  cast<FenceImpl>().event.wait(s);
+void Fence::wait(Stream s, const array&, uint32_t value) {
+  auto event = cast<FenceImpl>().event;
+  event.set_value(value);
+  event.wait(s);
 }
 
-bool Fence::wait_in_consumer(Stream, const array&, int) {
+bool Fence::wait_in_consumer(Stream, const array&, int, uint32_t) {
   return false;
 }
 
-void Fence::update(Stream s, const array&, bool) {
+uint32_t Fence::update(Stream s, const array&, bool) {
   auto& f = cast<FenceImpl>();
   f.count++;
   f.event.set_value(f.count);
   f.event.signal(s);
+  return f.count;
 }
 
 } // namespace mlx::core

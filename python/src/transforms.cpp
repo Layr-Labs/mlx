@@ -1,10 +1,5 @@
 // Copyright © 2023-2024 Apple Inc.
 
-#include <algorithm>
-#include <numeric>
-#include <sstream>
-#include <unordered_set>
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
@@ -12,6 +7,11 @@
 #include <nanobind/stl/unordered_set.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
+
+#include <algorithm>
+#include <numeric>
+#include <sstream>
+#include <unordered_set>
 
 #include "mlx/array.h"
 #include "mlx/compile.h"
@@ -310,7 +310,11 @@ auto py_vmap(
     const nb::callable& fun,
     const nb::object& in_axes,
     const nb::object& out_axes) {
-  return [fun, in_axes, out_axes](const nb::args& args) {
+  return [fun, in_axes, out_axes](
+             const nb::args& args, const nb::kwargs& kwargs) {
+    if (kwargs.size()) {
+      throw nb::type_error("[vmap] Keyword arguments are not supported.");
+    }
     auto axes_to_flat_tree = [](const nb::object& tree,
                                 const nb::object& axes,
                                 bool output_axes) {
@@ -334,7 +338,7 @@ auto py_vmap(
                   msg << "[vmap] Invalid" << (output_axes ? " output " : " ")
                       << "vectorization axis " << axis
                       << " for array with shape " << x.shape();
-                  throw std::invalid_argument(msg.str());
+                  throw std::out_of_range(msg.str());
                 }
                 flat_axes.push_back(axis);
               } else if (nb::isinstance<nb::tuple>(inputs[1])) {
@@ -351,7 +355,7 @@ auto py_vmap(
                     msg << "[vmap] Invalid" << (output_axes ? " output " : " ")
                         << "vectorization axis " << axis
                         << " for array with shape " << x.shape();
-                    throw std::invalid_argument(msg.str());
+                    throw std::out_of_range(msg.str());
                   }
                   flat_axes.push_back(axis);
                 } else if (l.size() == 1 && l[0].is_none()) {
@@ -412,7 +416,6 @@ struct PyCompiledFun {
   nb::object captured_inputs;
   nb::object captured_outputs;
   bool shapeless;
-  mx::detail::CompileCacheWeakPtr cache;
 
   // Data to attach to the compiled function that contains the python output
   // structure and the number of arrays in said structure.
@@ -448,14 +451,11 @@ struct PyCompiledFun {
         fun_id(reinterpret_cast<std::uintptr_t>(fun.ptr())),
         captured_inputs(std::move(other.captured_inputs)),
         captured_outputs(std::move(other.captured_outputs)),
-        shapeless(other.shapeless),
-        cache(other.cache) {
+        shapeless(other.shapeless) {
     other.fun_id = 0;
   };
 
   nb::object call_impl(const nb::args& args, const nb::kwargs& kwargs) {
-    cache = mx::detail::compile_cache();
-
     // Flat array inputs
     std::vector<mx::array> inputs;
 
@@ -589,7 +589,14 @@ struct PyCompiledFun {
   ~PyCompiledFun() {
     nb::gil_scoped_acquire gil;
 
-    mx::detail::compile_erase(cache, fun_id);
+    // The compiled function can be called on any thread, and each call
+    // records its trace in the cache of the calling thread. Erase the key from
+    // every live thread cache, and do it before fun is released so that no
+    // new callable can get this address while a trace for it is still cached.
+    // A moved-from object has fun_id 0 and no traces.
+    if (fun_id != 0) {
+      mx::detail::compile_erase(fun_id);
+    }
     fun.reset();
     captured_inputs.reset();
     captured_outputs.reset();
@@ -814,8 +821,8 @@ class PyCustomFunction {
       }
       int array_index = 0;
       int tangent_index = 0;
-      auto new_tangents =
-          nb::cast<nb::tuple>(tree_map(args, [&](nb::handle element) {
+      auto new_tangents = nb::cast<nb::tuple>(
+          tree_map(args, [&](nb::handle element) -> nb::object {
             if (nb::isinstance<mx::array>(element) &&
                 have_tangents[array_index++]) {
               return nb::cast(tangents[tangent_index++]);
@@ -861,8 +868,8 @@ class PyCustomFunction {
       }
 
       int arr_index = 0;
-      auto new_axes =
-          nb::cast<nb::tuple>(tree_map(args, [&](nb::handle element) {
+      auto new_axes = nb::cast<nb::tuple>(
+          tree_map(args, [&](nb::handle element) -> nb::object {
             int axis = axes[arr_index++];
             if (nb::isinstance<mx::array>(element) && axis >= 0) {
               return nb::cast(axis);
@@ -1170,7 +1177,8 @@ void init_transforms(nb::module_& m) {
             return a pytree with the vectorization axes of each output. If some
             outputs are no longer vectorized, then their vectorization axis
             should be ``None``.
-          )pbdoc");
+          )pbdoc")
+      .freeze();
 
   m.def(
       "eval",
@@ -1471,7 +1479,7 @@ void init_transforms(nb::module_& m) {
          const nb::object& outputs,
          bool shapeless) {
         return mlx_func(
-            nb::cpp_function(PyCompiledFun{fun, inputs, outputs, shapeless}),
+            PyCompiledFun{fun, inputs, outputs, shapeless},
             fun,
             inputs,
             outputs);

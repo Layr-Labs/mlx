@@ -29,6 +29,9 @@ void matmul<float>(
   size_t K = a_shape[ndim - 1];
 
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_sgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA
@@ -70,6 +73,9 @@ void matmul<double>(
   size_t K = a_shape[ndim - 1];
 
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_dgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA
@@ -113,6 +119,9 @@ void matmul<complex64_t>(
   auto cbeta = static_cast<complex64_t>(beta);
 
   for (int i = 0; i < batch_size; ++i) {
+    if (beta == 0.0f) {
+      clear_gemm_output(out + M * N * i, M, N, ldc);
+    }
     cblas_cgemm(
         CblasRowMajor,
         a_transposed ? CblasTrans : CblasNoTrans, // transA

@@ -5,6 +5,7 @@
 
 #include "mlx/backend/cpu/copy.h"
 #include "mlx/backend/cpu/encoder.h"
+#include "mlx/backend/cpu/gemm.h"
 #include "mlx/backend/cpu/lapack.h"
 #include "mlx/primitives.h"
 #include "mlx/utils.h"
@@ -299,18 +300,20 @@ void slow_conv_2D(
         int oH_border_1 = is_idil_one
             ? ((padding_lo[0] + wt_strides[0] - 1) / wt_strides[0])
             : oH;
-        int oH_border_2 = std::max(
-            oH_border_1,
-            (iH + padding_lo[0] - wH * wt_dilation[0]) / wt_strides[0]);
+        oH_border_1 = std::min(std::max(oH_border_0, oH_border_1), oH);
+        int oH_border_2 =
+            (iH + padding_lo[0] - wH * wt_dilation[0]) / wt_strides[0];
+        oH_border_2 = std::min(std::max(oH_border_1, oH_border_2), oH);
         int oH_border_3 = oH;
 
         int oW_border_0 = 0;
         int oW_border_1 = is_idil_one
             ? ((padding_lo[1] + wt_strides[1] - 1) / wt_strides[1])
             : oW;
-        int oW_border_2 = std::max(
-            oW_border_1,
-            (iW + padding_lo[1] - wW * wt_dilation[1]) / wt_strides[1]);
+        oW_border_1 = std::min(std::max(oW_border_0, oW_border_1), oW);
+        int oW_border_2 =
+            (iW + padding_lo[1] - wW * wt_dilation[1]) / wt_strides[1];
+        oW_border_2 = std::min(std::max(oW_border_1, oW_border_2), oW);
         int oW_border_3 = oW;
 
         for (int n = 0; n < N; ++n) {
@@ -586,27 +589,30 @@ void slow_conv_3D(
     int oD_border_1 = is_idil_one
         ? ((padding_lo[0] + wt_strides[0] - 1) / wt_strides[0])
         : oD;
-    int oD_border_2 = std::max(
-        oD_border_1,
-        (iD + padding_lo[0] - wD * wt_dilation[0]) / wt_strides[0]);
+    oD_border_1 = std::min(std::max(oD_border_0, oD_border_1), oD);
+    int oD_border_2 =
+        (iD + padding_lo[0] - wD * wt_dilation[0]) / wt_strides[0];
+    oD_border_2 = std::min(std::max(oD_border_1, oD_border_2), oD);
     int oD_border_3 = oD;
 
     int oH_border_0 = 0;
     int oH_border_1 = is_idil_one
         ? ((padding_lo[1] + wt_strides[1] - 1) / wt_strides[1])
         : oH;
-    int oH_border_2 = std::max(
-        oH_border_1,
-        (iH + padding_lo[1] - wH * wt_dilation[1]) / wt_strides[1]);
+    oH_border_1 = std::min(std::max(oH_border_0, oH_border_1), oH);
+    int oH_border_2 =
+        (iH + padding_lo[1] - wH * wt_dilation[1]) / wt_strides[1];
+    oH_border_2 = std::min(std::max(oH_border_1, oH_border_2), oH);
     int oH_border_3 = oH;
 
     int oW_border_0 = 0;
     int oW_border_1 = is_idil_one
         ? ((padding_lo[2] + wt_strides[2] - 1) / wt_strides[2])
         : oW;
-    int oW_border_2 = std::max(
-        oW_border_1,
-        (iW + padding_lo[2] - wW * wt_dilation[2]) / wt_strides[2]);
+    oW_border_1 = std::min(std::max(oW_border_0, oW_border_1), oW);
+    int oW_border_2 =
+        (iW + padding_lo[2] - wW * wt_dilation[2]) / wt_strides[2];
+    oW_border_2 = std::min(std::max(oW_border_1, oW_border_2), oW);
     int oW_border_3 = oW;
 
     for (int n = 0; n < N; ++n) {
@@ -911,6 +917,8 @@ void explicit_gemm_conv_1D_cpu(
                     C_per_group]() {
     for (int g = 0; g < groups; ++g) {
       // Perform gemm
+      clear_gemm_output(
+          gemm_out_ptr + g * O_per_group, strided_reshape, O_per_group, O);
       cblas_sgemm(
           CblasRowMajor,
           CblasNoTrans, // no trans A
@@ -1081,6 +1089,7 @@ void explicit_gemm_conv_ND_cpu(
                     strided_reshape = std::move(strided_reshape),
                     O]() {
     // Perform gemm
+    clear_gemm_output(gemm_out_ptr, strided_reshape[0], O, O);
     cblas_sgemm(
         CblasRowMajor,
         CblasNoTrans, // no trans A

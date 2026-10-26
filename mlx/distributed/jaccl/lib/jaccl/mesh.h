@@ -5,13 +5,14 @@
 #include "jaccl/group.h"
 #include "jaccl/mesh_impl.h"
 #include "jaccl/rdma.h"
+#include "jaccl/threadpool.h"
 
 namespace jaccl {
 
 /**
- * The JACCL communication group for a fully connected mesh. We expect one
- * connection per peer and it should be the lowest latency communication group
- * for small to medium size messages.
+ * The JACCL communication group for a fully connected mesh. We expect one or
+ * more connections per peer and it should be the lowest latency communication
+ * group for small to medium size messages.
  *
  * Like all JACCL groups it uses a side channel to exchange the necessary
  * information and then configure the connections to be ready for RDMA
@@ -21,7 +22,7 @@ class MeshGroup : public Group {
  public:
   MeshGroup(
       int rank,
-      const std::vector<std::string>& device_names,
+      const std::vector<std::vector<std::string>>& device_names,
       SideChannel sc);
 
   int rank() override {
@@ -32,12 +33,17 @@ class MeshGroup : public Group {
     return size_;
   }
 
+  // Every wire gets the budget.
   void begin_startup_wait_budget(int64_t timeout_ms) override {
-    mesh_.begin_startup_wait_budget(timeout_ms);
+    for (auto& mesh : meshes_) {
+      mesh.begin_startup_wait_budget(timeout_ms);
+    }
   }
 
   void end_startup_wait_budget() override {
-    mesh_.end_startup_wait_budget();
+    for (auto& mesh : meshes_) {
+      mesh.end_startup_wait_budget();
+    }
   }
 
   void all_sum(const void* input, void* output, size_t n_bytes, int dtype)
@@ -69,7 +75,8 @@ class MeshGroup : public Group {
       size_t n_bytes,
       const std::function<bool(size_t)>& ready,
       const std::function<void(size_t)>& arrived) override {
-    mesh_.exchange(input, output, n_bytes, ready, arrived);
+    // An exchange runs on the first wire only.
+    meshes_[0].exchange(input, output, n_bytes, ready, arrived);
   }
 
  private:
@@ -87,6 +94,9 @@ class MeshGroup : public Group {
       size_t n_bytes,
       ReduceOp reduce_op);
 
+  template <typename Fn>
+  void split_wires(size_t n_bytes, int64_t total, Fn&& fn);
+
   /**
    * Performs the connection initialization. Namely, after this call all
    * Connection objects should have a queue pair in RTS state and all buffers
@@ -101,12 +111,13 @@ class MeshGroup : public Group {
 
   int rank_;
   int size_;
+  int n_wires_;
   SideChannel side_channel_;
-  std::vector<Connection> connections_;
-  std::vector<SharedBuffer> buffers_;
-  std::vector<SharedBuffer> scatter_buffers_;
-
-  MeshImpl mesh_;
+  std::vector<std::vector<Connection>> connections_;
+  std::vector<std::vector<SharedBuffer>> buffers_;
+  std::vector<std::vector<SharedBuffer>> scatter_buffers_;
+  ThreadPool pool_;
+  std::vector<MeshImpl> meshes_;
 };
 
 } // namespace jaccl

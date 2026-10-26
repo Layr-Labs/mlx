@@ -1,6 +1,6 @@
 // Copyright © 2024 Apple Inc.
 
-#include <vector>
+#include <cstdint>
 
 #include "mlx/array.h"
 
@@ -8,12 +8,9 @@ namespace mlx::core {
 
 /* A fence to be used for synchronizing work between streams.
  *
- * Calls to `wait` wait in the given stream until all previous calls to update
- * are complete on their given stream.
- *
- * The array passed to `update` is computed and visible after the call to
- * `wait` returns. The array passed to `wait` will not be read until all
- * previous calls to `update` have completed.
+ * `update` returns a value that marks when its array is computed and visible.
+ * `wait` orders work in the consumer stream after that value is signaled.
+ * Later updates do not extend an earlier array's wait.
  *
  * Note, calls to `update` should always be from the same thread or explicitly
  * synchronized so that they occur in sequence. Calls to `wait` can be on any
@@ -29,13 +26,17 @@ class Fence {
   Fence() {};
   explicit Fence(Stream stream);
 
-  void update(Stream stream, const array& x, bool cross_device);
-  void wait(Stream stream, const array& x);
+  uint32_t update(Stream stream, const array& x, bool cross_device);
+  void wait(Stream stream, const array& x, uint32_t value);
 
-  // Give the wait on input `input` of `consumer` to the consumer's own GPU
-  // kernel (a fenced input of a Metal custom kernel). Returns false when it
-  // cannot; call `wait` then.
-  bool wait_in_consumer(Stream stream, const array& consumer, int input);
+  // Give the wait for `value` on input `input` of `consumer` to the consumer's
+  // own GPU kernel (a fenced input of a Metal custom kernel). Returns false
+  // when it cannot; call `wait` then.
+  bool wait_in_consumer(
+      Stream stream,
+      const array& consumer,
+      int input,
+      uint32_t value);
 
   template <typename T>
   auto& cast() const {

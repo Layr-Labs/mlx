@@ -1,5 +1,7 @@
 // Copyright © 2023 Apple Inc.
 
+#include <future>
+
 #include "doctest/doctest.h"
 
 #include "mlx/mlx.h"
@@ -112,6 +114,35 @@ TEST_CASE("test thread unsafe stream") {
   t.join();
 
   CHECK_EQ(expected, actual);
+}
+
+TEST_CASE("test eval does not create default stream") {
+  auto s = new_thread_unsafe_stream(default_device());
+  size_t num_streams = get_streams().size();
+
+  std::thread t([&] {
+    async_eval(arange(10, s));
+    eval(arange(10, s));
+  });
+  t.join();
+
+  CHECK_EQ(get_streams().size(), num_streams);
+}
+
+TEST_CASE("test compile does not create default stream") {
+  auto s = new_thread_unsafe_stream(default_device());
+  size_t num_streams = get_streams().size();
+
+  std::function<std::vector<array>(const std::vector<array>&)> fun =
+      [s](const std::vector<array>& inputs) {
+        return std::vector<array>{abs(inputs[0], s)};
+      };
+  auto cfun = compile(fun);
+
+  std::thread t([&] { eval(cfun({array({-1, 2})})); });
+  t.join();
+
+  CHECK_EQ(get_streams().size(), num_streams);
 }
 
 TEST_CASE("test thread local stream") {
@@ -248,4 +279,50 @@ TEST_CASE("test scheduler races") {
     y = exp(y);
   }
   eval(a, y);
+}
+
+// The fence orders work between two streams. Check that the consumer sees the
+// producer result for every combination of producer and consumer device.
+TEST_CASE("test cross stream fence ordering") {
+  if (!gpu::is_available()) {
+    return;
+  }
+  std::vector<Device::DeviceType> devices = {Device::cpu, Device::gpu};
+
+  for (auto pd : devices) {
+    for (auto cd : devices) {
+      auto ps = new_stream(pd);
+      auto cs = new_stream(cd);
+
+      array one = full({1}, 1.0f, float32, ps);
+      array x = full({64, 64}, 1.0f, float32, ps);
+      for (int i = 0; i < 20; ++i) {
+        x = add(x, one, ps);
+      }
+
+      // The consumer is on the other stream, so eval builds a fence.
+      array y = sum(x, cs);
+      CHECK_EQ(y.item<float>(), doctest::Approx(64 * 64 * 21.0f));
+    }
+  }
+}
+
+TEST_CASE("test async_eval does not throw a stored stream error") {
+  // A failed CPU task stores its error in the stream. Wait for the task
+  // without synchronize, so the error is still stored when async_eval runs.
+  auto s = new_stream(Device::cpu);
+  scheduler::enqueue(s, []() { throw std::runtime_error("task failed"); });
+  auto done = std::make_shared<std::promise<void>>();
+  auto finished = done->get_future();
+  scheduler::enqueue(s, [done]() { done->set_value(); });
+  finished.wait();
+
+  auto x = add(array(1.0f), array(2.0f), s);
+  CHECK_NOTHROW(async_eval(x));
+  CHECK_THROWS_AS(synchronize(s), std::runtime_error);
+
+  // The error is cleared, so the stream works again.
+  auto y = add(array(1.0f), array(2.0f), s);
+  eval(y);
+  CHECK_EQ(y.item<float>(), 3.0f);
 }

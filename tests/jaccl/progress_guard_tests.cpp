@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -19,6 +20,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -221,10 +223,10 @@ std::vector<std::pair<std::string, MeshCall>> mesh_calls(Buffers& b) {
          node.all_reduce(b.in.data(), b.out.data(), 64, fixture::Add{});
        }},
       {"mesh all_gather",
-       [&](auto& node) { node.all_gather(raw(b.in), raw(b.out), 256); }},
+       [&](auto& node) { node.all_gather(raw(b.in), raw(b.out), 256, 256); }},
       {"mesh sum_scatter",
        [&](auto& node) {
-         node.sum_scatter(b.in.data(), b.out.data(), 64, fixture::Add{});
+         node.sum_scatter(b.in.data(), b.out.data(), 64, 64, fixture::Add{});
        }},
       // The scatter-gather all reduce starts with a reduce scatter.
       {"mesh sum_scatter",
@@ -688,6 +690,31 @@ void below_limit() {
         }
         pair.fabric.require_drained();
       });
+}
+
+// The mesh runs its wires through the shared dispatch_wires. The error of a
+// pool wire must reach the caller, after every wire returned.
+void pool_wire_error() {
+  check("dispatch_wires throws the error of a pool wire", [&] {
+    jaccl::ThreadPool pool(1);
+    std::atomic<int> returned{0};
+    std::string error;
+    try {
+      jaccl::dispatch_wires(&pool, 2, [&](int lw) {
+        if (lw == 0) {
+          std::this_thread::sleep_for(milliseconds(50));
+          returned++;
+          throw std::runtime_error("pool wire failed");
+        }
+        returned++;
+      });
+    } catch (const std::runtime_error& e) {
+      error = e.what();
+    }
+    fixture::require(
+        error == "pool wire failed", "The pool wire error was dropped");
+    fixture::require(returned == 2, "A wire was still running");
+  });
 }
 
 // With the limit removed the loops wait as before; a failed completion is
@@ -1177,6 +1204,7 @@ int main(int count, char** arguments) {
     failed_completion();
     refused_destroy();
     below_limit();
+    pool_wire_error();
   } else if (mode == "disabled") {
     setenv(name, "0", 1);
     value(0);

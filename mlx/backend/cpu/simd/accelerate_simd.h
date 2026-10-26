@@ -233,6 +233,53 @@ Simd<T, N> minimum(Simd<T, N> a, Simd<T, N> b) {
   return out;
 }
 
+// Integer division by zero gives 0. See the scalar divide in base_simd.h.
+template <typename T, int N>
+Simd<T, N> divide(Simd<T, N> a, Simd<T, N> b) {
+  if constexpr (std::is_integral_v<T>) {
+    return select(b == Simd<T, N>(0), Simd<T, N>(0), Simd<T, N>(a / b));
+  } else {
+    return a / b;
+  }
+}
+
+// Signed types round the quotient towards minus infinity.
+template <typename T, int N>
+Simd<T, N> floor_divide(Simd<T, N> a, Simd<T, N> b) {
+  if constexpr (std::is_integral_v<T>) {
+    // Swap zero divisors for 1 before dividing so the quotient is defined.
+    // For signed types also swap -1 where a is min: min / -1 overflows, and
+    // min / 1 gives min, the wrapped result.
+    auto zero = b == Simd<T, N>(0);
+    auto use_one = zero;
+    if constexpr (is_signed_v<T>) {
+      use_one = use_one ||
+          (a == Simd<T, N>(std::numeric_limits<T>::min()) &&
+           b == Simd<T, N>(-1));
+    }
+    auto q = a / select(use_one, Simd<T, N>(1), b);
+    q = select(zero, Simd<T, N>(0), q);
+    if constexpr (is_signed_v<T>) {
+      // a - b * q is the remainder and needs no division by zero.
+      auto mask = b != 0 && (a - b * q) != 0 && (a < 0 != b < 0);
+      q = select(mask, q - Simd<T, N>(1), q);
+    }
+    return q;
+  } else if constexpr (is_complex<T>) {
+    return a / b;
+  } else if constexpr (is_half_v<T>) {
+    // See exact_floor_divide in base_simd.h.
+    Simd<T, N> q;
+    for (int i = 0; i < N; ++i) {
+      q[i] = T(exact_floor_divide(
+          static_cast<float>(a[i]), static_cast<float>(b[i])));
+    }
+    return q;
+  } else {
+    return floor(divide(a, b));
+  }
+}
+
 template <typename T, int N>
 Simd<T, N> remainder(Simd<T, N> a, Simd<T, N> b) {
   Simd<T, N> r;
@@ -268,14 +315,16 @@ Simd<T, N> pow(Simd<T, N> base, Simd<T, N> exp) {
     return asd::pow(base.value, exp.value);
   } else {
     Simd<T, N> res = 1;
-    // Raising an integer to a negative power is undefined
-    if (any(exp < 0)) {
-      return 0;
-    }
     while (any(exp > 0)) {
       res = select((exp & 1) != 0, res * base, res);
       base = select(exp > 0, base * base, base);
       exp = exp >> 1;
+    }
+    if constexpr (std::is_signed_v<T>) {
+      // Raising an integer to a negative power is undefined, so return 0 for
+      // those lanes. Select per lane: a single negative exponent must not zero
+      // the whole vector. exp stays negative through the shifts above.
+      res = select(exp < 0, Simd<T, N>(0), res);
     }
     return res;
   }

@@ -26,7 +26,20 @@ if(MLX_BUILD_METAL)
                  "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
   endforeach()
   list(APPEND GPU_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp
-       quantized_tile_tests.cpp)
+       quantized_tile_tests.cpp qmv_batch_invariant_tests.cpp)
+  # MLX reads MLX_QMV_BATCH_INVARIANT once in each process, so this entry runs
+  # the case again in a new process with the switch on. The tests entries run it
+  # with the switch off. The entry fails also if no test case has this name.
+  add_test(
+    NAME qmv_batch_invariant
+    COMMAND
+      tests
+      "--test-case=quantized matmul rows keep their bits below the vector limit"
+  )
+  set_tests_properties(
+    qmv_batch_invariant
+    PROPERTIES ENVIRONMENT "MLX_QMV_BATCH_INVARIANT=1" PASS_REGULAR_EXPRESSION
+               "test cases: +1 \\| +1 passed \\| +0 failed")
 endif()
 
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)

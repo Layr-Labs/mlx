@@ -122,6 +122,32 @@ def:
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
         - "tests/quantized_tile_tests.cpp"
+    - title: "Batch-invariant quantized matmul rows (opt-in)"
+      description: |
+        Opt-in (`MLX_QMV_BATCH_INVARIANT=1`, read once in each process). A quantized `x @ w.T`
+        with fewer rows than the vector limit (`get_qmv_batch_limit`) then runs only the vector
+        kernels, as upstream did before two of its routes: `qmv` for one row, and `qmv_wide`
+        from two rows (`qmv` where `qmv_wide` does not serve the mode on the GPU). These
+        routes do not run below the limit: `qmv_mma`/`qmv_nax` for 6 to 16 rows of the
+        floating-point modes ([ml-explore/mlx#4712](https://github.com/ml-explore/mlx/pull/4712))
+        and the staged NAX split-K kernel for affine products from 8 rows
+        ([ml-explore/mlx#4682](https://github.com/ml-explore/mlx/pull/4682)). Each row then has
+        the same bits at each row count from 2 to the limit - 1, so the rows of several
+        requests in one launch (for example their speculative verify windows) get the bits
+        that each request gets alone. A row alone (`qmv`) can have other bits than the same
+        row among two or more rows, as before. From the limit on, and without the switch,
+        the routes do not change. `tests/qmv_batch_invariant_tests.cpp` compares each window
+        of rows with the same rows in a larger launch at GLM and Qwen tensor-parallel shapes,
+        for affine and NVFP4 weights with bfloat16 and float32 inputs. The tests binary runs
+        it without the switch (up to 5 rows), and the `qmv_batch_invariant` ctest entry, which
+        Fork Tests runs, runs it with the switch (every count below the limit).
+      globs:
+        - "mlx/utils.h"
+        - "mlx/backend/metal/quantized.cpp"
+        - "docs/src/usage/environment_variables.rst"
+        - "tests/qmv_batch_invariant_tests.cpp"
+        - "tests/CMakeLists.txt"
+        - ".github/workflows/fork-tests.yml"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

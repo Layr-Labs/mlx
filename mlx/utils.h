@@ -233,6 +233,15 @@ inline int qmm_steel_tile_min_groups() {
   return groups_;
 }
 
+// Quantized matmuls (x @ w.T) with fewer rows than the vector limit use only
+// the vector kernels (see `QuantizedMatmul::eval_gpu` in
+// backend/metal/quantized.cpp). Then a row has the same bits at each row count
+// from 2 to the limit - 1.
+inline bool qmv_batch_invariant() {
+  static bool invariant_ = get_var("MLX_QMV_BATCH_INVARIANT", 0);
+  return invariant_;
+}
+
 inline bool metal_fast_synch() {
   static bool metal_fast_synch = get_var("MLX_METAL_FAST_SYNCH", 0);
   return metal_fast_synch;

@@ -2504,16 +2504,22 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   int vector_limit = transpose_ ? get_qmv_batch_limit(K, N, d) : 4;
   auto mode = quantization_mode_to_string(mode_);
 
+  // With MLX_QMV_BATCH_INVARIANT=1, rows below the vector limit use only the
+  // vector kernels (dispatch_qmv), as before the qmv_mma and the mid-row NAX
+  // split-K routes. Then each row has the same bits at each row count from 2
+  // to the limit - 1.
+  bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
   // For few rows use qmv_mma when N/K is large enough.
-  if (transpose_ && non_batched && (M >= 6) && (M <= 16) &&
+  if (!vector_rows && transpose_ && non_batched && (M >= 6) && (M <= 16) &&
       use_qmv_mma(x, w, scales, mode_, M, N, K, d)) {
     qmv_mma(x, w, scales, out, group_size_, bits_, M, N, K, d, s, mode);
     return;
   }
 
   // For mid rows use NAX qmm when output is large enough.
-  if (transpose_ && non_batched && (M >= 8) && (M < vector_limit) &&
-      (M * N >= 16384) &&
+  if (!vector_rows && transpose_ && non_batched && (M >= 8) &&
+      (M < vector_limit) && (M * N >= 16384) &&
       use_qmm_nax_splitk(x, biases, mode, M, N, K, group_size_)) {
     qmm_splitk_nax(
         x, w, scales, biases, out, group_size_, bits_, M, N, K, d, s, mode);

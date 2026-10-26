@@ -164,6 +164,17 @@ jobs:
           ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure \
             --no-tests=error
 
+      - name: Run the quantized matmul rows with MLX_QMV_BATCH_INVARIANT=1
+        # MLX reads the switch once in each process. The C++ test steps above
+        # run the case with the switch off; this ctest entry runs it again
+        # with the switch on (tests/CMakeLists.txt).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/qmv-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^qmv_batch_invariant$' \
+            --output-on-failure --no-tests=error
+
       - name: Merge the coverage profiles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

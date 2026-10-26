@@ -143,6 +143,20 @@ Metal
    it to ``0`` to use the GEMM convolution for all inputs. See
    :doc:`precision`.
 
+.. envvar:: MLX_QMV_BATCH_INVARIANT
+
+   Set it to ``1`` to compute a quantized matrix product ``x @ w.T`` with
+   fewer rows than the vector limit only with the vector kernels: ``qmv`` for
+   one row and ``qmv_wide`` from two rows. Then each row gets the same bits at
+   each row count from 2 to the limit - 1, so the rows of different requests
+   can share one product. The default, ``0``, also uses faster kernels that
+   give a row different bits at some row counts: ``qmv_mma`` for 6 to 16 rows
+   of the floating-point modes, and the affine split-K kernel from 8 rows on
+   GPUs with neural accelerators. The vector limit is 6 to 33 rows; it
+   depends on the GPU and on the shape. A row alone (``qmv``) can get bits
+   that are different from the bits of the same row among two or more rows.
+   MLX reads this variable once in each process.
+
 Advanced tuning
 ---------------
 

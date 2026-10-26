@@ -307,6 +307,12 @@ MTL::ComputePipelineState* get_quantized_kernel(
     const std::string& template_def,
     const std::string& mode);
 
+// Whether this build compiles kernels at run time (jit_kernels.cpp), so a
+// kernel can take any template instantiation, rather than loading them only
+// from the precompiled library (nojit_kernels.cpp), which holds just the
+// instantiations its .metal sources list.
+bool kernels_jit_compiled();
+
 MTL::ComputePipelineState* get_gather_qmm_kernel(
     metal::Device& d,
     const std::string& kernel_name,

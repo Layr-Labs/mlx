@@ -1096,7 +1096,11 @@ void qmm(
     }
   }
   int bm = 32, bn = 32, bk = 32;
-  if (transpose && mode == "affine" && M >= 64 && N % 64 == 0) {
+  // Only kernels compiled at run time take a tile other than 32 x 32: the
+  // precompiled library instantiates `affine_qmm_t` at 32 x 32 only, so a
+  // build without the JIT (CMake's default MLX_METAL_JIT=OFF) keeps it.
+  if (transpose && mode == "affine" && M >= 64 && N % 64 == 0 &&
+      kernels_jit_compiled()) {
     switch (requested) {
       case 64:
         bm = 64, bn = 64;

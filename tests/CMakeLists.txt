@@ -20,7 +20,8 @@ if(MLX_BUILD_METAL)
       PROPERTIES TIMEOUT 60 ENVIRONMENT
                  "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
   endforeach()
-  list(APPEND METAL_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp)
+  list(APPEND METAL_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp
+       quantized_tile_tests.cpp)
 endif()
 
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)

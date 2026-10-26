@@ -173,7 +173,10 @@ users. Their behavior may change as the implementation evolves.
    (64 rows x 32 columns), ``3264`` (32 x 64) or ``6464`` (64 x 64 at a K
    depth of 64 for 16-bit inputs in groups of 64 or more) choose one tile for
    every product from 64 rows. Every tile gives the same bits; only the speed
-   changes.
+   changes. Only builds that compile kernels at run time (``MLX_METAL_JIT=ON``)
+   take a tile other than 32 x 32: the precompiled kernel library of the
+   default build holds the 32 x 32 kernels only, so there this variable has no
+   effect.
 
 .. envvar:: MLX_QMM_STEEL_TILE_MIN_GROUPS
 

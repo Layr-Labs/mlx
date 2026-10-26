@@ -208,7 +208,8 @@ inline bool residency_debug() {
 
 // Output tile of the steel affine quantized matmul on GPUs without neural
 // accelerators (see `qmm` in backend/metal/quantized.cpp): 32, 64, 6432,
-// 3264 or 6464, or 0 (default) for the input width's own tile.
+// 3264 or 6464, or 0 (default) for the input width's own tile. Builds whose
+// kernels come only from the precompiled library keep 32 x 32.
 inline int qmm_steel_tile() {
   static int tile_ = get_var("MLX_QMM_STEEL_TILE", 0);
   return tile_;

@@ -1040,6 +1040,10 @@ MTL::ComputePipelineState* get_quantized_kernel(
   return d.get_kernel(kernel_name, lib);
 }
 
+bool kernels_jit_compiled() {
+  return true;
+}
+
 MTL::ComputePipelineState* get_gather_qmm_kernel(
     metal::Device& d,
     const std::string& kernel_name,

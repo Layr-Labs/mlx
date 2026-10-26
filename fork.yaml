@@ -107,6 +107,13 @@ def:
         threadgroup count; `mlx_metal_set_thread_qmm_steel_tile` overrides the tile for the
         calling thread (tests and benches compare the tiles' bytes in one process). Both
         variables are documented in `docs/src/usage/environment_variables.rst`.
+        Only builds that compile kernels at run time take these tiles: the precompiled
+        library instantiates `affine_qmm_t` at 32 x 32 only, so CMake builds with the default
+        `MLX_METAL_JIT=OFF` keep 32 x 32 (`kernels_jit_compiled()`, defined by
+        `jit_kernels.cpp` and `nojit_kernels.cpp`). `tests/quantized_tile_tests.cpp` runs
+        512 x 1024 products (one qmm, no split-K) at K = 96 (no NAX route) and K = 192 in
+        groups of 64 at every tile, checks the 32 x 32 result against the dequantized
+        product, and every other tile against its bytes.
       globs:
         - "mlx/backend/common/command_buffer_limits.h"
         - "mlx/backend/metal/device.h"
@@ -114,6 +121,7 @@ def:
         - "mlx/backend/metal/quantized.cpp"
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
+        - "tests/quantized_tile_tests.cpp"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

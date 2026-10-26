@@ -547,6 +547,20 @@ def:
       globs:
         - "mlx/backend/metal/kernels/quantized_nax.h"
         - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+    - title: "Run-time template of the head-dim split NAX attention"
+      description: |
+        Upstream's head-dim split attention (`attention_nax_dsplit`, the NAX full-attention
+        kernel for head dims 256 and 512) has no BV template parameter: its value width is
+        BD. The precompiled instances (`instantiate_attn_dsplit`) leave BV out, but the
+        run-time (JIT) build passed the template arguments of `attention_nax`, BV included,
+        so every value after BD moved one parameter to the left and the source did not
+        compile ("Unable to build metal library from source"). A JIT build (mlx-swift
+        builds this way) therefore failed every head-dim 256 or 512 prefill that takes the
+        NAX full-attention kernel. `get_steel_attention_nax_kernel` now leaves BV out for
+        the split kernel. Builds with the precompiled library did not have the bug, and the
+        kernel names do not change.
+      globs:
+        - "mlx/backend/metal/jit_kernels.cpp"
     - title: "64-bit products in the JACCL ring and the vector SDPA layout check"
       description: |
         The JACCL ring computes each wire's byte offset as `lr * n_wires * size`. Upstream

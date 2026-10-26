@@ -510,9 +510,7 @@ using ScalarArg = std::variant<bool, int, float>;
 // Generated source of a custom kernel. `metal_kernel` makes one for each
 // kernel and template instance, and all its launches share it.
 struct CustomKernelSource {
-  explicit CustomKernelSource(
-      std::string source,
-      std::string library_name = "")
+  explicit CustomKernelSource(std::string source, std::string library_name = "")
       : source(std::move(source)), library_name(std::move(library_name)) {}
 
   std::string source;

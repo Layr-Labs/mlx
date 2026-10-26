@@ -1,6 +1,10 @@
 # Copyright © 2024 Apple Inc.
 
+import faulthandler
 import gc
+import os
+import tempfile
+import threading
 import unittest
 
 import mlx.core as mx
@@ -51,6 +55,45 @@ class TestZeroCopy(mlx_tests.MLXTestCase):
         with self.assertRaises(Exception):
             mx.asarray(a, dtype=mx.float32, copy=False)
 
+    def test_dtype_mismatch_same_width_converts(self):
+        # Same item size, different dtype: values must be converted, not reinterpreted
+        a = np.arange(16, dtype=np.int32)
+        x = mx.asarray(a, dtype=mx.float32)
+        self.assertTrue(np.array_equal(np.array(x), a.astype(np.float32)))
+        y = mx.array([1.5, 2.5]) + np.array([1, 2], dtype=np.int32)
+        self.assertTrue(mx.array_equal(y, mx.array([2.5, 4.5])))
+        with self.assertRaisesRegex(ValueError, "Cannot convert array"):
+            mx.asarray(a, dtype=mx.float32, copy=False)
+
+    def test_misaligned_source_copies(self):
+        # Pointer not aligned to the item size
+        raw = np.arange(64, dtype=np.uint8)
+        a = raw[6:22].view(np.int32)
+        x = mx.asarray(a)
+        self.assertTrue(np.array_equal(x + 1, a + 1))
+        with self.assertRaises(ValueError):
+            mx.asarray(a, copy=False)
+
+    def test_ops_do_not_write_to_source(self):
+        a = np.ones(4096, np.float32)
+        mx.eval(mx.exp(a))
+        self.assertTrue(np.array_equal(a, np.ones(4096, np.float32)))
+
+        b = np.ones(4096, np.float32).tobytes()
+        mx.eval(mx.exp(mx.asarray(np.frombuffer(b, dtype=np.float32))))
+        self.assertEqual(b, np.ones(4096, np.float32).tobytes())
+
+    def test_ops_on_read_only_memmap(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "a.npy")
+            np.save(path, np.ones(1 << 16, np.float32))
+            a = np.load(path, mmap_mode="r")
+            y = mx.exp(mx.asarray(a))
+            mx.eval(y)
+            self.assertTrue(np.allclose(np.array(y), np.exp(1.0)))
+            self.assertTrue(np.array_equal(np.load(path), np.ones(1 << 16)))
+            del a, y
+
     def test_source_lifetime(self):
         if not mx.metal.is_available():
             self.skipTest("copy=False requires Metal")
@@ -82,6 +125,66 @@ class TestZeroCopy(mlx_tests.MLXTestCase):
             r = mx.sum(x @ w)
             mx.eval(r)
         self.assertTrue(True)  # reaching here without crashing is the assertion
+
+    def _adopted_source(self, n):
+        # A square source buffer that mx.asarray can adopt, else a skip.
+        if not mx.metal.is_available():
+            self.skipTest("copy=False requires Metal")
+        a = np.zeros((n, n), dtype=np.float32)
+        if a.ctypes.data % 16384 != 0:
+            self.skipTest("source buffer not page-aligned; adopt path not taken")
+        return a
+
+    @staticmethod
+    def _submit_work(a):
+        # The adopted array is an input of the first matmul and is dropped here,
+        # so only the completion handler of the command buffer that is in flight
+        # keeps its Python owner. The caller must keep the output until the end.
+        n = a.shape[0]
+        w = mx.ones((n, n))
+        y = mx.asarray(a, copy=False) @ w
+        for _ in range(4):
+            y = y @ w
+        mx.async_eval(y)
+        return y
+
+    # A stream callback can free an adopted buffer, which takes the GIL. A call
+    # that waits for a stream must release the GIL, else the two deadlock.
+    # faulthandler reports such a deadlock, its timer is a C thread. A watchdog
+    # in Python would never run.
+    def test_synchronize_releases_gil(self):
+        a = self._adopted_source(1024)
+        faulthandler.dump_traceback_later(30, exit=True)
+        try:
+            for _ in range(4):
+                y = self._submit_work(a)
+                mx.synchronize()
+                del y
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+
+    def test_clear_streams_releases_gil(self):
+        a = self._adopted_source(1024)
+        errors = []
+
+        # clear_streams destroys the streams of the calling thread, so it runs
+        # in a thread that ends right after.
+        def worker():
+            try:
+                y = self._submit_work(a)
+                mx.clear_streams()
+                del y
+            except Exception as e:
+                errors.append(e)
+
+        faulthandler.dump_traceback_later(30, exit=True)
+        try:
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

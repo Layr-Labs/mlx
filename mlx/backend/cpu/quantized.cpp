@@ -108,15 +108,16 @@ void _qmm(
   constexpr int bytes_per_pack = get_bytes_per_pack(bits);
   constexpr int packs_in_group = group_size / pack_factor;
 
+  std::vector<float> sums(N);
   for (int m = 0; m < M; m++) {
     const uint8_t* w_local = (const uint8_t*)w;
     const T* scales_local = scales;
     const T* biases_local = biases;
 
-    std::fill(result, result + N, 0);
+    std::fill(sums.begin(), sums.end(), 0);
 
     for (int k = 0; k < K; k++) {
-      T* result_local = result;
+      float* result_local = sums.data();
       T xi = *x++;
 
       for (int n = 0; n < N; n += group_size) {
@@ -147,6 +148,7 @@ void _qmm(
       }
     }
 
+    std::copy(sums.begin(), sums.end(), result);
     result += N;
   }
 }
@@ -174,7 +176,7 @@ void _qmm_t(
 
     for (int n = 0; n < N; n++) {
       const T* x_local = x;
-      T sum = 0;
+      float sum = 0;
       for (int k = 0; k < K; k += group_size) {
         T scale = *scales_local++;
         T bias = *biases_local++;
@@ -351,6 +353,10 @@ void _qmm_dispatch_typed(
     int bits,
     bool transposed_w) {
   switch (bits) {
+    case 1:
+      _qmm_dispatch_group<T, 1>(
+          result, x, w, scales, biases, M, N, K, group_size, transposed_w);
+      break;
     case 2:
       _qmm_dispatch_group<T, 2>(
           result, x, w, scales, biases, M, N, K, group_size, transposed_w);
@@ -376,7 +382,8 @@ void _qmm_dispatch_typed(
           result, x, w, scales, biases, M, N, K, group_size, transposed_w);
       break;
     default:
-      throw std::invalid_argument("Quantization bits must be 2, 3, 4, 6 or 8.");
+      throw std::invalid_argument(
+          "Quantization bits must be 1, 2, 3, 4, 5, 6 or 8.");
   }
 }
 
@@ -458,14 +465,15 @@ void fp_qmm(
   constexpr int pack_factor = get_pack_factor(bits, 8);
   constexpr int packs_in_group = group_size / pack_factor;
 
+  std::vector<float> sums(N);
   for (int m = 0; m < M; m++) {
     const uint8_t* w_local = (const uint8_t*)w;
     const uint8_t* scales_local = scales;
 
-    std::fill(result, result + N, 0);
+    std::fill(sums.begin(), sums.end(), 0);
 
     for (int k = 0; k < K; k++) {
-      T* result_local = result;
+      float* result_local = sums.data();
       T xi = *x++;
 
       for (int n = 0; n < N; n += group_size) {
@@ -484,6 +492,7 @@ void fp_qmm(
         }
       }
     }
+    std::copy(sums.begin(), sums.end(), result);
     result += N;
   }
 }
@@ -506,11 +515,11 @@ void fp_qmm_t(
 
     for (int n = 0; n < N; n++) {
       const T* x_local = x;
-      T sum = 0;
+      float sum = 0;
       for (int k = 0; k < K; k += group_size) {
         T scale = dequantize_scale<T, group_size>(*scales_local++);
 
-        T gsum = 0;
+        float gsum = 0;
         for (int kw = 0; kw < packs_in_group; kw++) {
           if constexpr (bits == 4) {
             gsum += (*x_local++) * static_cast<T>(FP4_LUT[w_local[0] & 0xf]);
@@ -1181,15 +1190,24 @@ void quantize(
       w_min = std::min(w_min, (float)w[w_idx + j]);
     }
     bool mask = std::abs(w_min) > std::abs(w_max);
-    float scale = std::max((w_max - w_min) / n_bins, eps);
-    scale = mask ? scale : -scale;
+    float scale;
+    float bias;
 
-    float edge = mask ? w_min : w_max;
-    float q0 = std::rint(edge / scale);
-    float bias = 0;
-    if (q0 != 0) {
-      scale = edge / q0;
-      bias = edge;
+    if (bits == 1) {
+      // Affine 1-bit: bit 0 -> w_min, bit 1 -> w_max
+      scale = std::max(w_max - w_min, eps);
+      bias = w_min;
+    } else {
+      scale = std::max((w_max - w_min) / n_bins, eps);
+      scale = mask ? scale : -scale;
+
+      float edge = mask ? w_min : w_max;
+      float q0 = std::rint(edge / scale);
+      bias = 0;
+      if (q0 != 0) {
+        scale = edge / q0;
+        bias = edge;
+      }
     }
     size_t out_idx = i * int_per_group;
     for (int j = 0; j < int_per_group / bytes_per_pack; ++j) {

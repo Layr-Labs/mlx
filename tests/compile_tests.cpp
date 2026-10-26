@@ -921,3 +921,37 @@ TEST_CASE("test compatibility erase clears every live thread cache") {
   first.join();
   second.join();
 }
+
+TEST_CASE("test freeing a compiled closure erases every thread cache") {
+  // compile(std::function) keys a closure by the address of a heap copy of
+  // it. When the last copy of the compiled function is freed, its traces must
+  // go from every thread cache, not only from the cache of the thread that
+  // called compile(). A trace that stays keeps its arrays alive, and a later
+  // closure that gets the same heap address replays it.
+  //
+  // The trace holds the captured array, so the array is uniquely referenced
+  // again only when no cache holds the trace. The array is built from host
+  // data and the worker does not evaluate the output, so no device work holds
+  // a reference to it.
+  auto captured = array({1.0f, 2.0f, 3.0f});
+  auto compiled = compile([captured](const std::vector<array>& inputs) {
+    return std::vector<array>{inputs[0] + captured};
+  });
+
+  std::barrier phase(2);
+  std::thread worker([&]() {
+    {
+      // Record a trace in this thread's cache only.
+      auto outputs = compiled({array({1.0f, 1.0f, 1.0f})});
+    }
+    phase.arrive_and_wait();
+    // Keep this thread, and so its cache, alive while the closure is freed.
+    phase.arrive_and_wait();
+  });
+
+  phase.arrive_and_wait();
+  compiled = nullptr;
+  CHECK(captured.is_uniquely_referenced());
+  phase.arrive_and_wait();
+  worker.join();
+}

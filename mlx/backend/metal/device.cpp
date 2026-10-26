@@ -11,6 +11,7 @@
 #define CA_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
 
+#include "mlx/backend/common/command_buffer_limits.h"
 #include "mlx/backend/common/utils.h"
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/event.h"
@@ -209,7 +210,7 @@ MTL::Library* load_default_library(MTL::Device* device) {
     return lib;
   }
 
-  NS::Error* error[5];
+  NS::Error* error[6];
   MTL::Library* lib;
   // First try the colocated mlx.metallib
   std::tie(lib, error[0]) = load_colocated_library(device, "mlx");
@@ -221,6 +222,22 @@ MTL::Library* load_default_library(MTL::Device* device) {
   if (lib) {
     return lib;
   }
+
+#ifdef SWIFTPM_BUNDLE
+  // `swift test` with the default Swift Build build system nests resource
+  // bundles inside the .xctest and runs tests via the toolchain's
+  // swiftpm-testing-helper, so the running binary is the toolchain helper:
+  // neither Bundle.main nor Bundle.allBundles names the test bundle, and the
+  // SwiftPM bundle search below cannot reach it. In that layout the metallib
+  // sits at a fixed offset from the binary.
+  std::tie(lib, error[5]) = load_colocated_library(
+      device,
+      std::string("../Resources/") + SWIFTPM_BUNDLE +
+          ".bundle/Contents/Resources/default");
+  if (lib) {
+    return lib;
+  }
+#endif
 
   // Then try default.metallib in a SwiftPM bundle if we have one
   std::tie(lib, error[2]) = load_swiftpm_library(device, "default");
@@ -240,7 +257,7 @@ MTL::Library* load_default_library(MTL::Device* device) {
   if (!lib) {
     std::ostringstream msg;
     msg << "Failed to load the default metallib. ";
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
       if (error[i] != nullptr) {
         msg << error[i]->localizedDescription()->utf8String() << " ";
       }
@@ -427,7 +444,7 @@ void CommandEncoder::barrier() {
   get_command_encoder()->memoryBarrier(MTL::BarrierScopeBuffers);
 }
 
-void CommandEncoder::end_encoding() {
+void CommandEncoder::end_encoding(bool wait_in_flight) {
   // Each command encoder has a unique fence. We also store a map of
   // all previous outputs of command encoders to their corresponding fence.
   // - The command encoder records its inputs and outputs.
@@ -461,6 +478,16 @@ void CommandEncoder::end_encoding() {
         if (waiting_on.find(it->second) == waiting_on.end()) {
           encoder_->waitForFence(it->second.get());
           waiting_on.insert(it->second);
+        }
+      }
+    }
+    // A spin wait must start after all earlier encoders, as it might block
+    // earlier operations to be finished.
+    // See https://github.com/ml-explore/mlx/pull/4689
+    if (wait_in_flight) {
+      for (auto& [_, fence] : prev_ce_outputs_) {
+        if (waiting_on.insert(fence).second) {
+          encoder_->waitForFence(fence.get());
         }
       }
     }
@@ -508,6 +535,35 @@ void CommandEncoder::wait_event(Event event, uint64_t value) {
   end_encoding();
   buffer_->encodeWait(event.cast<EventImpl>().mtl_event(), value);
   wait_events_.push_back(std::move(event));
+}
+
+namespace {
+// Per-thread commit limits; zero selects the device default.
+thread_local int thread_max_ops_per_buffer = 0;
+thread_local int thread_max_mb_per_buffer = 0;
+
+void set_thread_command_buffer_limits(
+    int max_ops,
+    int max_mb,
+    int* previous_ops,
+    int* previous_mb) {
+  if (previous_ops != nullptr) {
+    *previous_ops = thread_max_ops_per_buffer;
+  }
+  if (previous_mb != nullptr) {
+    *previous_mb = thread_max_mb_per_buffer;
+  }
+  thread_max_ops_per_buffer = std::max(0, max_ops);
+  thread_max_mb_per_buffer = std::max(0, max_mb);
+}
+} // namespace
+
+std::tuple<int, int> Device::get_max_ops_mb_per_buffer() const {
+  return std::make_tuple(
+      thread_max_ops_per_buffer > 0 ? thread_max_ops_per_buffer
+                                    : max_ops_per_buffer_,
+      thread_max_mb_per_buffer > 0 ? thread_max_mb_per_buffer
+                                   : max_mb_per_buffer_);
 }
 
 bool CommandEncoder::needs_commit() const {
@@ -980,8 +1036,13 @@ CommandEncoder& get_command_encoder(Stream s) {
 }
 
 std::unordered_map<int, CommandEncoder>& get_command_encoders() {
-  static thread_local std::unordered_map<int, CommandEncoder> encoders;
-  return encoders;
+  if (is_main_thread()) {
+    static auto* encoders = new std::unordered_map<int, CommandEncoder>();
+    return *encoders;
+  } else {
+    static thread_local std::unordered_map<int, CommandEncoder> encoders;
+    return encoders;
+  }
 }
 
 std::unordered_map<int, CommandEncoder>& get_global_command_encoders() {
@@ -1052,6 +1113,15 @@ void gemma4_expert_qmm_diagnostics_snapshot(
   }
 }
 } // namespace
+
+extern "C" void mlx_metal_set_thread_command_buffer_limits(
+    int max_ops,
+    int max_mb,
+    int* previous_ops,
+    int* previous_mb) {
+  mlx::core::metal::set_thread_command_buffer_limits(
+      max_ops, max_mb, previous_ops, previous_mb);
+}
 
 extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot(
     mlx_metal_gemma4_expert_qmm_diagnostics* diagnostics) {

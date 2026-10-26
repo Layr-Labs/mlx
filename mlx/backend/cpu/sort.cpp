@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cmath>
 #include <numeric>
 
 #include "mlx/backend/common/utils.h"
@@ -19,9 +18,9 @@ namespace {
 template <typename T>
 bool nan_aware_less(T a, T b) {
   if constexpr (is_floating_point_v<T> || std::is_same_v<T, complex64_t>) {
-    if (std::isnan(a))
+    if (mlx::core::isnan(a))
       return false;
-    if (std::isnan(b))
+    if (mlx::core::isnan(b))
       return true;
   }
   return a < b;
@@ -118,6 +117,10 @@ struct StridedIterator {
 
 template <typename T>
 void sort(array& out, int axis) {
+  if (out.size() == 0) {
+    return;
+  }
+
   // Get axis, shape and stride info
   axis = axis < 0 ? axis + out.ndim() : axis;
   size_t in_size = out.size();
@@ -149,6 +152,10 @@ void sort(array& out, int axis) {
 
 template <typename T, typename IdxT = uint32_t>
 void argsort(const array& in, array& out, int axis) {
+  if (in.size() == 0) {
+    return;
+  }
+
   // Get axis, shape and stride info
   axis = axis < 0 ? axis + in.ndim() : axis;
   size_t n_rows = in.size() / in.shape(axis);
@@ -198,10 +205,10 @@ void argsort(const array& in, array& out, int axis) {
       auto v2 = data_ptr[b * in_stride];
 
       // Handle NaNs (place them at the end)
-      if constexpr (is_floating_point_v<T>) {
-        if (std::isnan(v1))
+      if constexpr (is_floating_point_v<T> || std::is_same_v<T, complex64_t>) {
+        if (mlx::core::isnan(v1))
           return false;
-        if (std::isnan(v2))
+        if (mlx::core::isnan(v2))
           return true;
       }
 
@@ -212,6 +219,10 @@ void argsort(const array& in, array& out, int axis) {
 
 template <typename T>
 void partition(array& out, int axis, int kth) {
+  if (out.size() == 0) {
+    return;
+  }
+
   // Get axis, shape and stride info
   axis = axis < 0 ? axis + out.ndim() : axis;
   size_t in_size = out.size();
@@ -246,6 +257,10 @@ void partition(array& out, int axis, int kth) {
 
 template <typename T, typename IdxT = uint32_t>
 void argpartition(const array& in, array& out, int axis, int kth) {
+  if (in.size() == 0) {
+    return;
+  }
+
   // Get axis, shape and stride info
   axis = axis < 0 ? axis + in.ndim() : axis;
   size_t n_rows = in.size() / in.shape(axis);
@@ -299,10 +314,10 @@ void argpartition(const array& in, array& out, int axis, int kth) {
       auto v2 = data_ptr[b * in_stride];
 
       // Handle NaNs (place them at the end)
-      if constexpr (is_floating_point_v<T>) {
-        if (std::isnan(v1))
+      if constexpr (is_floating_point_v<T> || std::is_same_v<T, complex64_t>) {
+        if (mlx::core::isnan(v1))
           return false;
-        if (std::isnan(v2))
+        if (mlx::core::isnan(v2))
           return true;
       }
 
@@ -357,6 +372,10 @@ void ArgSort::eval_cpu(const std::vector<array>& inputs, array& out) {
   // Allocate output
   out.set_data(allocator::malloc(out.nbytes()));
 
+  if (out.size() == 0) {
+    return;
+  }
+
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_input_array(in);
   encoder.set_input_array(out);
@@ -383,6 +402,10 @@ void Sort::eval_cpu(const std::vector<array>& inputs, array& out) {
       ? CopyType::Vector
       : CopyType::General;
   copy_cpu(in, out, ctype, stream());
+
+  if (out.size() == 0) {
+    return;
+  }
 
   auto& encoder = cpu::get_command_encoder(stream());
   encoder.set_output_array(out);

@@ -6,6 +6,7 @@
 #include "mlx/memory.h"
 
 #include <mach/vm_page_size.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <algorithm>
 #include <cassert>
@@ -52,6 +53,7 @@ MetalAllocator::MetalAllocator(Device& d)
           vm_page_size,
           [](MTL::Buffer* buf) { return buf->length(); },
           [this](MTL::Buffer* buf) {
+            relinquish_capped(buf, true);
             if (!buf->heap()) {
               residency_sets_.erase(buf);
             }
@@ -136,6 +138,132 @@ size_t MetalAllocator::set_wired_limit(size_t limit) {
   return limit;
 };
 
+void MetalAllocator::install_process_allocation_cap(size_t bytes) {
+  std::unique_lock lock(mutex_);
+  if (buffer_allocation_attempted_) {
+    throw std::invalid_argument(
+        "allocation cap requires a pristine buffer allocator");
+  }
+  cap_->install(bytes, heap_ ? heap_->size() : 0);
+  cap_installed_ = true;
+}
+
+ProcessAllocationCapSnapshot
+MetalAllocator::get_process_allocation_cap_snapshot() {
+  return cap_->snapshot();
+}
+
+void MetalAllocator::relinquish_capped(MTL::Buffer* buffer, bool cached) {
+  if (!cap_installed_) {
+    return;
+  }
+  auto entry = capped_buffers_.find(buffer);
+  if (entry == capped_buffers_.end()) {
+    throw std::logic_error("untracked capped buffer");
+  }
+  if (entry->second) {
+    entry->second->retire();
+  }
+  capped_buffers_.erase(entry);
+}
+
+Buffer MetalAllocator::malloc_capped(
+    size_t size,
+    std::unique_lock<std::mutex>& lock) {
+  if (auto* cached = buffer_cache_.reuse_from_cache(size)) {
+    if (auto lease = capped_buffers_.at(cached)) {
+      lease->reuse();
+    }
+    active_memory_ += cached->length();
+    peak_memory_ = std::max(peak_memory_, active_memory_);
+    return Buffer{cached};
+  }
+  // Trim idle backing before refusing a new shape. Actual callbacks, not cache
+  // eviction, return credit; externally retained buffers remain charged.
+  auto snapshot = cap_->snapshot();
+  const auto charge = allocator::round_allocation_size(size, vm_page_size);
+  if (charge > device_->maxBufferLength()) {
+    throw std::invalid_argument(
+        "page-aligned backing exceeds Metal buffer limit");
+  }
+  if (charge > snapshot.limit_bytes - snapshot.charged_bytes ||
+      num_resources_ >= resource_limit_ ||
+      buffer_cache_.cache_size() > max_pool_size_) {
+    num_resources_ -= buffer_cache_.clear();
+  }
+  if (num_resources_ >= resource_limit_) {
+    throw std::runtime_error("Metal resource limit exceeded");
+  }
+  MTL::Buffer* buffer = nullptr;
+  std::shared_ptr<allocator::ProcessBackingLease> lease;
+  if (size < small_size_ && heap_) {
+    buffer = heap_->newBuffer(size, resource_options);
+  }
+  if (!buffer) {
+    // Reserve before releasing allocator lock, including in-flight allocations.
+    lease = std::make_shared<allocator::ProcessBackingLease>(cap_, charge);
+    ++num_resources_;
+    lock.unlock();
+    try {
+      void* pages = mmap(
+          nullptr,
+          charge,
+          PROT_READ | PROT_WRITE,
+          MAP_PRIVATE | MAP_ANON,
+          -1,
+          0);
+      if (pages == MAP_FAILED) {
+        throw std::bad_alloc();
+      }
+      lease->attach(pages, [](void* p, size_t n) { return munmap(p, n) == 0; });
+      // Fault every page from the CPU before wrapping it. Pages a no-copy
+      // buffer first receives through the GPU are not charged to this
+      // process's physical footprint, which hides the model from the OS
+      // memory-pressure accounting and from Activity Monitor.
+      for (size_t offset = 0; offset < charge; offset += vm_page_size) {
+        static_cast<volatile char*>(pages)[offset] = 0;
+      }
+      buffer = device_->newBuffer(
+          pages, charge, resource_options, ^(void*, NS::UInteger) {
+            lease->finish();
+          });
+      if (!buffer) {
+        throw std::runtime_error("Metal no-copy allocation failed");
+      }
+      lease->acquired();
+    } catch (...) {
+      if (buffer) {
+        buffer->release();
+      } else {
+        lease->finish();
+      }
+      lock.lock();
+      --num_resources_;
+      throw;
+    }
+    lock.lock();
+  } else {
+    ++num_resources_;
+  }
+  try {
+    capped_buffers_.emplace(buffer, lease);
+    if (!buffer->heap()) {
+      residency_sets_.insert(buffer);
+    }
+  } catch (...) {
+    capped_buffers_.erase(buffer);
+    if (lease) {
+      lease->retire();
+    }
+    --num_resources_;
+    buffer->release();
+    throw;
+  }
+  active_memory_ += buffer->length();
+  peak_memory_ = std::max(peak_memory_, active_memory_);
+  return Buffer{buffer};
+}
+
 Buffer MetalAllocator::malloc(size_t size) {
   // Metal doesn't like empty buffers
   if (size == 0) {
@@ -159,6 +287,10 @@ Buffer MetalAllocator::malloc(size_t size) {
 
   // Try the cache
   std::unique_lock lk(mutex_);
+  buffer_allocation_attempted_ = true;
+  if (cap_installed_) {
+    return malloc_capped(size, lk);
+  }
   MTL::Buffer* buf = buffer_cache_.reuse_from_cache(size);
   if (!buf) {
     size_t mem_required = get_active_memory() + get_cache_memory() + size;
@@ -211,10 +343,16 @@ Buffer MetalAllocator::malloc(size_t size) {
       throw std::runtime_error(msg.str());
     }
     lk.lock();
-    num_resources_++;
-    if (!buf->heap()) {
-      residency_sets_.insert(buf);
+    try {
+      if (!buf->heap()) {
+        residency_sets_.insert(buf);
+      }
+    } catch (...) {
+      lk.unlock();
+      buf->release();
+      throw;
     }
+    num_resources_++;
   }
 
   active_memory_ += buf->length();
@@ -243,7 +381,13 @@ void MetalAllocator::free(Buffer buffer) {
   active_memory_ -= buf->length();
   if (get_cache_memory() < max_pool_size_) {
     buffer_cache_.recycle_to_cache(buf);
+    if (cap_installed_) {
+      if (auto lease = capped_buffers_.at(buf)) {
+        lease->cache();
+      }
+    }
   } else {
+    relinquish_capped(buf, false);
     num_resources_--;
     if (!buf->heap()) {
       residency_sets_.erase(buf);
@@ -259,15 +403,91 @@ size_t MetalAllocator::size(Buffer buffer) const {
 }
 
 Buffer MetalAllocator::make_buffer(void* ptr, size_t size) {
-  auto buf = device_->newBuffer(ptr, size, resource_options, nullptr);
-  if (!buf) {
-    return Buffer{nullptr};
+  std::unique_lock lock(mutex_);
+  buffer_allocation_attempted_ = true;
+  if (!cap_installed_) {
+    lock.unlock();
+    auto buf = device_->newBuffer(ptr, size, resource_options, nullptr);
+    if (!buf) {
+      return Buffer{nullptr};
+    }
+    lock.lock();
+    try {
+      residency_sets_.insert(buf);
+    } catch (...) {
+      lock.unlock();
+      buf->release();
+      throw;
+    }
+    active_memory_ += buf->length();
+    peak_memory_ = std::max(peak_memory_, active_memory_);
+    num_resources_++;
+    return Buffer{static_cast<void*>(buf)};
   }
-  std::unique_lock lk(mutex_);
-  residency_sets_.insert(buf);
+  std::shared_ptr<allocator::ProcessBackingLease> lease;
+  if (cap_installed_) {
+    if (!size || size % vm_page_size ||
+        reinterpret_cast<uintptr_t>(ptr) % vm_page_size || !ptr ||
+        size > device_->maxBufferLength()) {
+      throw std::invalid_argument(
+          "capped foreign backing must be page aligned");
+    }
+    if (num_resources_ >= resource_limit_) {
+      throw std::runtime_error("Metal resource limit exceeded");
+    }
+    lease = std::make_shared<allocator::ProcessBackingLease>(cap_, size);
+  }
+  ++num_resources_;
+  lock.unlock();
+  MTL::Buffer* buf = nullptr;
+  try {
+    if (lease) {
+      // Charge wrapper lifetime; never free or assume ownership of caller
+      // pages.
+      buf = device_->newBuffer(
+          ptr, size, resource_options, ^(void*, NS::UInteger) {
+            lease->finish();
+          });
+    } else {
+      buf = device_->newBuffer(ptr, size, resource_options, nullptr);
+    }
+    if (buf && lease) {
+      lease->acquired();
+    }
+  } catch (...) {
+    if (buf) {
+      buf->release();
+    } else if (lease) {
+      lease->finish();
+    }
+    lock.lock();
+    --num_resources_;
+    throw;
+  }
+  lock.lock();
+  if (!buf) {
+    if (lease) {
+      lease->finish();
+    }
+    --num_resources_;
+    throw std::runtime_error("capped Metal no-copy wrapper allocation failed");
+  }
+  try {
+    if (lease) {
+      capped_buffers_.emplace(buf, lease);
+    }
+    residency_sets_.insert(buf);
+  } catch (...) {
+    if (lease) {
+      capped_buffers_.erase(buf);
+      lease->retire();
+    }
+    --num_resources_;
+    buf->release();
+    throw;
+  }
   active_memory_ += buf->length();
   peak_memory_ = std::max(peak_memory_, active_memory_);
-  num_resources_++;
   return Buffer{static_cast<void*>(buf)};
 }
 
@@ -278,6 +498,7 @@ void MetalAllocator::release(Buffer buffer) {
   }
   std::unique_lock lk(mutex_);
   active_memory_ -= buf->length();
+  relinquish_capped(buf, false);
   num_resources_--;
   residency_sets_.erase(buf);
   lk.unlock();
@@ -306,6 +527,13 @@ size_t get_allocation_size_upper_bound(size_t size) {
     throw std::overflow_error("allocation footprint overflow");
   }
   return result;
+}
+
+void install_process_allocation_cap(size_t bytes) {
+  metal::allocator().install_process_allocation_cap(bytes);
+}
+ProcessAllocationCapSnapshot get_process_allocation_cap_snapshot() {
+  return metal::allocator().get_process_allocation_cap_snapshot();
 }
 
 size_t set_cache_limit(size_t limit) {

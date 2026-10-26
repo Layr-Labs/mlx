@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.27)
 
-project(_ext LANGUAGES CXX)
+project(mlx_sample_extensions LANGUAGES CXX)
 
 # ----------------------------- Setup -----------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -10,15 +10,23 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(BUILD_SHARED_LIBS "Build extensions as a shared library" ON)
 
 # ----------------------------- Dependencies -----------------------------
+
+include(FetchContent)
+
+# Avoid warning about DOWNLOAD_EXTRACT_TIMESTAMP in CMake 3.24:
+cmake_policy(SET CMP0135 NEW)
+
 find_package(
-  Python 3.8
+  Python 3.10
   COMPONENTS Interpreter Development.Module
   REQUIRED)
-execute_process(
-  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  OUTPUT_VARIABLE nanobind_ROOT)
-find_package(nanobind CONFIG REQUIRED)
+FetchContent_Declare(
+  nanobind
+  GIT_REPOSITORY https://github.com/wjakob/nanobind.git
+  GIT_TAG v3.1.0
+  GIT_SHALLOW TRUE
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(nanobind)
 
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m mlx --cmake-dir
@@ -63,16 +71,12 @@ endif()
 
 # ----------------------------- Python Bindings -----------------------------
 nanobind_add_module(
-  _ext
+  mlx_sample_extensions
   NB_STATIC
-  STABLE_ABI
+  FREE_THREADED
   LTO
   NOMINSIZE
   NB_DOMAIN
   mlx
   ${CMAKE_CURRENT_LIST_DIR}/bindings.cpp)
-target_link_libraries(_ext PRIVATE mlx_ext)
-
-if(BUILD_SHARED_LIBS)
-  target_link_options(_ext PRIVATE -Wl,-rpath,@loader_path)
-endif()
+target_link_libraries(mlx_sample_extensions PRIVATE mlx_ext)

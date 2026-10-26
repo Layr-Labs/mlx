@@ -384,6 +384,7 @@ struct PrimitiveFactory {
       SERIALIZE_PRIMITIVE(FFT),
       SERIALIZE_PRIMITIVE(Flatten),
       SERIALIZE_PRIMITIVE(Floor),
+      SERIALIZE_PRIMITIVE(FloorDivide),
       SERIALIZE_PRIMITIVE(Full),
       SERIALIZE_PRIMITIVE(Gather),
       SERIALIZE_PRIMITIVE(GatherAxis),
@@ -703,6 +704,7 @@ FunctionExporter::FunctionExporter(
       fun(std::move(fun)),
       ftable(std::make_shared<FunctionTable>(shapeless)),
       metadata_(std::move(metadata)) {
+  os.open();
   if (!os.is_open()) {
     throw std::runtime_error("[export_function] Failed to open " + file);
   }

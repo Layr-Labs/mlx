@@ -221,10 +221,10 @@ std::vector<std::pair<std::string, MeshCall>> mesh_calls(Buffers& b) {
          node.all_reduce(b.in.data(), b.out.data(), 64, fixture::Add{});
        }},
       {"mesh all_gather",
-       [&](auto& node) { node.all_gather(raw(b.in), raw(b.out), 256); }},
+       [&](auto& node) { node.all_gather(raw(b.in), raw(b.out), 256, 256); }},
       {"mesh sum_scatter",
        [&](auto& node) {
-         node.sum_scatter(b.in.data(), b.out.data(), 64, fixture::Add{});
+         node.sum_scatter(b.in.data(), b.out.data(), 64, 64, fixture::Add{});
        }},
       // The scatter-gather all reduce starts with a reduce scatter.
       {"mesh sum_scatter",

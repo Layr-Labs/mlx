@@ -14,6 +14,29 @@ struct Add {
   }
 };
 
+// The floor of x / y, computed as numpy's npy_divmodf does: from fmod, so the
+// quotient is not rounded before the floor. float16 and bfloat16 use it in
+// float32: floor(x / y) in the half type rounds a quotient that is just below
+// an integer up to that integer.
+inline float exact_floor_divide(float x, float y) {
+  if (y == 0) {
+    return x / y;
+  }
+  float mod = metal::fmod(x, y);
+  float div = (x - mod) / y;
+  if (mod != 0 && ((y < 0) != (mod < 0))) {
+    div -= 1.0f;
+  }
+  if (div == 0) {
+    return metal::copysign(0.0f, x / y);
+  }
+  float floordiv = metal::floor(div);
+  if (div - floordiv > 0.5f) {
+    floordiv += 1.0f;
+  }
+  return floordiv;
+}
+
 struct FloorDivide {
   template <typename T>
   metal::enable_if_t<metal::is_integral_v<T> & !metal::is_signed_v<T>, T>
@@ -31,7 +54,12 @@ struct FloorDivide {
   }
   template <typename T>
   metal::enable_if_t<!metal::is_integral_v<T>, T> operator()(T x, T y) thread {
-    return floor(x / y);
+    if constexpr (
+        metal::is_same_v<T, half> || metal::is_same_v<T, bfloat16_t>) {
+      return static_cast<T>(exact_floor_divide(float(x), float(y)));
+    } else {
+      return floor(x / y);
+    }
   }
   template <>
   complex64_t operator()(complex64_t x, complex64_t y) thread {
@@ -41,19 +69,8 @@ struct FloorDivide {
 };
 
 struct Divide {
-  // Integer Divide is floor_divide: round down, keep x / 0 unchanged.
   template <typename T>
-  metal::enable_if_t<metal::is_integral_v<T> & metal::is_signed_v<T>, T>
-  operator()(T x, T y) thread {
-    auto q = x / y;
-    if (y != 0 && x % y != 0 && (x < 0) != (y < 0)) {
-      q -= 1;
-    }
-    return q;
-  }
-  template <typename T>
-  metal::enable_if_t<!(metal::is_integral_v<T> & metal::is_signed_v<T>), T>
-  operator()(T x, T y) thread {
+  T operator()(T x, T y) thread {
     return x / y;
   }
 };
@@ -272,7 +289,7 @@ struct Power {
       return {0.0, 0.0};
     }
     auto x_theta = metal::atan2(x.imag, x.real);
-    auto x_ln_r = 0.5 * metal::log(x.real * x.real + x.imag * x.imag);
+    auto x_ln_r = metal::log(hypot(x.real, x.imag));
     auto mag = metal::exp(y.real * x_ln_r - y.imag * x_theta);
     auto phase = y.imag * x_ln_r + y.real * x_theta;
     return {mag * metal::cos(phase), mag * metal::sin(phase)};

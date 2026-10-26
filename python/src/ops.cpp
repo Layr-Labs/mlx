@@ -1,10 +1,5 @@
 // Copyright © 2023-2024 Apple Inc.
 
-#include <limits>
-#include <numeric>
-#include <ostream>
-#include <variant>
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
@@ -12,6 +7,11 @@
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
+
+#include <limits>
+#include <numeric>
+#include <ostream>
+#include <variant>
 
 #include "mlx/einsum.h"
 #include "mlx/ops.h"
@@ -213,14 +213,14 @@ void init_ops(nb::module_& m) {
   m.def(
       "unstack",
       [](const mx::array& a, int axis, mx::StreamOrDevice s) {
-        return mx::unstack(a, axis, s);
+        return nb::tuple(nb::cast(mx::unstack(a, axis, s)));
       },
       nb::arg(),
       nb::kw_only(),
       "axis"_a = 0,
       "stream"_a = nb::none(),
       nb::sig(
-          "def unstack(x: array, /, *, axis: int = 0, stream: StreamOrDevice = None) -> list[array]"),
+          "def unstack(x: array, /, *, axis: int = 0, stream: StreamOrDevice = None) -> tuple[array, ...]"),
       R"pbdoc(
         Split an array into a sequence of arrays along the given axis.
 
@@ -232,7 +232,7 @@ void init_ops(nb::module_& m) {
             axis (int, optional): Axis along which to unstack. Default: ``0``.
 
         Returns:
-            list(array): A list of arrays, one for each index along ``axis``.
+            tuple(array): A tuple of arrays, one for each index along ``axis``.
       )pbdoc");
   m.def(
       "expand_dims",
@@ -746,6 +746,9 @@ void init_ops(nb::module_& m) {
         - All but the last two dimensions of each input are broadcast with one another using
           standard numpy-style broadcasting semantics.
 
+        Only inexact types are supported. The promoted type of ``a`` and ``b``
+        must be floating point or complex.
+
         Args:
             a (array): Input array or scalar.
             b (array): Input array or scalar.
@@ -1155,19 +1158,24 @@ void init_ops(nb::module_& m) {
       )pbdoc");
   m.def(
       "arctan2",
-      &mx::arctan2,
+      [](const ScalarOrArray& a_,
+         const ScalarOrArray& b_,
+         mx::StreamOrDevice s) {
+        auto [a, b] = to_arrays(a_, b_);
+        return mx::arctan2(a, b, s);
+      },
       nb::arg(),
       nb::arg(),
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def arctan2(a: array, b: array, /, *, stream: StreamOrDevice = None) -> array"),
+          "def arctan2(a: scalar | array, b: scalar | array, /, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Element-wise inverse tangent of the ratio of two arrays.
 
         Args:
-            a (array): Input array.
-            b (array): Input array.
+            a (array or scalar): Input array or scalar.
+            b (array or scalar): Input array or scalar.
 
         Returns:
             array: The inverse tangent of the ratio of ``a`` and ``b``.
@@ -1295,12 +1303,12 @@ void init_ops(nb::module_& m) {
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def degrees(a: array, /, *, stream: StreamOrDevice = None) -> array"),
+          "def degrees(a: scalar | array, /, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
       Convert angles from radians to degrees.
 
       Args:
-          a (array): Input array.
+          a (array or scalar): Input array.
 
       Returns:
           array: The angles in degrees.
@@ -1314,12 +1322,12 @@ void init_ops(nb::module_& m) {
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def radians(a: array, /, *, stream: StreamOrDevice = None) -> array"),
+          "def radians(a: scalar | array, /, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
       Convert angles from degrees to radians.
 
       Args:
-          a (array): Input array.
+          a (array or scalar): Input array.
 
       Returns:
           array: The angles in radians.
@@ -1768,11 +1776,11 @@ void init_ops(nb::module_& m) {
       },
       nb::arg(),
       "indices"_a,
-      "axis"_a = nb::none(),
+      "axis"_a.none() = -1,
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def take_along_axis(a: array, /, indices: array, axis: int | None = None, *, stream: StreamOrDevice = None) -> array"),
+          "def take_along_axis(a: array, /, indices: array, axis: int | None = -1, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Take values along an axis at the specified indices.
 
@@ -1782,7 +1790,7 @@ void init_ops(nb::module_& m) {
               the input array excluding the `axis` dimension.
             axis (int or None): Axis in the input to take the values from. If
               ``axis == None`` the array is flattened to 1D prior to the indexing
-              operation.
+              operation. Defaults to ``-1``.
 
         Returns:
             array: The output array.
@@ -1807,7 +1815,7 @@ void init_ops(nb::module_& m) {
       nb::arg(),
       "indices"_a,
       "values"_a,
-      "axis"_a.none(),
+      "axis"_a = nb::none(),
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
@@ -2106,7 +2114,7 @@ void init_ops(nb::module_& m) {
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def tri(n: int, m: int, k: int, dtype: Dtype | None = None, *, stream: StreamOrDevice = None) -> array"),
+          "def tri(n: int, m: int | None = None, k: int = 0, dtype: Dtype | None = None, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         An array with ones at and below the given diagonal and zeros elsewhere.
 
@@ -2128,7 +2136,7 @@ void init_ops(nb::module_& m) {
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def tril(x: array, k: int, *, stream: StreamOrDevice = None) -> array"),
+          "def tril(x: array, k: int = 0, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Zeros the array above the given diagonal.
 
@@ -2148,7 +2156,7 @@ void init_ops(nb::module_& m) {
       nb::kw_only(),
       "stream"_a = nb::none(),
       nb::sig(
-          "def triu(x: array, k: int, *, stream: StreamOrDevice = None) -> array"),
+          "def triu(x: array, k: int = 0, *, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Zeros the array below the given diagonal.
 
@@ -2550,6 +2558,16 @@ void init_ops(nb::module_& m) {
             array: The transposed array.
       )pbdoc");
   m.def(
+      "matrix_transpose",
+      &mx::matrix_transpose,
+      nb::arg(),
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def matrix_transpose(a: array, /, *, stream: StreamOrDevice = None) -> array"),
+      R"pbdoc(
+      Transpose the last two dimensions of the array.)pbdoc");
+  m.def(
       "permute_dims",
       [](const mx::array& a,
          const std::optional<std::vector<int>>& axes,
@@ -2721,6 +2739,37 @@ void init_ops(nb::module_& m) {
             array: The output array with the corresponding axes reduced.
       )pbdoc");
   m.def(
+      "minmax",
+      [](const mx::array& a,
+         const IntOrVec& axis,
+         bool keepdims,
+         mx::StreamOrDevice s) -> std::tuple<mx::array, mx::array> {
+        auto axes = get_reduce_axes(axis, a.ndim());
+        return mx::minmax(a, axes, keepdims, s);
+      },
+      nb::arg(),
+      "axis"_a = nb::none(),
+      "keepdims"_a = false,
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def minmax(a: array, /, axis: None | int | Sequence[int] = None, keepdims: bool = False, *, stream: StreamOrDevice = None) -> tuple[array, array]"),
+      R"pbdoc(
+        Return the minimum and maximum over the given axes.
+
+        Equivalent to calling :func:`min` and :func:`max` separately.
+
+        Args:
+            a (array): Input array.
+            axis (int or list(int), optional): Axis or axes to reduce over.
+              If unspecified, reduce over the entire array.
+            keepdims (bool, optional): Keep reduced axes as singleton
+              dimensions. Default: ``False``.
+
+        Returns:
+            tuple(array, array): The minimum and maximum arrays, in that order.
+      )pbdoc");
+  m.def(
       "logcumsumexp",
       [](const mx::array& a,
          std::optional<int> axis,
@@ -2856,7 +2905,9 @@ void init_ops(nb::module_& m) {
          const IntOrVec& axis,
          bool keepdims,
          int ddof,
+         std::optional<int> correction,
          mx::StreamOrDevice s) {
+        ddof = correction.value_or(ddof);
         return mx::var(a, get_reduce_axes(axis, a.ndim()), keepdims, ddof, s);
       },
       nb::arg(),
@@ -2864,6 +2915,7 @@ void init_ops(nb::module_& m) {
       "keepdims"_a = false,
       "ddof"_a = 0,
       nb::kw_only(),
+      "correction"_a = nb::none(),
       "stream"_a = nb::none(),
       nb::sig(
           "def var(a: array, /, axis: None | int | Sequence[int] = None, keepdims: bool = False, ddof: int = 0, *, stream: StreamOrDevice = None) -> array"),
@@ -2889,7 +2941,9 @@ void init_ops(nb::module_& m) {
          const IntOrVec& axis,
          bool keepdims,
          int ddof,
+         std::optional<int> correction,
          mx::StreamOrDevice s) {
+        ddof = correction.value_or(ddof);
         return mx::std(a, get_reduce_axes(axis, a.ndim()), keepdims, ddof, s);
       },
       nb::arg(),
@@ -2897,6 +2951,7 @@ void init_ops(nb::module_& m) {
       "keepdims"_a = false,
       "ddof"_a = 0,
       nb::kw_only(),
+      "correction"_a = nb::none(),
       "stream"_a = nb::none(),
       nb::sig(
           "def std(a: array, /, axis: None | int | Sequence[int] = None, keepdims: bool = False, ddof: int = 0, *, stream: StreamOrDevice = None) -> array"),
@@ -3231,6 +3286,108 @@ void init_ops(nb::module_& m) {
             array: The top ``k`` elements from the input.
       )pbdoc");
   m.def(
+      "unique",
+      [](const mx::array& a,
+         int size,
+         bool return_index,
+         bool return_inverse,
+         bool return_counts,
+         const std::optional<ScalarOrArray>& fill_value,
+         mx::StreamOrDevice s) -> nb::object {
+        std::optional<mx::array> fill_value_ = std::nullopt;
+        if (fill_value) {
+          fill_value_ = to_array(fill_value.value(), a.dtype());
+        }
+        auto out = mx::unique(
+            a,
+            size,
+            return_index,
+            return_inverse,
+            return_counts,
+            fill_value_,
+            s);
+        if (out.size() == 1) {
+          return nb::cast(out.at(0));
+        }
+        nb::list result;
+        for (auto& o : out) {
+          result.append(o);
+        }
+        return nb::tuple(result);
+      },
+      nb::arg(),
+      "size"_a,
+      "return_index"_a = false,
+      "return_inverse"_a = false,
+      "return_counts"_a = false,
+      "fill_value"_a = nb::none(),
+      nb::kw_only(),
+      "stream"_a = nb::none(),
+      nb::sig(
+          "def unique(a: array, /, size: int, return_index: bool = False, return_inverse: bool = False, return_counts: bool = False, fill_value: scalar | array | None = None, *, stream: StreamOrDevice = None) -> array | tuple[array, ...]"),
+      R"pbdoc(
+        Returns the sorted unique elements of the flattened array.
+
+        The shape of the output does not depend on the values in ``a``, so
+        ``a`` is not evaluated. Unlike NumPy, the size is never inferred from
+        the values and must be provided.
+
+        Entries past the last unique element hold ``fill_value`` and their
+        count is ``0``, so ``mx.sum(counts > 0)`` gives the number of unique
+        elements as long as the output is not truncated.
+
+        A truncated output keeps the smallest ``size`` unique elements, and
+        ``index``, ``inverse`` and ``counts`` then stop describing all of ``a``,
+        and ``inverse`` and ``counts`` stop agreeing with each other: the counts
+        of the dropped elements are gone, while their indices in ``inverse`` are
+        clamped to the last entry.
+        ``inverse`` is meaningless for a ``size`` of ``0``, since there is no
+        element left for it to point at.
+
+        This op builds on ``mx.sort``, so a ``bool`` input needs the CPU
+        stream, which is where ``mx.sort`` supports it.
+
+        Args:
+            a (array): Input array.
+            size (int): The size of the output. If the size is smaller than
+              the number of unique elements of ``a``, the output is truncated.
+              If it is larger, the output is padded with ``fill_value``.
+            return_index (bool, optional): If ``True``, also return the index
+              in the flattened ``a`` of the first occurrence of each unique
+              element. Default: ``False``.
+            return_inverse (bool, optional): If ``True``, also return the
+              indices of the unique array that rebuild ``a``. The indices have
+              the same shape as ``a``. Default: ``False``.
+            return_counts (bool, optional): If ``True``, also return the number
+              of times each unique element occurs in ``a``. Default: ``False``.
+            fill_value (scalar or array, optional): The value of the entries
+              past the last unique element. If ``None``, this defaults to the
+              first of the sorted unique elements. Default: ``None``.
+
+        Returns:
+            array or tuple(array, ...): The sorted unique elements. If any of
+            ``return_index``, ``return_inverse`` or ``return_counts`` is
+            ``True``, a tuple with the requested arrays in the order values,
+            index, inverse, counts.
+
+        Example:
+            >>> a = mx.array([2, 1, 2, 3, 1])
+            >>> mx.unique(a, 3)
+            array([1, 2, 3], dtype=int32)
+            >>> mx.unique(a, 5)
+            array([1, 2, 3, 1, 1], dtype=int32)
+            >>> values, index, inverse, counts = mx.unique(
+            ...     a, 4, True, True, True, fill_value=0)
+            >>> values
+            array([1, 2, 3, 0], dtype=int32)
+            >>> index
+            array([1, 0, 3, 1], dtype=uint32)
+            >>> inverse
+            array([1, 0, 1, 2, 0], dtype=uint32)
+            >>> counts
+            array([2, 2, 1, 0], dtype=int32)
+      )pbdoc");
+  m.def(
       "broadcast_to",
       [](const ScalarOrArray& a, const mx::Shape& shape, mx::StreamOrDevice s) {
         return mx::broadcast_to(to_array(a), shape, s);
@@ -3256,7 +3413,9 @@ void init_ops(nb::module_& m) {
   m.def(
       "broadcast_arrays",
       [](const nb::args& args, mx::StreamOrDevice s) {
-        return broadcast_arrays(nb::cast<std::vector<mx::array>>(args), s);
+        return nb::tuple(
+            nb::cast(
+                broadcast_arrays(nb::cast<std::vector<mx::array>>(args), s)));
       },
       nb::arg(),
       nb::kw_only(),
@@ -4711,14 +4870,14 @@ void init_ops(nb::module_& m) {
 
           .. table:: Quantization modes
 
-            ======  ======================   ==========================  =============  =====
-            mode    group size               bits                        scale type     bias
-            ======  ======================   ==========================  =============  =====
-            affine  32, 64\ :sup:`*`, 128    2, 3, 4\ :sup:`*`, 5, 6, 8  same as input  yes
-            mxfp4   32\ :sup:`*`             4\ :sup:`*`                 e8m0           no
-            mxfp8   32\ :sup:`*`             8\ :sup:`*`                 e8m0           no
-            nvfp4   16\ :sup:`*`             4\ :sup:`*`                 e4m3           no
-            ======  ======================   ==========================  =============  =====
+            ======  ======================   ==============================  =============  =====
+            mode    group size               bits                            scale type     bias
+            ======  ======================   ==============================  =============  =====
+            affine  32, 64\ :sup:`*`, 128    1, 2, 3, 4\ :sup:`*`, 5, 6, 8   same as input  yes
+            mxfp4   32\ :sup:`*`             4\ :sup:`*`                     e8m0           no
+            mxfp8   32\ :sup:`*`             8\ :sup:`*`                     e8m0           no
+            nvfp4   16\ :sup:`*`             4\ :sup:`*`                     e4m3           no
+            ======  ======================   ==============================  =============  =====
 
           :sup:`*` indicates the default value when unspecified.
 
@@ -4823,11 +4982,12 @@ void init_ops(nb::module_& m) {
       "group_size"_a = nb::none(),
       "bits"_a = nb::none(),
       "mode"_a = "affine",
+      "global_scale"_a = nb::none(),
       nb::kw_only(),
       "sorted_indices"_a = false,
       "stream"_a = nb::none(),
       nb::sig(
-          "def gather_qmm(x: array, w: array, /, scales: array, biases: array | None = None, lhs_indices: array | None = None, rhs_indices: array | None = None, transpose: bool = True, group_size: int | None = None, bits: int | None = None, mode: str = 'affine', *, sorted_indices: bool = False, stream: StreamOrDevice = None) -> array"),
+          "def gather_qmm(x: array, w: array, /, scales: array, biases: array | None = None, lhs_indices: array | None = None, rhs_indices: array | None = None, transpose: bool = True, group_size: int | None = None, bits: int | None = None, mode: str = 'affine', global_scale: array | None = None, *, sorted_indices: bool = False, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Perform quantized matrix multiplication with matrix-level gather.
 
@@ -4857,6 +5017,9 @@ void init_ops(nb::module_& m) {
               ``w`` in the quantized array. See supported values and defaults in the
               :ref:`table of quantization modes <quantize-modes>`. Default: ``None``.
             mode (str, optional): The quantization mode. Default: ``"affine"``.
+            global_scale (array, optional): The per-input float32 scale used for
+              ``nvfp4`` quantization of ``w``. Only supported on the GPU.
+              Default: ``None``.
             sorted_indices (bool, optional): May allow a faster implementation
               if the passed indices are sorted. Default: ``False``.
 
@@ -5143,7 +5306,7 @@ void init_ops(nb::module_& m) {
       "sorted_indices"_a = false,
       "stream"_a = nb::none(),
       nb::sig(
-          "def gather_mm(a: array, b: array, /, lhs_indices: array, rhs_indices: array, *, sorted_indices: bool = False, stream: StreamOrDevice = None) -> array"),
+          "def gather_mm(a: array, b: array, /, lhs_indices: array | None = None, rhs_indices: array | None = None, *, sorted_indices: bool = False, stream: StreamOrDevice = None) -> array"),
       R"pbdoc(
         Matrix multiplication with matrix-level gather.
 
@@ -5805,6 +5968,9 @@ void init_ops(nb::module_& m) {
 
       Perform the Einstein summation convention on the operands.
 
+      Contractions are implemented with :func:`matmul` and have the same
+      requirements.
+
       Args:
         subscripts (str): The Einstein summation convention equation.
         *operands (array): The input arrays.
@@ -6176,6 +6342,5 @@ void init_ops(nb::module_& m) {
   m.attr("cumulative_sum") = m.attr("cumsum");
   m.attr("empty") = m.attr("zeros");
   m.attr("empty_like") = m.attr("zeros_like");
-  m.attr("matrix_transpose") = m.attr("transpose");
   m.attr("pow") = m.attr("power");
 }

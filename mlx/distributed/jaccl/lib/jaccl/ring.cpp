@@ -218,7 +218,7 @@ void RingGroup::all_reduce(
   auto out_ptr = static_cast<T*>(output);
   int64_t count = n_bytes / sizeof(T);
 
-  if (n_bytes <= 32768 || count < size_ * 2 * n_conns_) {
+  if (n_bytes <= 32768 || count < static_cast<int64_t>(size_) * 2 * n_conns_) {
     ring_.all_reduce<1, T, ReduceOp>(in_ptr, out_ptr, count, 1, reduce_op);
     return;
   }
@@ -246,7 +246,7 @@ void RingGroup::reduce_scatter(
 
   // Mirror the all_reduce heuristics: use a single wire for small messages and
   // scale up to n_conns_ wires for large ones where bandwidth dominates.
-  if (total < size_ * 2 * n_conns_ || n_bytes <= 65536) {
+  if (total < static_cast<int64_t>(size_) * 2 * n_conns_ || n_bytes <= 65536) {
     ring_.reduce_scatter<T, ReduceOp>(in_ptr, out_ptr, total, 1, reduce_op);
     return;
   }

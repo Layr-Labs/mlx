@@ -106,6 +106,17 @@ inline void check_error(Stream s) {
   scheduler().check_error(s);
 }
 
+// While an object of this class lives, enqueue on this thread does not throw
+// the error that an earlier stream task stored. synchronize throws it later.
+// async_eval uses it so that it never throws a stream task error.
+class MLX_API DeferStreamErrors {
+ public:
+  DeferStreamErrors();
+  ~DeferStreamErrors();
+  DeferStreamErrors(const DeferStreamErrors&) = delete;
+  DeferStreamErrors& operator=(const DeferStreamErrors&) = delete;
+};
+
 inline int n_active_tasks() {
   return scheduler().n_active_tasks();
 }

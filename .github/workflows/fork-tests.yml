@@ -1,7 +1,28 @@
 name: Fork Tests
 
-# Build the fork with Metal and run its C++ and Python tests on a
-# GitHub-hosted macOS runner. The steps use the actions in .github/actions.
+# Build the fork with Metal and run its C++ and Python tests on GitHub-hosted
+# macOS runners. The steps use the actions in .github/actions.
+#
+# The jobs:
+#   build-wheel    builds the Python wheel and uploads it.
+#   build-cpp      builds the C++ library and tests, and runs the C++ tests
+#                  with the GPU and then with the CPU as the default device.
+#                  Then it runs the standalone allocation cap tests, one
+#                  process for each case, and the bounded Metal fence chains.
+#   python-gpu     runs the Python tests with the GPU as the default device.
+#   python-cpu     runs the Python tests with the CPU as the default device.
+#   metal-build-and-test
+#                  merges the coverage profiles of all jobs, writes the
+#                  coverage report, and fails if one of the other jobs failed.
+# The two build jobs run in parallel. The Python test jobs start when the
+# wheel is ready. Each Python test job runs one shard of
+# .github/scripts/fork-tests/python-shards.json, and
+# .github/scripts/fork-tests/python_shards.py fails a job if a test file is
+# in no shard or in two shards.
+#
+# The hosted macOS runners are a shared pool. A run uses 8 macOS jobs, and
+# at most 6 of them run at the same time. A new push to a pull request
+# cancels the older run and frees its runners.
 
 on:
   pull_request:
@@ -10,153 +31,416 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Cancel an older run of the same pull request. Let runs on main finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Instrument the C and C++ code for line coverage. cmake reads these
+  # variables in the build jobs and in the extension examples. The Metal
+  # shaders are not instrumented.
+  CFLAGS: -fprofile-instr-generate -fcoverage-mapping
+  CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
+
 jobs:
-  metal-build-and-test:
+  build-wheel:
     runs-on: macos-26
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      # Cancel an older run of the same pull request. Let runs on main finish.
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    timeout-minutes: 45
     env:
-      # Instrument the C and C++ code for line coverage. Both builds in
-      # build-macos run cmake from scratch, and cmake reads these variables.
-      # The Metal shaders are not instrumented.
-      CFLAGS: -fprofile-instr-generate -fcoverage-mapping
-      CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
+      # The runner has macOS 26. Version 26.2 is the lowest target that
+      # builds all Metal kernels.
+      MACOSX_DEPLOYMENT_TARGET: '26.2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the Python shard map
+        run: python3 .github/scripts/fork-tests/python_shards.py check
+
+      - uses: ./.github/actions/fork-build-cache
+        id: cache
+        with:
+          phase: restore
+          kind: wheel
+
+      - name: Build the wheel
+        env:
+          DEBUG: 1
+          CMAKE_ARGS: ${{ steps.cache.outputs.cmake-args }}
+        run: |
+          uv pip install build setuptools
+          export PATH="$GITHUB_WORKSPACE/.github/scripts/fork-tests/metal-cache:$PATH"
+          python -m build -w
+
+      - uses: ./.github/actions/fork-build-cache
+        with:
+          phase: save
+          kind: wheel
+          ccache-save-key: ${{ steps.cache.outputs.ccache-save-key }}
+          metal-save-key: ${{ steps.cache.outputs.metal-save-key }}
+
+      - name: Upload the wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-tests-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          # A wheel is a zip file already.
+          compression-level: 0
+          retention-days: 3
+          overwrite: true
+
+  build-cpp:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '26.2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/fork-build-cache
+        id: cache
+        with:
+          phase: restore
+          kind: cpp
+
+      - name: Build the C++ library and tests
+        id: build
+        env:
+          CMAKE_ARGS: ${{ steps.cache.outputs.cmake-args }}
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.github/scripts/fork-tests/metal-cache:$PATH"
+          # The same commands as the "Build CPP only" step of
+          # .github/actions/build-macos.
+          cmake . -B build $CMAKE_ARGS -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build -j $(sysctl -n hw.physicalcpu)
+
+      - uses: ./.github/actions/fork-build-cache
+        with:
+          phase: save
+          kind: cpp
+          ccache-save-key: ${{ steps.cache.outputs.ccache-save-key }}
+          metal-save-key: ${{ steps.cache.outputs.metal-save-key }}
+
+      - name: Run the C++ tests on the GPU
+        env:
+          METAL_DEBUG_ERROR_MODE: 0
+          METAL_DEVICE_WRAPPER_TYPE: 1
+          # Each test process writes one profile for each instrumented binary.
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
+        run: ./build/tests/tests
+
+      - name: Run the C++ tests on the CPU
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          DEVICE: cpu
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
+        run: ./build/tests/tests
+
+      - name: Run the standalone allocation cap tests
+        # The process allocation cap is install-once in each process. ctest
+        # runs each entry in a fresh process, and the Metal test runs one case
+        # in each entry (tests/CMakeLists.txt). The build step built them.
+        # -V prints the output of every case, so the log shows why a case
+        # was skipped (a few lines for each case).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cap-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^process_allocation_cap' -V \
+            --no-tests=error
+
+      - name: Run the bounded Metal fence chains
+        # metal_fence_chain runs exact GPU -> CPU -> GPU chains with fast
+        # synchronization at three command buffer sizes, one ctest entry for
+        # each, each with a 60 s timeout (tests/CMakeLists.txt).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/fence-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure \
+            --no-tests=error
+
+      - name: Merge the coverage profiles
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/profdata"
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+            -o "$RUNNER_TEMP/profdata/cpp.profdata"
+
+      - name: Upload the coverage profile
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: profdata-cpp
+          path: ${{ runner.temp }}/profdata/cpp.profdata
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+      - name: Upload the C++ test binary
+        # The coverage report reads the coverage mapping in this binary.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fork-tests-cpp-binary
+          path: build/tests/tests
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 3
+          overwrite: true
+
+  python-gpu:
+    needs: build-wheel
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job for each "gpu" shard in python-shards.json. The script
+        # fails if the two counts are not equal.
+        shard: [0, 1]
+    env:
+      METAL_DEBUG_ERROR_MODE: 0
+      METAL_DEVICE_WRAPPER_TYPE: 1
+      # The job-level env cannot read the runner context, so the steps set
+      # LLVM_PROFILE_FILE.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: ./.github/actions/setup
-        id: setup
         with:
           toolkit: metal
-          # This cache key is not an upstream key. The setup action saves
-          # the cache on pushes to main only, never on pull requests.
-          ccache-key: fork-tests
+          use-ccache: 'false'
+          # Shard 0 runs the distributed test. It gets the same Homebrew
+          # packages (openmpi) as the build jobs.
+          install-macos-deps: ${{ matrix.shard == 0 }}
 
-      - uses: ./.github/actions/build-macos
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          cmake-args: ${{ steps.setup.outputs.cmake-args }}
-          # The runner has macOS 26. Version 26.2 is the lowest target that
-          # builds all Metal kernels.
-          macos-target: '26.2'
+          name: fork-tests-wheel
+          path: dist
 
-      - name: Run bounded Metal fence chains
-        env:
-          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/fence-%p-%m.profraw
-        run: ctest --test-dir build -R '^metal_fence_chain_' --output-on-failure --no-tests=error
+      - name: Install the wheel and the test dependencies
+        run: |
+          uv pip install build setuptools tensorflow
+          uv pip install dist/*.whl
 
-      - uses: ./.github/actions/test-macos
+      - name: Run the Python tests
         id: tests
         env:
-          # Each test process writes one profile for each instrumented binary.
-          # The job-level env cannot read the runner context, so this step
-          # sets the path. The build steps then write no profiles here.
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
-        with:
-          toolkit: metal
-
-      - name: Run the tests on the CPU
-        id: cpu-tests
-        # Run the CPU code of ops that also have a Metal implementation.
-        # The profiles go to the same folder, so the report merges both runs.
-        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
-        env:
-          DEVICE: cpu
-          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
-          # Tests that take more than 5 minutes on the CPU. The GPU pass
-          # still runs them.
-          # test_sdpa_long_masked_sequence: 21 min 36 s on the CPU.
-          # test_sdpa_full_head_dim_256: 6 min 46 s on the CPU.
-          CPU_EXCLUDE: >-
-            test_fast_sdpa.TestFastSDPA.test_sdpa_long_masked_sequence
-            test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
         run: |
-          status=0
-          echo "::group::Run C++ tests on the CPU"
-          ./build/tests/tests || status=1
+          python .github/scripts/fork-tests/python_shards.py run gpu \
+            ${{ matrix.shard }} ${{ strategy.job-total }} \
+            --jobs 1 --logs "$RUNNER_TEMP/logs"
+
+      - name: Run the distributed tests
+        if: ${{ !cancelled() && matrix.shard == 0 }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
+        # The same commands as the "Run distributed tests" group of
+        # .github/actions/test-macos for the metal toolkit.
+        run: |
+          # TODO: Re-enable for GPU after openmpi updating their libprrte
+          # dependency: https://github.com/openpmix/prrte/issues/2416
+          mlx.launch --verbose -n 8 uv run python/tests/ring_test_distributed.py -v 2> >(tee -a stderr.log >&2)
+          if $(grep "\[WARN\]" stderr.log); then
+            echo "Distributed ring test failed"
+            exit 1
+          fi
+
+      - name: Build and test the extension examples
+        if: ${{ !cancelled() && matrix.shard == 0 }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/%p-%m.profraw
+        # The same commands as the extension groups of
+        # .github/actions/test-macos for the metal toolkit.
+        run: |
+          echo "::group::Build example extension"
+          pushd examples/cmake_extension
+          uv pip install -r requirements.txt
+          uv run setup.py build_ext --inplace
+          uv run test.py
+          popd
           echo "::endgroup::"
 
-          # Run one process for each Python test file, three at a time. Each
-          # file runs in a child process that writes its own log, so a crash
-          # stops only that file.
-          logs="$RUNNER_TEMP/cpu-logs"
-          mkdir -p "$logs"
-          cat > "$RUNNER_TEMP/run_cpu.py" <<'EOF'
-          import os
-          import subprocess
-          import sys
-          import unittest
+          echo "::group::Build Metal extension example"
+          pushd examples/metal_extension
+          uv pip install -r requirements.txt
+          uv run setup.py build_ext --inplace
+          uv run test.py
+          popd
+          echo "::endgroup::"
 
-          if len(sys.argv) == 2:
-              name = os.path.basename(sys.argv[1])[: -len(".py")]
-              with open(os.path.join(os.environ["LOGS"], name + ".log"), "w") as log:
-                  code = subprocess.run(
-                      [sys.executable, "-u", __file__, name, "child"],
-                      stdout=log,
-                      stderr=subprocess.STDOUT,
-                  ).returncode
-              result = "passed" if code == 0 else f"failed (exit code {code})"
-              print(f"{name}: {result}", flush=True)
-              sys.exit(0)
+      - name: Merge the coverage profiles
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/profdata"
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+            -o "$RUNNER_TEMP/profdata/gpu-${{ matrix.shard }}.profdata"
 
-          os.environ["MLX_ENABLE_TF32"] = "0"
-          os.environ["MLX_ENABLE_CACHE_THRASHING_CHECK"] = "0"
-          sys.path.insert(0, "python/tests")
-          import mlx.core as mx
+      - name: Upload the coverage profile
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: profdata-gpu-${{ matrix.shard }}
+          path: ${{ runner.temp }}/profdata/gpu-${{ matrix.shard }}.profdata
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
 
-          exclude = set(os.environ["CPU_EXCLUDE"].split())
+      - name: Upload the list of tests that ran
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: testids-gpu-${{ matrix.shard }}
+          path: ${{ runner.temp }}/logs/testids-gpu-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
 
-          def flatten(suite):
-              for test in suite:
-                  if isinstance(test, unittest.TestSuite):
-                      yield from flatten(test)
-                  elif test.id() not in exclude:
-                      yield test
+  python-cpu:
+    # Run the CPU code of ops that also have a Metal implementation.
+    needs: build-wheel
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job for each "cpu" shard in python-shards.json.
+        shard: [0, 1, 2]
+    env:
+      DEVICE: cpu
+      # Tests that take more than 5 minutes on the CPU. The GPU pass
+      # still runs them.
+      # test_sdpa_long_masked_sequence: 21 min 36 s on the CPU.
+      # test_sdpa_full_head_dim_256: 6 min 46 s on the CPU.
+      CPU_EXCLUDE: >-
+        test_fast_sdpa.TestFastSDPA.test_sdpa_long_masked_sequence
+        test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-          suite = unittest.defaultTestLoader.loadTestsFromName(sys.argv[1])
-          suite = unittest.TestSuite(flatten(suite))
-          result = unittest.TextTestRunner(sys.stdout, verbosity=2).run(suite)
-          mx.clear_streams()
-          sys.exit(0 if result.wasSuccessful() else 1)
-          EOF
-          export LOGS="$logs"
-          printf '%s\n' python/tests/test_*.py \
-            | xargs -P 3 -n 1 python "$RUNNER_TEMP/run_cpu.py" \
-            | tee "$logs/results.txt" || true
-          failed=()
-          for file in python/tests/test_*.py; do
-            name=$(basename "$file" .py)
-            echo "::group::Python tests on the CPU: $name"
-            cat "$logs/$name.log" || true
-            echo "::endgroup::"
-            grep -qx "$name: passed" "$logs/results.txt" || failed+=("$name")
-          done
-          if [ ${#failed[@]} -gt 0 ]; then
-            echo "::error::Python test files that failed on the CPU: ${failed[*]}"
-            status=1
-          fi
-          exit $status
+      - uses: ./.github/actions/setup
+        with:
+          toolkit: metal
+          use-ccache: 'false'
+          install-macos-deps: 'false'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-tests-wheel
+          path: dist
+
+      - name: Install the wheel and the test dependencies
+        run: |
+          uv pip install build setuptools tensorflow
+          uv pip install dist/*.whl
+
+      - name: Run the Python tests on the CPU
+        id: tests
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
+        # Each entry runs in a child process that writes its own log, so a
+        # crash stops only that entry. Three entries run at a time.
+        run: |
+          python .github/scripts/fork-tests/python_shards.py run cpu \
+            ${{ matrix.shard }} ${{ strategy.job-total }} \
+            --jobs 3 --logs "$RUNNER_TEMP/logs"
+
+      - name: Merge the coverage profiles
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/profdata"
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+            -o "$RUNNER_TEMP/profdata/cpu-${{ matrix.shard }}.profdata"
+
+      - name: Upload the coverage profile
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: profdata-cpu-${{ matrix.shard }}
+          path: ${{ runner.temp }}/profdata/cpu-${{ matrix.shard }}.profdata
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+      - name: Upload the list of tests that ran
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: testids-cpu-${{ matrix.shard }}
+          path: ${{ runner.temp }}/logs/testids-cpu-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 3
+          overwrite: true
+
+  metal-build-and-test:
+    needs: [build-wheel, build-cpp, python-gpu, python-cpu]
+    if: ${{ !cancelled() }}
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the lists of tests that ran
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: testids-*
+          path: ${{ runner.temp }}/testids
+          merge-multiple: true
+
+      - name: Check that each Python test ran in one shard only
+        run: python3 .github/scripts/fork-tests/python_shards.py verify "$RUNNER_TEMP/testids"
+
+      - name: Download the coverage profiles
+        id: profiles
+        if: ${{ !cancelled() && needs.build-wheel.result == 'success' && needs.build-cpp.result == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: profdata-*
+          path: ${{ runner.temp }}/profdata
+          merge-multiple: true
+
+      - name: Download the wheel
+        if: ${{ !cancelled() && steps.profiles.outcome == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-tests-wheel
+          path: ${{ runner.temp }}/wheel
+
+      - name: Download the C++ test binary
+        if: ${{ !cancelled() && steps.profiles.outcome == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fork-tests-cpp-binary
+          path: build/tests
 
       - name: Report C++ line coverage
+        id: coverage
         # Report also after a test failure, so that a red run shows the
         # coverage of the tests that ran.
-        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.profiles.outcome == 'success' }}
         env:
-          TESTS_OUTCOME: ${{ steps.tests.outcome }}
-          CPU_TESTS_OUTCOME: ${{ steps.cpu-tests.outcome }}
+          CPP_RESULT: ${{ needs.build-cpp.result }}
+          GPU_RESULT: ${{ needs.python-gpu.result }}
+          CPU_RESULT: ${{ needs.python-cpu.result }}
         run: |
           shopt -s nullglob
           out="$RUNNER_TEMP/coverage"
           mkdir -p "$out"
-          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profiles/*.profraw \
+          # Each test job merged its raw profiles into one .profdata file.
+          xcrun llvm-profdata merge -sparse "$RUNNER_TEMP"/profdata/*.profdata \
             -o "$out/coverage.profdata"
           # The Python tests run the code in the installed wheel: the
-          # extension module and the libraries in mlx/lib.
-          core=$(python -c 'import mlx.core as c; print(c.__file__)')
+          # extension module and the libraries in mlx/lib. The test jobs
+          # installed this same wheel.
+          unzip -q "$RUNNER_TEMP"/wheel/*.whl -d "$RUNNER_TEMP/wheel-files"
+          core=$(echo "$RUNNER_TEMP"/wheel-files/mlx/core.*.so)
           objects=(./build/tests/tests -object "$core")
           for lib in "$(dirname "$core")"/lib/*.dylib; do
             objects+=(-object "$lib")
@@ -237,23 +521,39 @@ jobs:
           {
             echo "### C++ line coverage"
             echo
-            echo "Test step (GPU default device): $TESTS_OUTCOME"
+            echo "C++ build and C++ tests (GPU and CPU default device): $CPP_RESULT"
             echo
-            echo "Test step (CPU default device): $CPU_TESTS_OUTCOME"
+            echo "Python tests (GPU default device): $GPU_RESULT"
+            echo
+            echo "Python tests (CPU default device): $CPU_RESULT"
             echo
             echo "| Component | Lines | Branches | Functions | Target |"
             echo "|---|---|---|---|---|"
             cat "$out/rows.md"
             echo
             echo "The denominator is the host C++ code under \`mlx/\` and the Python bindings in \`python/src\`, which the C++ tests and the Python wheel link: $lines_total lines. It leaves out the tests, the build folders with their dependencies and generated files, the vendored \`mlx/3rdparty/pocketfft.h\`, and the CUDA backend in \`mlx/backend/cuda/\`, which macOS builds only as a stub."
-            echo "The C++ and Python tests run two times, first with the GPU and then with the CPU as the default device. The report merges the two runs."
+            echo "The C++ and Python tests run two times: one pass with the GPU and one pass with the CPU as the default device. The passes run in parallel jobs. The report merges the profiles of all jobs."
             echo "The Metal shader source in \`mlx/backend/metal/kernels/\` is not in the denominator: the kernels run on the GPU and are outside every coverage tool. The host code that encodes and dispatches them is counted, and so are the few headers in that folder that host C++ includes."
             echo "The Branches column is real C++ branch coverage. The 80% target is reported only. The job does not fail below it."
           } >> "$GITHUB_STEP_SUMMARY"
 
+
       - name: Upload the coverage report
-        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
           path: ${{ runner.temp }}/coverage/report.txt
+          overwrite: true
+
+      - name: Check the results of the other jobs
+        if: ${{ !cancelled() }}
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(" ")')
+          if [ -n "$bad" ]; then
+            echo "::error::Jobs that did not succeed: $bad"
+            exit 1
+          fi

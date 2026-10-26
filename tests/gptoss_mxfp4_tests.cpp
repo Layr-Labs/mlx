@@ -68,6 +68,7 @@ TEST_CASE(
             32,
             4,
             "mxfp4",
+            std::nullopt,
             true,
             Device::gpu);
         eval(reference);
@@ -85,6 +86,7 @@ TEST_CASE(
             32,
             4,
             "mxfp4",
+            std::nullopt,
             true,
             Device::gpu);
         eval(actual);
@@ -169,6 +171,7 @@ TEST_CASE("gptoss mxfp4 fast gather covers the final 320 input values") {
               32,
               4,
               "mxfp4",
+              std::nullopt,
               false,
               Device::gpu);
           eval(reference);
@@ -185,6 +188,7 @@ TEST_CASE("gptoss mxfp4 fast gather covers the final 320 input values") {
             32,
             4,
             "mxfp4",
+            std::nullopt,
             false,
             Device::gpu);
         eval(actual);

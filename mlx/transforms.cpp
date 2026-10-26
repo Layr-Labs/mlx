@@ -187,14 +187,16 @@ thread_local int detail::RetainGraph::tracing_counter{0};
 array eval_impl(std::vector<array> outputs, bool async) {
   std::deque<array> tape;
 
-  // Make an effort to choose a good output stream
-  Stream stream = default_stream(default_device());
-  for (auto& o : outputs) {
-    if (o.status() == array::Status::unscheduled && o.has_primitive()) {
-      stream = o.primitive().stream();
-      break;
+  // Make an effort to choose a good output stream, and only create the default
+  // stream when there is no other choice.
+  Stream stream = [&outputs]() {
+    for (auto& o : outputs) {
+      if (o.status() == array::Status::unscheduled && o.has_primitive()) {
+        return o.primitive().stream();
+      }
     }
-  }
+    return default_stream(default_device());
+  }();
 
   // Arrays read on another stream: the stream they are computed on, whether
   // a reader waits on the fence (`fast`, a spinning wait under fast synch) or
@@ -205,6 +207,9 @@ array eval_impl(std::vector<array> outputs, bool async) {
     bool cross_device{false};
     bool fast{false};
     bool event{false};
+    // The values that the fence updates returned (see Fence::update).
+    uint32_t fast_value{0};
+    uint32_t event_value{0};
   };
   std::unordered_map<uintptr_t, FenceNeed> needs_fence;
   // GPU streams that read a CPU array, per CPU array (decided after the walk).
@@ -422,12 +427,13 @@ array eval_impl(std::vector<array> outputs, bool async) {
           if (same_stream ? !need.fast
                           : (stream.device == Device::gpu &&
                              (need.producer_gpu || !one_gpu_stream))) {
-            event_fences[need.stream].wait(stream, in);
+            event_fences.at(need.stream).wait(stream, in, need.event_value);
             continue;
           }
-          auto& fence = fences[need.stream];
-          if (!one_gpu_stream || !fence.wait_in_consumer(stream, arr, i)) {
-            fence.wait(stream, in);
+          auto& fence = fences.at(need.stream);
+          if (!one_gpu_stream ||
+              !fence.wait_in_consumer(stream, arr, i, need.fast_value)) {
+            fence.wait(stream, in, need.fast_value);
           }
         } else if (in.event().valid()) {
           if (in.event().is_signaled()) {
@@ -471,14 +477,15 @@ array eval_impl(std::vector<array> outputs, bool async) {
                        .emplace(stream.index, Fence{stream, /* fast */ false})
                        .first;
             }
-            it->second.update(stream, a, false);
+            nf->second.event_value = it->second.update(stream, a, false);
           }
           if (nf->second.fast) {
             auto it = fences.find(stream.index);
             if (it == fences.end()) {
               it = fences.emplace(stream.index, Fence{stream}).first;
             }
-            it->second.update(stream, a, nf->second.cross_device);
+            nf->second.fast_value =
+                it->second.update(stream, a, nf->second.cross_device);
             // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
             // CPU stream starts when `a` is ready, not when the buffer is
             // full.
@@ -521,6 +528,15 @@ array eval_impl(std::vector<array> outputs, bool async) {
       } catch (...) {
       }
     }
+    // Commit GPU streams before the wait.
+    for (auto& s : open_streams) {
+      if (s.device == Device::gpu) {
+        try {
+          gpu::finalize(s);
+        } catch (...) {
+        }
+      }
+    }
     for (auto& s : open_streams) {
       try {
         synchronize(s);
@@ -555,6 +571,9 @@ void async_eval(std::vector<array> outputs) {
     return;
   }
 
+  // A stream task can fail while async_eval still enqueues later tasks.
+  // synchronize raises that error, not async_eval.
+  scheduler::DeferStreamErrors defer;
   eval_impl(std::move(outputs), true);
 }
 

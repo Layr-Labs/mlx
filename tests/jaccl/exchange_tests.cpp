@@ -313,6 +313,7 @@ SumResult streamed_sum(
         counter,
         rank,
         r.partial[rank].data(),
+        r.partial[rank].data(),
         r.out[rank].data(),
         mine.data(),
         theirs.data(),

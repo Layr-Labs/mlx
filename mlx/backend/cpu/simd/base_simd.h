@@ -8,11 +8,13 @@
 #include <algorithm>
 #include <complex>
 #include <functional>
+#include <limits>
 
 #ifdef _MSC_VER
 #include <intrin.h> // For _BitScanReverse
 #endif
 
+#include "mlx/types/complex.h"
 #include "mlx/types/half_types.h"
 
 namespace mlx::core::simd {
@@ -159,7 +161,7 @@ auto imag(Simd<T, 1> in) -> Simd<decltype(std::imag(in.value)), 1> {
 }
 template <typename T>
 Simd<bool, 1> isnan(Simd<T, 1> in) {
-  return std::isnan(in.value);
+  return mlx::core::isnan(in.value);
 }
 
 #define DEFAULT_BINARY(OP)                                                 \
@@ -203,12 +205,87 @@ Simd<T, 1> clz(Simd<T, 1> x_) {
 #endif
 }
 
+// Integer division by zero traps on x86 and returns 0 on arm64. Define the
+// quotient as 0 on all platforms, which keeps a == (a / b) * b + (a % b).
+template <typename T>
+Simd<T, 1> divide(Simd<T, 1> a_, Simd<T, 1> b_) {
+  T a = a_.value;
+  T b = b_.value;
+  if constexpr (std::is_integral_v<T>) {
+    if (b == 0) {
+      return T(0);
+    }
+  }
+  return a / b;
+}
+
+// The floor of a / b, computed as numpy's npy_divmodf does: from fmod, so the
+// quotient is not rounded before the floor. float16 and bfloat16 use it in
+// float32: floor(a / b) in the half type rounds a quotient that is just below
+// an integer up to that integer.
+inline float exact_floor_divide(float a, float b) {
+  if (b == 0) {
+    return a / b;
+  }
+  float mod = std::fmod(a, b);
+  float div = (a - mod) / b;
+  if (mod != 0 && ((b < 0) != (mod < 0))) {
+    div -= 1.0f;
+  }
+  if (div == 0) {
+    return std::copysign(0.0f, a / b);
+  }
+  float floordiv = std::floor(div);
+  if (div - floordiv > 0.5f) {
+    floordiv += 1.0f;
+  }
+  return floordiv;
+}
+
+template <typename T>
+constexpr bool is_half_v =
+    std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>;
+
+template <typename T>
+Simd<T, 1> floor_divide(Simd<T, 1> a_, Simd<T, 1> b_) {
+  T a = a_.value;
+  T b = b_.value;
+  if constexpr (std::is_integral_v<T>) {
+    // Integer division by zero gives 0. See divide above.
+    if (b == 0) {
+      return T(0);
+    }
+    if constexpr (is_signed_v<T>) {
+      // min / -1 overflows and traps on x86. The result wraps to min.
+      if (b == T(-1)) {
+        return a == std::numeric_limits<T>::min() ? a : T(-a);
+      }
+    }
+    T q = a / b;
+    if constexpr (is_signed_v<T>) {
+      if (a % b != 0 && (a < 0 != b < 0)) {
+        q -= 1;
+      }
+    }
+    return q;
+  } else if constexpr (is_complex<T>) {
+    return a / b;
+  } else if constexpr (is_half_v<T>) {
+    return T(exact_floor_divide(static_cast<float>(a), static_cast<float>(b)));
+  } else {
+    return floor(divide(a_, b_));
+  }
+}
+
 template <typename T>
 Simd<T, 1> remainder(Simd<T, 1> a_, Simd<T, 1> b_) {
   T a = a_.value;
   T b = b_.value;
   T r;
   if constexpr (std::is_integral_v<T>) {
+    if (b == 0) {
+      return a;
+    }
     r = a % b;
   } else {
     r = std::remainder(a, b);
@@ -226,7 +303,7 @@ Simd<T, 1> maximum(Simd<T, 1> a_, Simd<T, 1> b_) {
   T a = a_.value;
   T b = b_.value;
   if constexpr (!std::is_integral_v<T>) {
-    if (std::isnan(a)) {
+    if (mlx::core::isnan(a)) {
       return a;
     }
   }
@@ -238,7 +315,7 @@ Simd<T, 1> minimum(Simd<T, 1> a_, Simd<T, 1> b_) {
   T a = a_.value;
   T b = b_.value;
   if constexpr (!std::is_integral_v<T>) {
-    if (std::isnan(a)) {
+    if (mlx::core::isnan(a)) {
       return a;
     }
   }

@@ -183,6 +183,19 @@ array normal(
     const std::optional<array>& scale,
     const std::optional<array>& key,
     StreamOrDevice s /* = {} */) {
+  auto out_shape = shape;
+  if (loc) {
+    out_shape = broadcast_shapes(out_shape, loc->shape());
+  }
+  if (scale) {
+    out_shape = broadcast_shapes(out_shape, scale->shape());
+  }
+  if (out_shape != shape) {
+    std::ostringstream msg;
+    msg << "[normal] Cannot generate random values of shape " << shape
+        << " from broadcasted shape " << out_shape << ".";
+    throw std::invalid_argument(msg.str());
+  }
   if (dtype == complex64) {
     return complex_normal(shape, loc, scale, key, s);
   } else if (!issubdtype(dtype, floating)) {
@@ -383,7 +396,7 @@ int get_valid_axis(int axis, int ndim) {
     std::ostringstream msg;
     msg << "[categorical] Invalid axis " << axis << " for logits with " << ndim
         << " dimensions.";
-    throw std::invalid_argument(msg.str());
+    throw std::out_of_range(msg.str());
   }
   return ax;
 }

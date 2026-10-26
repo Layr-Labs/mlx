@@ -6,11 +6,12 @@ footer: |
 base:
   name: ml-explore/mlx
   url: https://github.com/ml-explore/mlx
-  # The upstream commit this fork is based on. CI (`scripts/check_forkdiff.py`)
-  # requires this to equal `git merge-base HEAD upstream/main`, so a rebase onto
-  # newer upstream fails the gate until the hash — and the sections below — are
-  # brought up to date. Upstream main as of 2026-08-14.
-  hash: 77a0c1e8ae16eb781a79e2b7134ba84b2ee7b597
+  # The upstream commit this fork is based on: upstream main on 2026-10-23, the
+  # head that the fork merged on that date. CI (`scripts/check_forkdiff.py`)
+  # requires this hash to equal `git merge-base HEAD upstream/main`. Each upstream
+  # merge moves the merge-base, so the gate fails until this hash and the
+  # sections below are brought up to date.
+  hash: afc03c51105a8e25e70fa2ba0befb214e4f5ec6f
 fork:
   name: Layr-Labs/mlx
   url: https://github.com/Layr-Labs/mlx
@@ -36,11 +37,6 @@ def:
     the process with status 75. These two are not gated. The zeroing is always on, and the
     guard is on with a 30 s limit that `JACCL_PROGRESS_TIMEOUT_MS=0` removes;
     `JACCL_TIMEOUT_ACTION=throw` keeps the process alive and throws instead.
-
-    Three sections are not fork work at all: the fork carries upstream's own v0.32.2 changes
-    (applied in PR #10 rather than merged) and two sets of cherry-picked upstream fixes, and
-    those files are listed as such so the page stays honest about what Layr-Labs actually
-    changed.
   sub:
     - title: "Metal eval: use-after-free with mid-eval synchronization"
       description: |
@@ -63,17 +59,16 @@ def:
         an older library fails the route closed; `trust` skips the descriptor-retract readback
         when the caller guarantees sorted indices. A retracted call runs the unsorted gather
         route, because the sorted `gather_qmm_rhs` kernels read per-expert offsets and give a
-        correct result only for sorted indices. Diagnostics counters
+        correct result only for sorted indices (PR #27). Diagnostics counters
         (`mlx_metal_gemma4_expert_qmm_diagnostics_*`) are exposed through a C ABI so mlx-c /
-        mlx-swift can arm, snapshot and reset them. Also in these kernels: every affine
-        quantized-vector bias-sum operand is promoted to the accumulator type before summation
-        (PR #15).
+        mlx-swift can arm, snapshot and reset them.
       globs:
         - "mlx/backend/common/gemma4_expert_qmm.h"
         - "mlx/backend/metal/device.h"
         - "mlx/backend/metal/device.cpp"
         - "mlx/backend/metal/kernels/quantized.h"
         - "mlx/backend/metal/kernels/quantized.metal"
+        - "mlx/backend/metal/quantized.cpp"
         - "tests/gpu_tests.cpp"
     - title: "Thread-scoped command-buffer commit limits"
       description: |
@@ -113,12 +108,17 @@ def:
         `jit_kernels.cpp` and `nojit_kernels.cpp`). `tests/quantized_tile_tests.cpp` runs
         512 x 1024 products (one qmm, no split-K) at K = 96 (no NAX route) and K = 192 in
         groups of 64 at every tile, checks the 32 x 32 result against the dequantized
-        product, and every other tile against its bytes.
+        product, and every other tile against its bytes. A wide tile passes upstream's
+        template arguments in order (global scale, then BM, BK, BN); upstream's own 64 x 64
+        FP4 tile (half-loader `fp_qmm_t`, precompiled) keeps its name and its selection.
       globs:
         - "mlx/backend/common/command_buffer_limits.h"
         - "mlx/backend/metal/device.h"
         - "mlx/backend/metal/device.cpp"
         - "mlx/backend/metal/quantized.cpp"
+        - "mlx/backend/metal/kernels.h"
+        - "mlx/backend/metal/jit_kernels.cpp"
+        - "mlx/backend/metal/nojit_kernels.cpp"
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
         - "tests/quantized_tile_tests.cpp"
@@ -160,6 +160,19 @@ def:
         memory limits are unchanged. Residency insertion rolls back failed registration before
         callers release buffers, including ordinary uncapped allocations. Standalone CPU and
         real-Metal tests cover delayed release, churn, and injected construction failures.
+        `tests/CMakeLists.txt` builds them as their own executables, because the cap is
+        install-once in each process, and gives one ctest entry to each case of the Metal test.
+        The Metal test uses `allocator().malloc` / `allocator().free`, which return and free a
+        plain `Buffer`, because upstream #4634 made `allocator::malloc` return an owning `Data`.
+        The allocator makes no fixed heap on a virtual GPU (the GitHub-hosted runner), so the
+        cases check the heap charge and heap use that match the device. The registration cases
+        fill one residency set with a page first, so that the injected failure of a new set is
+        reached with or without the heap in set 0.
+        When the device has no residency sets (`ResidencySets::enabled()` is false: no Metal 3
+        GPU family or macOS before 15, as on the virtual GPU of the hosted runner), the path
+        these cases test does not exist. They then print the reason and exit with 77, which
+        ctest reports as skipped (`SKIP_RETURN_CODE`). David ruled on 2026-10-24 to skip by
+        capability, like the 4 GiB capability skip below.
         Capped no-copy pages are first touched on the CPU so process physical
         footprint accounts for pages later written by the GPU.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.
@@ -168,6 +181,7 @@ def:
         - "mlx/backend/common/allocation_footprint.h"
         - "mlx/backend/common/process_allocation_cap.h"
         - "tests/standalone/process_allocation_cap*.cpp"
+        - "tests/CMakeLists.txt"
         - "mlx/backend/common/buffer_cache.h"
         - "mlx/backend/metal/allocator.h"
         - "mlx/backend/metal/allocator.cpp"
@@ -216,26 +230,49 @@ def:
         - "mlx/compile.cpp"
         - "mlx/compile_impl.h"
         - "tests/compile_tests.cpp"
-    - title: "Integer floor_divide rounds down"
+    - title: "Freed compiled closures leave every thread cache"
       description: |
-        `floor_divide` on integers uses the `Divide` primitive. The CPU and Metal `Divide`
-        functors truncated toward zero, so `-7 // 2` gave -3. NumPy and Python give -4. For
-        signed integers the functors now subtract 1 when the remainder is not zero and the
-        signs are different. On the CPU the signed-integer functor does not divide by 0 or
-        divide the minimum value by -1, because C++ does not define these. It returns 0 for
-        `x // 0` and the minimum value for `min // -1`, the same values as before. The Metal
-        Shading Language does not define these cases either. Unsigned and floating-point
-        division do not change. Upstream fixed the same defect in `ops.cpp` (ml-explore/mlx
-        #4515); the fork does the fix in the kernels. If a later upstream sync ports #4515 on
-        top of these kernels, `floor_divide` subtracts 1 twice; the tests catch this. The CUDA
-        `Divide` functor (`cuda/device/binary_ops.cuh:36-41`) does not change and still
-        truncates; no workflow in this fork builds CUDA. mlx-swift keeps generated copies of
-        both headers (`Source/Cmlx/mlx-generated/binary_ops.cpp`,
-        `mlx-generated/metal/binary_ops.h`, `mlx-generated/compiled_preamble.cpp`), so
-        `tools/update-mlx.sh` must run at the mlx-swift pin bump.
+        `compile(std::function)` keys a closure by the address of a heap copy of it. Upstream,
+        the deleter of that copy erases the key only from the cache of the thread that called
+        `compile()`. Each call records its trace in the cache of the calling thread, so a trace
+        from another thread stayed after the copy was freed. The trace kept its arrays alive,
+        and a later closure at the same address could replay it. The deleter now erases the key
+        from every live thread cache through the registry above, before the delete. The test
+        `test freeing a compiled closure erases every thread cache` records a trace on a second
+        thread, frees the closure, and checks that the captured array is uniquely referenced.
+        (PR #43)
       globs:
-        - "mlx/backend/cpu/binary_ops.h"
-        - "mlx/backend/metal/kernels/binary_ops.h"
+        - "mlx/compile.cpp"
+        - "tests/compile_tests.cpp"
+    - title: "Freed Python compiled functions leave every thread cache"
+      description: |
+        The Python binding keys the traces of `mx.compile(fun)` by the address of `fun`. Upstream,
+        `PyCompiledFun` keeps the cache of the thread that called it last, and its destructor
+        erases the key only from that cache. Each call records its trace in the cache of the
+        calling thread, so a trace from another thread stayed after the free. The trace kept its
+        arrays alive, and a later compile of a callable at the same address replayed it without a
+        new trace. The destructor now erases the key from every live thread cache through the
+        registry above, before it releases `fun`, and `PyCompiledFun` no longer keeps a cache.
+        The test `test_compile_free_erases_every_thread_cache` calls a compiled function on two
+        threads, frees it on the thread that called it last, and compiles the same callable
+        again on the other thread. It expects a new trace there. (PR #44)
+      globs:
+        - "python/src/transforms.cpp"
+        - "python/tests/test_compile.py"
+    - title: "Integer floor_divide tests"
+      description: |
+        The fork keeps its regression tests for integer `floor_divide` from PR #32. Upstream
+        now does the fix itself: ml-explore/mlx #4515 fixes `floor_divide` in `ops.cpp` and
+        #4642 adds a `FloorDivide` primitive that rounds down. The fork dropped its own flooring `Divide` functors when it merged
+        upstream on 2026-10-22, so integer `Divide` truncates again, as in upstream. The tests
+        check negative operands of every signed integer type, the SIMD and scalar paths,
+        unsigned and floating-point division, and compiled graphs. On the CPU they also check
+        that `x // 0` gives 0 and `min // -1` gives the minimum value. Upstream's CPU
+        `floor_divide` divided `min` by -1, which overflows and traps on x86 (SIGFPE). The
+        fork divides by 1 there, as PR #32 did, so the result wraps to `min`.
+      globs:
+        - "mlx/backend/cpu/simd/base_simd.h"
+        - "mlx/backend/cpu/simd/accelerate_simd.h"
         - "tests/ops_tests.cpp"
         - "python/tests/test_ops.py"
     - title: "Validated custom Metal threadgroups and bounded compiler retry"
@@ -277,17 +314,24 @@ def:
         (`set_wired_limit(0)`, then `clear_cache()`, at most 10 s) and leaves through
         `std::_Exit(75)`, a restartable status. With `throw` it throws a `[jaccl]`
         `std::runtime_error` instead; every later call on that group throws immediately and
-        the group cannot be reopened in the process. `dispatch_wires` also reports the errors
-        of the ring pool wires, which it used to drop. Each completion queue has four times
-        the entries its queue pair can have outstanding (`COMPLETION_QUEUE_DEPTH`, used by
-        `mesh.cpp` and `ring.cpp` when they create the queues). MLX's `jaccl.cpp` registers
-        the release hook each time it wraps a new JACCL group.
+        the group cannot be reopened in the process. The ring keeps its own guarded
+        `dispatch_wires`, which also reports the errors of the ring pool wires that it used
+        to drop. A mesh with more than one wire (upstream's second cable) has one `MeshImpl`,
+        and so one guard, for each wire: a failed wire closes its own queue pairs and buffers,
+        and later calls that use that wire are refused. The mesh runs its wires through the
+        shared `dispatch_wires` in `threadpool.h`, which upstream lets drop the error of a
+        pool wire; the fork throws that error after all wires returned. Each completion
+        queue has four times the entries its queue pair can have outstanding
+        (`COMPLETION_QUEUE_DEPTH`, used by `mesh.cpp` and `ring.cpp` when they create the
+        queues). MLX's `jaccl.cpp` registers the release hook each time it wraps a new JACCL
+        group.
 
         Startup readiness: a per-group one-shot budget of 1..900000 ms replaces the
         idle limit until its fixed monotonic deadline. Progress never renews it. Begin/end
         refuse running calls; callers drain queued work and serialize scheduling. End
-        restores the original idle policy and refuses expired or closed groups. The MLX
-        Group API forwards to JACCL only; unsupported backends refuse without fallback.
+        restores the original idle policy and refuses expired or closed groups. A mesh gives
+        the budget to each of its wires. The MLX Group API forwards to JACCL only;
+        unsupported backends refuse without fallback.
 
         Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
@@ -296,8 +340,7 @@ def:
 
         `tests/jaccl` is a separate CMake project that the MLX build does not build. It
         compiles the real mesh, ring and RDMA headers against simulated verbs and checks the
-        frame tails, the guard and the release path under ASan, UBSan and TSan. `ring_impl.h`
-        also carries the upstream ring `all_gather` fix described further down.
+        frame tails, the guard and the release path under ASan, UBSan and TSan.
       globs:
         - "mlx/distributed/jaccl/jaccl.cpp"
         - "mlx/distributed/jaccl/lib/README.md"
@@ -310,11 +353,13 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/ring.h"
         - "mlx/distributed/distributed.h"
         - "mlx/distributed/distributed_impl.h"
+        - "mlx/distributed/distributed.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.h"
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/send_frame.h"
+        - "mlx/distributed/jaccl/lib/jaccl/threadpool.h"
         - "docs/src/usage/distributed.rst"
         - "docs/src/usage/environment_variables.rst"
         - "tests/jaccl/*"
@@ -407,13 +452,23 @@ def:
         Opt-in (`MLX_METAL_FENCED_INPUTS=1`, fast synch only). `metal_kernel_with_fenced_inputs`
         declares inputs that can come from a CPU stream in the same eval, such as a CPU-stream
         all-sum. The source calls `MLX_FENCED_INPUT_WAIT(name)` before it reads such an input.
-        MLX then gives the CPU fence and its count to the kernel instead of a `fence_wait`
-        dispatch, and thread 0 of each threadgroup spins on it. The kernel starts after every
-        pass and kernel encoded before it (`wait_for_all_pending` and a barrier), as the
-        `fence_wait` pass does, so the CPU work it waits for never waits for it. MLX keeps the
-        separate wait when the input is copied first, when another GPU stream feeds the CPU
-        in the same eval, and while exporting. The declaration is not part of the exported
-        schema. Synchronization only: results do not change.
+        MLX then gives the CPU fence and the value of the update it waits for to the kernel
+        instead of a `fence_wait` dispatch, and thread 0 of each threadgroup spins on it. The
+        kernel starts after every pass and kernel encoded before it (`wait_for_all_pending`
+        and a barrier), as the `fence_wait` pass does, so the CPU work it waits for never
+        waits for it. MLX keeps the separate wait when the input is copied first, when another
+        GPU stream feeds the CPU in the same eval, and while exporting. The declaration is not
+        part of the exported schema. Synchronization only: results do not change.
+
+        The `fence_wait` dispatch itself makes its pass wait for every pass in flight
+        (`wait_for_all_pending`), and a buffer barrier orders it after the earlier kernels of
+        the same pass. Upstream ([ml-explore/mlx#4689](https://github.com/ml-explore/mlx/pull/4689))
+        gets the same order with a pass of its own for each wait (`end_encoding()` before the
+        dispatch, `end_encoding(true)` after it). The fork keeps the wait in the current pass,
+        so a wait adds no encoder boundary; `end_encoding(true)` stays available and waits as
+        `wait_for_all_pending` does. Fence waits use the value that the producer's update
+        returned, as upstream does since
+        [ml-explore/mlx#4552](https://github.com/ml-explore/mlx/pull/4552).
       globs:
         - "mlx/fence.h"
         - "mlx/transforms.cpp"
@@ -423,6 +478,8 @@ def:
         - "mlx/backend/metal/custom_kernel.cpp"
         - "mlx/backend/metal/fence.cpp"
         - "mlx/backend/metal/fenced_input.h"
+        - "mlx/backend/metal/device.h"
+        - "mlx/backend/metal/device.cpp"
         - "mlx/backend/no_gpu/fence.cpp"
         - "mlx/backend/cuda/fence.cpp"
         - "mlx/utils.h"
@@ -475,201 +532,172 @@ def:
       globs:
         - "mlx/backend/cpu/quantized.cpp"
         - "python/tests/test_quantized.py"
-    - title: "Upstream v0.32.2 sync carried in PR #10"
+    - title: "Every simdgroup runs the MMA in the sorted gather_qmm NAX kernels"
       description: |
-        **Not fork work.** PR #10 moved the fork from an 0.32.0-era upstream main to official
-        v0.32.2 by applying upstream's changes rather than merging them, so `git` sees them as
-        fork commits even though the imported content matches upstream `v0.32.2`
-        (CUDA backend, CPU SIMD, kernels, Python bindings and tests, repository CI and
-        templates, `AGENTS.md` / `CLAUDE.md`, docs). Listed here so the page does not credit
-        Layr-Labs with upstream's changes; the section disappears once the fork rebases onto
-        an upstream commit at or past v0.32.2. Later fork changes to these paths
-        are described in their own sections, including quantized NAX tile bounds.
-      globs:
-        - ".pre-commit-config.yaml"
-        - "AGENTS.md"
-        - "CLAUDE.md"
-        - "CMakeLists.txt"
-        - "CONTRIBUTING.md"
-        - "setup.py"
-        - ".github/pull_request_template.md"
-        - ".github/ISSUE_TEMPLATE/*"
-        - ".github/actions/build-macos/action.yml"
-        - ".github/actions/setup/action.yml"
-        - ".github/actions/build-wheel/action.yml"
-        - ".github/actions/test-linux/action.yml"
-        - ".github/actions/test-macos/action.yml"
-        - "benchmarks/python/sdpa_bench.py"
-        - "docs/src/install.rst"
-        - "docs/src/python/fast.rst"
-        - "examples/extensions/*"
-        - "mlx/array.h"
-        - "mlx/einsum.cpp"
-        - "mlx/error.h"
-        - "mlx/event.h"
-        - "mlx/fast.cpp"
-        - "mlx/fence.h"
-        - "mlx/fft.cpp"
-        - "mlx/ops.cpp"
-        - "mlx/ops.h"
-        - "mlx/primitives.cpp"
-        - "mlx/primitives.h"
-        - "mlx/scheduler.cpp"
-        - "mlx/scheduler.h"
-        - "mlx/version.h"
-        - "mlx/backend/common/load.cpp"
-        - "mlx/backend/cpu/*"
-        - "mlx/backend/cpu/simd/base_simd.h"
-        - "mlx/backend/cuda/CMakeLists.txt"
-        - "mlx/backend/cuda/cross_entropy.cu"
-        - "mlx/backend/cuda/cuda_utils.h"
-        - "mlx/backend/cuda/custom_kernel.cpp"
-        - "mlx/backend/cuda/delayload.cpp"
-        - "mlx/backend/cuda/device.cpp"
-        - "mlx/backend/cuda/device.h"
-        - "mlx/backend/cuda/dirs.cpp"
-        - "mlx/backend/cuda/event.cu"
-        - "mlx/backend/cuda/event.h"
-        - "mlx/backend/cuda/fence.cpp"
-        - "mlx/backend/cuda/jit_module.cpp"
-        - "mlx/backend/cuda/scaled_dot_product_attention.cpp"
-        - "mlx/backend/cuda/device/binary_ops.cuh"
-        - "mlx/backend/metal/compiled.cpp"
-        - "mlx/backend/metal/conv.cpp"
-        - "mlx/backend/metal/event.cpp"
-        - "mlx/backend/metal/event.h"
-        - "mlx/backend/metal/fence.cpp"
-        - "mlx/backend/metal/jit_kernels.cpp"
-        - "mlx/backend/metal/kernels.h"
-        - "mlx/backend/metal/nojit_kernels.cpp"
-        - "mlx/backend/metal/normalization.cpp"
-        - "mlx/backend/metal/primitives.cpp"
-        - "mlx/backend/metal/kernels/binary_ops.h"
-        - "mlx/backend/metal/kernels/copy.h"
-        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
-        - "mlx/backend/metal/kernels/fp_quantized_nax.metal"
-        - "mlx/backend/metal/kernels/fp8.h"
-        - "mlx/backend/metal/kernels/quantized_nax.h"
-        - "mlx/backend/metal/kernels/quantized_nax.metal"
-        - "mlx/backend/metal/kernels/rms_norm.metal"
-        - "mlx/backend/metal/kernels/sort.h"
-        - "mlx/backend/metal/kernels/utils.h"
-        - "mlx/backend/metal/kernels/reduction/*"
-        - "mlx/backend/metal/kernels/steel/attn/kernels/*"
-        - "mlx/backend/no_gpu/event.cpp"
-        - "mlx/backend/no_gpu/fence.cpp"
-        - "mlx/backend/no_gpu/primitives.cpp"
-        - "mlx/distributed/mpi/mpi.cpp"
-        - "mlx/distributed/ring/ring.cpp"
-        - "mlx/io/gguf.cpp"
-        - "python/mlx/*"
-        - "python/mlx/_distributed_utils/launch.py"
-        - "python/mlx/nn/losses.py"
-        - "python/mlx/nn/layers/normalization.py"
-        - "python/mlx/optimizers/optimizers.py"
-        - "python/src/*"
-        - "python/tests/__main__.py"
-        - "python/tests/mlx_tests.py"
-        - "python/tests/run.py"
-        - "python/tests/test_array.py"
-        - "python/tests/test_compile.py"
-        - "python/tests/test_conv_transpose.py"
-        - "python/tests/test_double.py"
-        - "python/tests/test_einsum.py"
-        - "python/tests/test_eval.py"
-        - "python/tests/test_fast.py"
-        - "python/tests/test_load.py"
-        - "python/tests/test_nn.py"
-        - "python/tests/test_ops.py"
-        - "python/tests/test_quantized.py"
-        - "python/tests/test_reduce.py"
-        - "python/tests/test_vmap.py"
-        - "tests/load_tests.cpp"
-        - "tests/ops_tests.cpp"
-    - title: "Upstream gather_mm and gather_qmm row-tile scheduling (ml-explore/mlx #4567, #4572)"
-      description: |
-        **Not fork work.** Cherry-picks of upstream commits `a2a09fd5`
-        ([ml-explore/mlx#4567](https://github.com/ml-explore/mlx/pull/4567)) and `90089440`
-        ([ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572)). The sorted
-        `gather_mm` and `gather_qmm` kernels schedule row tiles from per-expert offsets, so
-        one tile holds rows of one expert and does one matmul pass. A small kernel
-        (`gather_mm_offsets`) computes the offsets from the sorted `rhs_indices`.
-
-        The `gather_qmm` change is in `quantized.h`, `quantized_nax.h`, `fp_quantized.h`,
-        `fp_quantized_nax.h` and `quantized.cpp`, which are listed in the sections that
-        describe the fork work in those files. `utils.h` (`schedule_row_tile`) is listed in
-        the v0.32.2 section. Two differences from upstream `90089440` remain in the ported
-        kernels, because the fork base does not have the related upstream changes: the
-        floating-point kernels have no global-scale input, and the NAX kernels keep the
-        fork's bound for the last K tile. The section disappears once the fork rebases onto
-        an upstream commit at or past `90089440`.
-
-        One upstream change in these NAX kernels is reverted on purpose: the simdgroup skip
-        of [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`,
-        which arrived with the v0.32.2 changes; `#4572` kept it as
+        The fork reverts one upstream change in two NAX kernels: the simdgroup skip of
+        [ml-explore/mlx#4352](https://github.com/ml-explore/mlx/pull/4352) (`c7ff35d9`, kept by
+        [ml-explore/mlx#4572](https://github.com/ml-explore/mlx/pull/4572) as
         `sg_active = sgp_sm > 0`). `fp_gather_qmm_rhs_nax` and `affine_gather_qmm_rhs_nax` run
-        the MMA in every simdgroup again. With the skip, mixture-of-experts serving on a
-        two-Mac JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB
-        wired until a reboot. Stores stay bounded by `sgp_sm`, so the output is unchanged.
-        Keep the revert at every rebase onto upstream.
+        the MMA in every simdgroup. With the skip, mixture-of-experts serving on a two-Mac
+        JACCL pair with one NAX GPU lost all-reduce completions and left 92 to 96 GiB wired
+        until a reboot. Stores stay bounded by `sgp_sm`, so the output does not change. Keep
+        the revert at every upstream merge. Upstream added the row-tile scheduling of #4567
+        and #4572, which the fork had carried as a backport in PR #27, so only this revert
+        remains.
       globs:
-        - ".gitignore"
-        - "benchmarks/python/swiglu_bench.py"
-        - "benchmarks/python/swiglu_qmm_bench.py"
-        - "mlx/backend/metal/matmul.cpp"
-        - "mlx/backend/metal/matmul.h"
-        - "mlx/backend/metal/kernels/CMakeLists.txt"
-        - "mlx/backend/metal/kernels/gather_mm_offsets.metal"
-        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather.h"
-        - "mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_gather_nax.h"
-    - title: "Upstream JACCL and distributed fixes (ml-explore/mlx #4443, #4557, #4558)"
+        - "mlx/backend/metal/kernels/quantized_nax.h"
+        - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+    - title: "64-bit products in the JACCL ring and the vector SDPA layout check"
       description: |
-        **Not fork work.** Cherry-picks of upstream commits `7241f12e`
-        ([ml-explore/mlx#4443](https://github.com/ml-explore/mlx/pull/4443)), `42987b66`
-        ([ml-explore/mlx#4557](https://github.com/ml-explore/mlx/pull/4557)) and `8803e524`
-        ([ml-explore/mlx#4558](https://github.com/ml-explore/mlx/pull/4558)), applied without
-        changes. #4443: the JACCL ring `all_gather` gave both directions the same slice of each
-        rank's region, so the upper half of every peer's region was never transferred. The fix
-        is in `ring_impl.h`, which is listed in the JACCL section above, and comes with the
-        test `test_all_gather_rank_data`. #4557: `ReduceScatter::eval_cpu` asserted that it
-        had no inputs and then read `inputs[0]`, so a build with assertions stopped at every
-        `sum_scatter` (`mlx/backend/cpu/distributed.cpp`, listed in the v0.32.2 section).
-        #4558: a backend initialization that failed with `strict` off registered an empty
-        group, and a later `init` of that backend returned it, even with `strict` on. Its test
-        `test_strict_init_after_fallback` needs the `scoped_env` test helper, so that helper
-        alone is taken from `ec5f6ff7`
-        ([ml-explore/mlx#4474](https://github.com/ml-explore/mlx/pull/4474)) into
-        `python/tests/mlx_tests.py`, also listed in the v0.32.2 section.
-
-        Upstream `f4232c7f`
-        ([ml-explore/mlx#4607](https://github.com/ml-explore/mlx/pull/4607), a second cable
-        for the JACCL mesh) is not ported: it is a feature that restructures the mesh into one
-        `MeshImpl` per wire and moves `dispatch_wires`, so the progress guard above has to be
-        reworked for it first. The section disappears once the fork rebases onto an upstream
-        commit at or past `8803e524`.
+        The JACCL ring computes each wire's byte offset as `lr * n_wires * size`. Upstream
+        multiplies `lr` and `n_wires` as `int` before the product widens to 64 bits, and
+        compares `size_ * 2 * n_conns_` as `int`. The fork widens the first operand to
+        `int64_t`, so each product is computed in 64 bits. The values are small, so the result
+        does not change. The vector SDPA path checks a query layout with
+        `strides[2] == shape[3] * shape[bidx]`, where the product is `int` and the stride is
+        64-bit. The fork widens `shape[3]` to `int64_t` there too. These changes close the CodeQL
+        alerts `cpp/integer-multiplication-cast-to-long` in these files.
       globs:
-        - "mlx/distributed/distributed.cpp"
-        - "python/tests/mlx_distributed_tests.py"
-        - "python/tests/ring_test_distributed.py"
+        - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
+        - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
+        - "mlx/backend/metal/scaled_dot_product_attention.cpp"
+    - title: "CPU qqmm refuses a global scale"
+      description: |
+        The CPU `QQMatmul` kernel has no global scale input. Upstream passes the scales to it,
+        and the kernel ignores them, so `qqmm` with `global_scale_x` and `global_scale_w` on
+        a CPU stream returns a wrong result with no error (upstream marks this as a TODO in
+        `test_quantized.py`). The fork's CPU test pass found it: the error was about 1000
+        against a tolerance of 1e-3. `qqmm` now raises "Global scale is only supported on the
+        GPU" on a stream that is not a GPU stream, as `gather_qmm` already does.
+      globs:
+        - "mlx/ops.cpp"
+    - title: "CPU BLAS gemm clears C when beta is 0"
+      description: |
+        The CPU backend calls BLAS gemm with beta = 0 in five places: the float32, float64
+        and complex64 `matmul` wrappers in `gemms/cblas.cpp` (used by `Matmul`, `AddMM`
+        and `SegmentedMM`), `BlockMaskedMM` and `GatherMM` in `masked_mm.cpp`, and the two
+        explicit-gemm convolutions in `conv.cpp`. BLAS must not read C when beta is 0, but
+        Accelerate can (seen with M = 1). An output buffer from the allocator cache can
+        hold old data, for example packed fp4 weights that read as NaN, and NaN * 0 is NaN.
+        Upstream's `test_fp_gather_qmm_non_multiple_of_32` found it in the fork's CPU test
+        pass: its float32 reference `x @ w_sel` reused the 266240-byte buffer of the
+        previous subtest's packed weights. One helper, `clear_gemm_output` in `gemm.h`,
+        fills the exact C region of each call (rows by columns, with its `ldc`) with zeros
+        before the call. MLX's own SIMD gemm already skips C when beta is 0. This is a
+        latent upstream bug.
+      globs:
+        - "mlx/backend/cpu/gemm.h"
+        - "mlx/backend/cpu/gemms/cblas.cpp"
+        - "mlx/backend/cpu/masked_mm.cpp"
+        - "mlx/backend/cpu/conv.cpp"
+    - title: "Reference uniqueness without buffer ownership"
+      description: |
+        Upstream [ml-explore/mlx#4634](https://github.com/ml-explore/mlx/pull/4634) (`5dbe9991`)
+        makes `is_donatable()` also require that MLX owns the buffer, so the allocator never
+        reuses a wrapped external buffer. The fork's C API (`mlx_array_get_buffer_info`, field
+        `unique`) used `is_donatable()` to prove that no other array references a buffer.
+        Callers in mlx-swift-lm use that proof for paged KV segments, checkpoint memory
+        accounting and the MTP state, also for wrapped host pages. The fork adds
+        `array::is_uniquely_referenced()`: the same reference-count test without the ownership
+        test. `is_donatable()` and buffer donation do not change.
+      globs:
+        - "mlx/array.h"
+    - title: "async_eval does not throw a stream task error"
+      description: |
+        Upstream #4338 raises a CPU stream task error from `synchronize`, and its test
+        expects `async_eval` not to throw. But `StreamThread::enqueue` throws the stored
+        error on the main thread (#3742). `async_eval` enqueues several tasks: when the
+        stream thread runs a failing task before `async_eval` enqueues the next one, that
+        enqueue throws. This is a race. It failed `test_async_eval_error_in_synchronize`
+        in the fork's CPU test pass on some runs. `async_eval` now holds a
+        `scheduler::DeferStreamErrors` guard, and `enqueue` does not throw while the guard
+        lives on the thread. `synchronize` throws the error later. `eval` does not change.
+        A C++ test stores the error first, so it fails without the fix on every run.
+      globs:
+        - "mlx/scheduler.h"
+        - "mlx/scheduler.cpp"
+        - "mlx/transforms.cpp"
+        - "tests/scheduler_tests.cpp"
+    - title: "half and bfloat16 floor divide in float32"
+      description: |
+        Upstream computes float16 and bfloat16 `floor_divide`, and the `divmod` quotient, as
+        `floor(a / b)` in the half type. The quotient is rounded to the half type before the
+        floor, so a true quotient that is less than half an ulp below an integer n rounds
+        to n, and the result is n instead of n - 1. numpy's float16 divmod computes in
+        float32 from `fmod` (`npy_divmodf`) and gives n - 1. Upstream's unseeded
+        `test_divmod` fails for this reason in about 4% of runs per device. The fork now
+        computes these two operations for float16 and bfloat16 in float32 with the same
+        method as `npy_divmodf` (`mod = fmod(a, b)`, `div = (a - mod) / b`, then a floor
+        with the sign correction), and rounds the result once to the output type: in the
+        Metal `FloorDivide` (which `DivMod` uses), in the CPU scalar and SIMD
+        `floor_divide`, and in the CPU `DivMod`. float32, float64 and integer paths do not
+        change. `test_floor_divide_half_rounding_window` uses pairs in the rounding window
+        and compares with numpy on the CPU and the GPU. The CUDA kernels do not change; no
+        workflow in this fork builds CUDA.
+      globs:
+        - "mlx/backend/metal/kernels/binary_ops.h"
+        - "mlx/backend/cpu/simd/base_simd.h"
+        - "mlx/backend/cpu/simd/accelerate_simd.h"
+        - "mlx/backend/cpu/binary.cpp"
+    - title: "Seeded Python tests"
+      description: |
+        Upstream Python tests draw their random input from unseeded `mx.random` and
+        `np.random`, so each run tests other input. Some tests compare with a reference under
+        a fixed tolerance that some inputs exceed: `test_double.test_gemm` (float32 8x8
+        matmul against float64, `allclose` rtol 1e-5, atol 1e-8) fails when an element of the
+        product is near zero, because the float32 rounding of partial sums of order 1 is
+        about 1e-7 and the tolerance there is about 1e-8 + 1e-5 * |y|. It failed for 152 of
+        2000 seeds on the CPU. `test_ops.test_scans` (bfloat16 cumsum against a tri-matrix
+        sum, rtol 0.02) failed for 4 of 100 seeds on the GPU and 2 of 100 on the CPU. The
+        CPU float32 and float64 gemm paths both clear C (section "CPU BLAS gemm clears C when
+        beta is 0"), so the gemm failures are tolerance, not a stale output. `MLXTestCase.setUp`
+        now seeds both generators with 0 before each test, so each test draws the same input
+        in every run; seed 0 passes both tests. Tests that seed their own generators still
+        do. The seed search ran in PR #46 (first commit).
+      globs:
+        - "python/tests/mlx_tests.py"
     - title: "Fork tooling"
       description: |
-        The fork deletes the upstream workflows that cannot run here: the PyPI release build and
-        the documentation deploy. `build_and_test.yml` keeps the lint, sanitizer and Fedora jobs.
-        The fork deletes the jobs that run only in the upstream repository, and the composite
-        actions that only the deleted workflows and jobs used.
+        The fork deletes the upstream workflows that cannot run here: the PyPI release build,
+        the documentation deploy and the daily bypass-list update with its two scripts.
+        `build_and_test.yml` keeps the lint, sanitizer and Fedora jobs. The fork deletes the
+        jobs that run only in the upstream repository, and the composite actions that only
+        the deleted workflows and jobs used. An upstream merge adds these files again, so
+        delete them again at each merge.
 
         The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash` is
         not the merge-base with upstream, when a file the fork changes is not described by a
         section above, or when a section names files the fork no longer changes.
 
-        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on a
-        GitHub-hosted macOS runner. The `setup` action pins its actions to full commit SHAs,
-        because the organization blocks actions that are not pinned. The organization also
-        blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with Homebrew and keeps
-        the ccache files with `actions/cache`. It then runs the same tests a second time with
-        the CPU as the default device. Two Python tests check behavior that exists only in the
-        Metal backend (Winograd batch tiling and the FFT size limit), so they skip when the
-        default device is not the GPU.
+        `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on
+        GitHub-hosted macOS runners. Two jobs build in parallel. One job builds the Python
+        wheel. The other job builds the C++ library and tests, and runs the C++ tests with the
+        GPU and then with the CPU as the default device. Then it runs the standalone allocation
+        cap tests with ctest, one process for each case. The Python tests run in shard jobs:
+        one set with the GPU as the default device, and one set with the CPU.
+        `.github/scripts/fork-tests/python-shards.json` gives the shards.
+        `python_shards.py` fails a job when a test file is in no shard or in two shards, and
+        the last job fails when a test ran in two shards. The last job also merges the coverage
+        profiles of all jobs into one report. The `setup` action pins its actions to full
+        commit SHAs, because the organization blocks actions that are not pinned. The
+        organization also blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with
+        Homebrew and restores the ccache files with `actions/cache`. The `fork-build-cache`
+        action saves the ccache files. It also keeps a cache of the compiled Metal kernels: the
+        build jobs put `metal-cache/xcrun` first in `PATH`, and that script gives the kernel
+        compile and link commands a cache. The key of a kernel is its preprocessed source,
+        its arguments, the metal compiler version and the SDK build. The ccache key holds
+        the clang version, and ccache checks the compiler content of each object. Three Python tests check behavior that exists only in
+        the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
+        so they skip when the default device is not the GPU. Upstream's
+        `test_init_reduce_large_output` skips only when the default device cannot hold its
+        4 GiB output: on the GPU when `max_buffer_length` is less than 4 GiB, on the CPU when
+        `memory_size` is less than 16 GiB. The hosted `macos-26` runner caps Metal buffers at
+        3.5 GiB. The test cannot be smaller: it is the regression test for ml-explore/mlx
+        #4437, which needs 2^32 output elements (more than one 32-bit grid dimension), and
+        bool outputs of one byte each give 4 GiB. David ruled on 2026-10-23 to keep this skip
+        and not to use a larger runner. When a Python test entry fails, the job prints the end of
+        its log at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
+        `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
@@ -680,13 +708,21 @@ def:
         - ".github/workflows/build_and_test.yml"
         - ".github/workflows/documentation.yml"
         - ".github/workflows/release.yml"
+        - ".github/workflows/update_bypass_list.yml"
+        - ".github/scripts/find-eligible-contributors.js"
+        - ".github/scripts/update-bypass-list.js"
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "README.md"
         - ".github/actions/setup/action.yml"
+        - ".github/actions/fork-build-cache/action.yml"
+        - ".github/scripts/fork-tests/metal-cache/xcrun"
+        - ".github/scripts/fork-tests/python-shards.json"
+        - ".github/scripts/fork-tests/python_shards.py"
         - ".github/workflows/fork-tests.yml"
         - "python/tests/test_conv.py"
         - "python/tests/test_fft.py"
+        - "python/tests/test_reduce.py"
 
 # ignored globally, does not count towards line count
 ignore:

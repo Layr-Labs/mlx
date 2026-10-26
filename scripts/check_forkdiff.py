@@ -153,8 +153,8 @@ def check_base(repo: Path, base: str, head: str, upstream_ref: str | None) -> li
         git("merge-base", "--is-ancestor", base, upstream_ref, cwd=repo)
     except RuntimeError:
         problems.append(
-            f"base.hash {base[:12]} is not an ancestor of {upstream_ref} — it must name "
-            "a commit on upstream main, not a fork commit."
+            f"base.hash {base[:12]} is not an ancestor of {upstream_ref} — it must "
+            "name a commit on upstream main, not a fork commit."
         )
     merge_base = git("merge-base", head, upstream_ref, cwd=repo)
     if merge_base != base:
@@ -183,10 +183,11 @@ def review_status(problems: list[str], detail: str) -> list[dict]:
                     ),
                     "detail": detail,
                     "how_to_fix": (
-                        "See docs/forkdiff.md. After a rebase: set base.hash to "
-                        "`git merge-base HEAD upstream/main`. For new files: add them to "
-                        "the section that explains them (or to a global `ignore` if they "
-                        "are not code). Then run `python3 scripts/check_forkdiff.py "
+                        "See FORKDIFF.md. After an upstream merge: set base.hash "
+                        "to `git merge-base HEAD upstream/main`. For new files: add "
+                        "them to the section that explains them (or to a global "
+                        "`ignore` if they are not code). Then run "
+                        "`python3 scripts/check_forkdiff.py "
                         "--upstream-ref upstream/main` locally."
                     ),
                 }
@@ -233,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
     uncovered, stale, hits = check_coverage(paths, globs)
     if uncovered:
         problems.append(
-            f"{len(uncovered)} changed file(s) are not described by any fork.yaml section"
+            f"{len(uncovered)} changed file(s) are not described by any fork.yaml "
+            "section"
         )
         lines.append("Uncovered files (add each to the section that explains it):")
         lines += [f"  - {p}" for p in uncovered]

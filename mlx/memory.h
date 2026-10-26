@@ -1,12 +1,14 @@
-// Copyright © 2025 Apple Inc.
+// Copyright © 2025-2026 Apple Inc.
 
 #pragma once
 
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
+#include <vector>
 
 #include "mlx/api.h"
+#include "mlx/array.h"
 #include "mlx/backend/common/process_allocation_cap.h"
 
 namespace mlx::core {
@@ -100,6 +102,14 @@ MLX_API AllocationFootprintPolicy get_allocation_footprint_policy() noexcept;
  * */
 MLX_API size_t get_active_memory();
 
+/* Get the size of the buffers backing the given arrays in bytes.
+ *
+ * Each unique buffer is counted once. The full allocator size of each buffer
+ * is used, which can exceed the logical size of its arrays. The arrays must be
+ * evaluated before calling this function.
+ * */
+MLX_API size_t get_array_buffer_size(const std::vector<array>& arrays);
+
 /* Get the peak amount of used memory in bytes.
  *
  * The maximum memory used recorded from the beginning of the program
@@ -141,6 +151,9 @@ MLX_API size_t get_resource_limit();
  *
  * When Metal is available the memory limit defaults to 1.5 times the maximum
  * recommended working set size reported by the device.
+ *
+ * On native Windows with CUDA the memory limit is also bounded by the current
+ * video memory budget reported by the operating system.
  *
  * Returns the previous memory limit.
  * */

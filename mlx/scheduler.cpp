@@ -39,6 +39,20 @@ void clear_streams() {
 
 namespace scheduler {
 
+namespace {
+
+thread_local int defer_stream_errors = 0;
+
+} // namespace
+
+DeferStreamErrors::DeferStreamErrors() {
+  ++defer_stream_errors;
+}
+
+DeferStreamErrors::~DeferStreamErrors() {
+  --defer_stream_errors;
+}
+
 struct StreamThread {
   std::mutex mtx;
   std::queue<std::function<void()>> q;
@@ -76,7 +90,7 @@ struct StreamThread {
   }
 
   void enqueue(std::function<void()> f) {
-    if (is_main_thread()) {
+    if (is_main_thread() && defer_stream_errors == 0) {
       error.check();
     }
     {

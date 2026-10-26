@@ -142,10 +142,15 @@ void mesh_collectives() {
         pair.nodes[rank]->all_gather(
             reinterpret_cast<const char*>(input[rank].data()),
             reinterpret_cast<char*>(output[rank].data()),
+            count * sizeof(float),
             count * sizeof(float));
       } else {
         pair.nodes[rank]->sum_scatter(
-            input[rank].data(), output[rank].data(), count, fixture::Add{});
+            input[rank].data(),
+            output[rank].data(),
+            count,
+            count,
+            fixture::Add{});
       }
     };
     fixture::both([&] { run(0); }, [&] { run(1); });

@@ -360,6 +360,20 @@ def:
       globs:
         - "mlx/backend/metal/kernels/quantized_nax.h"
         - "mlx/backend/metal/kernels/fp_quantized_nax.h"
+    - title: "JIT instantiation of the NAX head-dim split attention kernel"
+      description: |
+        `get_steel_attention_nax_kernel` builds the JIT source of both `attention_nax` and
+        `attention_nax_dsplit`, and upstream passes `bv` to both. `attention_nax_dsplit` has
+        no `BV` template parameter (its value head dim is `BD`), so every later argument
+        shifts by one, an integer lands in the `MaskType` slot, and the library does not
+        compile. JIT builds such as mlx-swift's compile this kernel at runtime for full
+        attention with head dim 256 or 512 and at least 1,024 query tokens on NAX GPUs, and
+        the caller's process exited with "Unable to build metal library from source". The
+        fork passes the split kernel the same arguments as its instantiation in
+        `steel_attention_nax.metal`; the non-split kernel is unchanged. Builds that use the
+        precompiled metallib were not affected. This is a latent upstream bug (PR #48).
+      globs:
+        - "mlx/backend/metal/jit_kernels.cpp"
     - title: "64-bit products in the JACCL ring and the vector SDPA layout check"
       description: |
         The JACCL ring computes each wire's byte offset as `lr * n_wires * size`. Upstream

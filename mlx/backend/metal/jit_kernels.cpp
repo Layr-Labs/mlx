@@ -1421,8 +1421,10 @@ MTL::ComputePipelineState* get_steel_attention_nax_kernel(
     bool split_d) {
   const auto& lib_name = kernel_name;
   auto lib = d.get_library(lib_name, [&]() {
-    std::string kernel_source;
-    // attention_nax_dsplit has no BV parameter (its value width is BD).
+    // attention_nax_dsplit has no BV parameter (its value head dim is BD), so
+    // it takes the same arguments as its instantiation in
+    // steel_attention_nax.metal. Passing bv shifts every later argument and
+    // the library fails to compile.
     auto template_def = split_d ? get_template_definition(
                                       lib_name,
                                       "attention_nax_dsplit",
@@ -1444,6 +1446,7 @@ MTL::ComputePipelineState* get_steel_attention_nax_kernel(
                                       wm,
                                       wn,
                                       get_type_string(m.dtype()));
+    std::string kernel_source;
     concatenate(
         kernel_source,
         metal::utils(),

@@ -56,8 +56,16 @@ void ring_success_end(int wires) {
       [&] { pair.nodes[1]->recv(output.data(), 99, 0, wires); });
   pair.fabric.require_drained();
 }
+// The guard samples the startup deadline once in PROGRESS_SAMPLE_POLLS empty
+// polls. With the default 1 ms idle wait per empty poll, that is 1024 sleeps,
+// which a hosted runner stretches past the fake poll's 8 s deadline. The
+// expiry cases poll without a sleep, as the hardware does.
+void spin(fixture::Fabric& fabric) {
+  fabric.idle_wait = std::chrono::milliseconds(0);
+}
 void mesh_expiry_cleanup() {
   fixture::MeshPair pair;
+  spin(pair.fabric);
   auto& node = *pair.nodes[0];
   node.begin_startup_wait_budget(1);
   std::this_thread::sleep_for(std::chrono::milliseconds(3));
@@ -75,6 +83,7 @@ void mesh_expiry_cleanup() {
 }
 void ring_expiry_cleanup(int wires) {
   fixture::RingPair pair(wires);
+  spin(pair.fabric);
   auto& node = *pair.nodes[0];
   node.begin_startup_wait_budget(1);
   std::this_thread::sleep_for(std::chrono::milliseconds(3));

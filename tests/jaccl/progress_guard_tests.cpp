@@ -1241,7 +1241,7 @@ void default_exit_check(const char* program) {
 } // namespace
 
 // One mode in each process:
-//   checks        all cases with a limit of 250 ms
+//   checks        all cases with a limit of 2000 ms
 //   disabled      a limit of 0: a stalled call continues to wait
 //   alias         the limit comes from MLX_JACCL_PROGRESS_TIMEOUT_MS
 //   precedence    JACCL_PROGRESS_TIMEOUT_MS is used before the alias
@@ -1267,8 +1267,11 @@ int main(int count, char** arguments) {
     setenv("JACCL_TIMEOUT_ACTION", "throw", 1);
   }
   if (mode == "checks") {
-    setenv(name, "250", 1);
-    value(250);
+    // Every case scales with the limit: below-limit gaps are limit / 2 and
+    // over-limit stalls must trip in [limit, limit + slack]. 2000 ms leaves a
+    // hosted runner 1 s of scheduling delay inside a below-limit gap.
+    setenv(name, "2000", 1);
+    value(2000);
     silent_peer();
     lost_completion();
     failed_completion();

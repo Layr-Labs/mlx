@@ -50,6 +50,7 @@ struct Ledger {
   std::atomic<int> deregister_calls{0};
   std::atomic<size_t> completion_high_water{0};
   std::atomic<bool> refuse_destroy{false};
+  std::atomic<bool> refuse_deregister{false};
 };
 
 Ledger& ledger();

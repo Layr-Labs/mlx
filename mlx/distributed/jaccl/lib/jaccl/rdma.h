@@ -115,12 +115,19 @@ class SharedBuffer {
 
   void register_to_protection_domain(ibv_pd* protection_domain);
 
-  // Unpin the memory. The buffer cannot be posted after this call.
+  // Unpin the memory. The buffer cannot be posted after this call. A region
+  // that the verbs refuse to deregister is reported and kept, so that the
+  // destructor tries again.
   void deregister() {
-    for (auto& [pd, mr] : memory_regions_) {
-      ibv().dereg_mr(mr);
+    for (auto it = memory_regions_.begin(); it != memory_regions_.end();) {
+      if (int status = ibv().dereg_mr(it->second); status != 0) {
+        std::cerr << IBV_TAG << " Could not deregister a memory region ("
+                  << status << ")" << std::endl;
+        ++it;
+      } else {
+        it = memory_regions_.erase(it);
+      }
     }
-    memory_regions_.clear();
   }
 
   size_t size() const {

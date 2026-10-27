@@ -86,6 +86,9 @@ int destroy_completion_queue(ibv_cq* queue) {
 
 int deregister(ibv_mr* region) {
   fixture::ledger().deregister_calls++;
+  if (fixture::ledger().refuse_deregister) {
+    return 16;
+  }
   drop(region);
   return 0;
 }

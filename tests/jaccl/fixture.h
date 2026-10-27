@@ -83,12 +83,21 @@ inline void buffers(
   }
 }
 
+// The failure flag of a mesh group, which its wires share.
+using Flag = std::shared_ptr<std::atomic<bool>>;
+inline Flag flag() {
+  return std::make_shared<std::atomic<bool>>(false);
+}
+
 struct MeshPair {
   Fabric fabric;
   std::array<std::vector<jaccl::Connection>, 2> links;
   std::array<std::vector<jaccl::SharedBuffer>, 2> scratch, scatter;
   std::array<std::unique_ptr<jaccl::MeshImpl>, 2> nodes;
-  MeshPair() {
+  MeshPair() : MeshPair({flag(), flag()}) {}
+  // `failed` holds the failure flag of each rank. Two pairs that get the same
+  // flags are two wires of one group.
+  explicit MeshPair(std::array<Flag, 2> failed) {
     for (auto& rank : links) {
       connections(rank, 2);
     }
@@ -97,7 +106,7 @@ struct MeshPair {
       buffers(scratch[rank], NUM_BUFFERS * 2, links[rank]);
       buffers(scatter[rank], NUM_BUFFERS * 4, links[rank]);
       nodes[rank] = std::make_unique<jaccl::MeshImpl>(
-          rank, 2, links[rank], scratch[rank], scatter[rank]);
+          rank, 2, links[rank], scratch[rank], scatter[rank], failed[rank]);
     }
   }
 };

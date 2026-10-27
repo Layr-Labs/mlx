@@ -24,14 +24,17 @@ class MeshImpl {
       int size,
       std::vector<Connection>& conns,
       std::vector<SharedBuffer>& buffers,
-      std::vector<SharedBuffer>& scatter_buffers)
+      std::vector<SharedBuffer>& scatter_buffers,
+      std::shared_ptr<std::atomic<bool>> failed =
+          std::make_shared<std::atomic<bool>>(false))
       : rank_(rank),
         size_(size),
         connections_(conns),
         buffers_(buffers),
         scatter_buffers_(scatter_buffers),
         staging_mem_(
-            std::make_unique<char[]>(MESH_PIPELINE * MAX_BUFFER_SIZE)) {}
+            std::make_unique<char[]>(MESH_PIPELINE * MAX_BUFFER_SIZE)),
+        failed_(std::move(failed)) {}
 
   MeshImpl() : rank_(0), size_(1) {}
 
@@ -239,9 +242,9 @@ class MeshImpl {
 
     // Counters to maintain the state of transfers
     int in_flight = 0;
-    int read_offset = 0;
+    int64_t read_offset = 0;
     int completed_send_count[PIPELINE] = {0};
-    int write_offset[MESH_MAX_PEERS] = {0};
+    int64_t write_offset[MESH_MAX_PEERS] = {0};
 
     // Prefill the pipeline
     int buff = 0;
@@ -777,8 +780,10 @@ class MeshImpl {
   std::unique_ptr<char[]> staging_mem_;
   std::unique_ptr<StartupWaitBudget> wait_budget_ =
       std::make_unique<StartupWaitBudget>();
-  std::unique_ptr<std::atomic<bool>> failed_ =
-      std::make_unique<std::atomic<bool>>(false);
+  // Shared by the wires of one group, so that a failure on one wire stops the
+  // others and closes the group for every later call.
+  std::shared_ptr<std::atomic<bool>> failed_ =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 } // namespace jaccl

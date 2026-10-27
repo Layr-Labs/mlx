@@ -470,6 +470,17 @@ array eval_impl(std::vector<array> outputs, bool async) {
       auto maybe_update_fence = [&fences, &event_fences, &needs_fence, stream](
                                     const array& a) {
         if (auto nf = needs_fence.find(a.id()); nf != needs_fence.end()) {
+          // The fast update comes first: with cross_device it can move `a`
+          // (CUDA moves it to unified memory), and the event update must
+          // come after that move so that event waiters see the moved data.
+          if (nf->second.fast) {
+            auto it = fences.find(stream.index);
+            if (it == fences.end()) {
+              it = fences.emplace(stream.index, Fence{stream}).first;
+            }
+            nf->second.fast_value =
+                it->second.update(stream, a, nf->second.cross_device);
+          }
           if (nf->second.event) {
             auto it = event_fences.find(stream.index);
             if (it == event_fences.end()) {
@@ -479,22 +490,14 @@ array eval_impl(std::vector<array> outputs, bool async) {
             }
             nf->second.event_value = it->second.update(stream, a, false);
           }
-          if (nf->second.fast) {
-            auto it = fences.find(stream.index);
-            if (it == fences.end()) {
-              it = fences.emplace(stream.index, Fence{stream}).first;
-            }
-            nf->second.fast_value =
-                it->second.update(stream, a, nf->second.cross_device);
-            // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, so the
-            // CPU stream starts when `a` is ready, not when the buffer is
-            // full.
-            static const bool eager_commit =
-                env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
-            if (eager_commit && nf->second.cross_device &&
-                stream.device == Device::gpu) {
-              gpu::finalize(stream);
-            }
+          // MLX_EAGER_FENCE_COMMIT=1: commit the GPU work now, after both
+          // updates, so the CPU stream starts when `a` is ready, not when
+          // the buffer is full.
+          static const bool eager_commit =
+              env::get_var("MLX_EAGER_FENCE_COMMIT", 0);
+          if (eager_commit && nf->second.fast && nf->second.cross_device &&
+              stream.device == Device::gpu) {
+            gpu::finalize(stream);
           }
         }
       };

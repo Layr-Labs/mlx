@@ -102,11 +102,42 @@ int main(int argc, char** argv) {
         std::cout << "{\"event\":\"case\",\"streams\":\"two-gpu\",\"width\":"
                   << width << ",\"layers\":" << layers << "}" << std::endl;
       }
+      // Both GPU streams feed the CPU in the same chain, so no GPU stream may
+      // spin on the CPU work: the producer waits for the CPU result on an
+      // event of the CPU stream, and the CPU stream waits for both.
+      for (int width : {1, 2, 4}) {
+        {
+          auto x = zeros({width, 5120}, float32, producer);
+          for (int layer = 0; layer < layers; ++layer) {
+            auto partial = add(x, array(1.0f), producer);
+            // (x - x) + 2 = 2, exact in float32.
+            auto gate = add(subtract(x, x, side), array(2.0f), side);
+            auto reduced = add(partial, gate, host);
+            x = add(reduced, array(3.0f), producer);
+          }
+          eval(x);
+          synchronize(producer);
+          synchronize(side);
+          synchronize(host);
+          const float* values = x.data<float>();
+          for (size_t i = 0; i < x.size(); ++i) {
+            if (values[i] != layers * 6.0f) {
+              throw std::runtime_error("exact two-GPU-to-CPU chain mismatch");
+            }
+            ++comparisons;
+          }
+        }
+        synchronize(producer);
+        synchronize(side);
+        synchronize(host);
+        std::cout << "{\"event\":\"case\",\"streams\":\"two-to-cpu\",\"width\":"
+                  << width << ",\"layers\":" << layers << "}" << std::endl;
+      }
     }
     synchronize(producer);
     synchronize(host);
     clear_streams();
-    std::cout << "{\"event\":\"passed\",\"cases\":" << (cpu_only ? 15 : 18)
+    std::cout << "{\"event\":\"passed\",\"cases\":" << (cpu_only ? 15 : 21)
               << ",\"comparisons\":" << comparisons << ",\"device\":\""
               << (cpu_only ? "cpu" : "gpu") << "\"}" << std::endl;
     return 0;

@@ -34,7 +34,8 @@ GPU stream waiting for CPU work that can itself wait for another GPU stream.
 The other CPU-to-GPU and GPU-to-CPU waits keep the fast path.
 
 The standalone ``metal_fence_chain`` test checks exact GPU-to-CPU-to-GPU chains
-with shared side roots and request-array retirement. CTest runs separate
+with shared side roots, chains where two GPU streams feed the CPU, and
+request-array retirement. CTest runs separate
 processes with fast synchronization and several command-buffer sizes, with a
 60-second timeout per process. This component test does not qualify distributed
 collective order, a transport, or an installed model service.

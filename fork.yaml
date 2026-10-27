@@ -419,7 +419,8 @@ def:
         path. Without it, a spinning wait can run before a GPU producer needed
         by the CPU work it awaits. Arithmetic and command-buffer limits do not
         change. A standalone bounded test checks exact GPU-to-CPU-to-GPU chains,
-        shared side roots and request-array retirement at several buffer sizes.
+        shared side roots, chains where two GPU streams feed the CPU, and request-array
+        retirement at several buffer sizes.
         Fork Tests executes the three CTest processes on its Metal runner and
         rejects a missing test registration. This component coverage does not
         establish an installed RDMA model fix.
@@ -438,8 +439,10 @@ def:
         the first one spins, so the producing queue can starve and both stop. An eval whose
         graph spans two GPU streams therefore waits for the other GPU stream on a shared
         event (the non-fast path), while CPU <-> GPU waits keep the fast path. An array read
-        both by the CPU and by another GPU stream updates both fences. Synchronization only:
-        results do not change.
+        both by the CPU and by another GPU stream updates both fences, the fast fence first:
+        its cross-device update can move the array (CUDA moves it to unified memory), and the
+        event must be recorded after the move. `MLX_EAGER_FENCE_COMMIT` commits after both
+        updates. Synchronization only: results do not change.
       globs:
         - "mlx/fence.h"
         - "mlx/transforms.cpp"

@@ -372,7 +372,10 @@ def:
         kernel starts after every pass and kernel encoded before it (`wait_for_all_pending`
         and a barrier), as the `fence_wait` pass does, so the CPU work it waits for never
         waits for it. MLX keeps the separate wait when the input is copied first, when another
-        GPU stream feeds the CPU in the same eval, and while exporting. The declaration is not
+        GPU stream feeds the CPU in the same eval, and while exporting. A fenced input is
+        always in the device address space, never `constant`, because the GPU may load a
+        small constant buffer before the kernel's wait. The kernel takes its waits before any
+        argument check can throw, so no wait is left for a later kernel. The declaration is not
         part of the exported schema. Synchronization only: results do not change.
 
         The `fence_wait` dispatch itself makes its pass wait for every pass in flight

@@ -156,10 +156,16 @@ std::string write_signature(
     bool is_mutable =
         std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
         mutable_inputs.end();
+    // A fenced input is read after the kernel waits for its CPU producer,
+    // so it stays in the device address space: the GPU may load a small
+    // constant buffer before the kernel runs, which is before the wait.
+    bool is_fenced =
+        std::find(fenced_inputs.begin(), fenced_inputs.end(), i) !=
+        fenced_inputs.end();
     auto dtype = get_type_string(arr.dtype());
-    std::string location = !is_mutable && arr.size() < max_constant_array_size
-        ? "constant"
-        : "device";
+    bool in_constant =
+        !is_mutable && !is_fenced && arr.size() < max_constant_array_size;
+    std::string location = in_constant ? "constant" : "device";
     std::string ref = !is_mutable && arr.ndim() == 0 ? "&" : "*";
     kernel_source += is_mutable ? "  " : "  const ";
     kernel_source += location;

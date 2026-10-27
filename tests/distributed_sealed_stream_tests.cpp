@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -245,4 +246,20 @@ TEST_CASE("sealed exchange errors leave no callback owner running") {
   CHECK(fixture.local.active == 0);
   CHECK(fixture.local.seals == fixture.layout.count);
   CHECK(fixture.local.opens == 1);
+}
+
+TEST_CASE("sealed frames longer than an int array shape are refused") {
+  const size_t longest = std::numeric_limits<int>::max();
+  CHECK(detail::frame_extent(0, "[test]") == 0);
+  CHECK(
+      detail::frame_extent(longest, "[test]") ==
+      std::numeric_limits<int>::max());
+  CHECK_THROWS_WITH_AS(
+      detail::frame_extent(longest + 1, "[test]"),
+      "[test] a sealed frame is longer than 2^31 - 1 bytes",
+      std::invalid_argument);
+  // A float32 partial of 1 GiB gathers two frames of more than 1 GiB.
+  CHECK_THROWS_AS(
+      detail::frame_extent(2 * ((size_t(1) << 30) + 16), "[test]"),
+      std::invalid_argument);
 }

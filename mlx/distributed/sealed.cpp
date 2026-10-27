@@ -201,9 +201,11 @@ void SealedAllSum::eval_cpu(
   }
   size_t n = in.nbytes();
   size_t frame = n + codec_.overhead;
-  array sealed({static_cast<int>(frame)}, uint8, nullptr, {});
+  int sealed_len = detail::frame_extent(frame, "[all_sum_sealed]");
+  int gathered_len = detail::frame_extent(2 * frame, "[all_sum_sealed]");
+  array sealed({sealed_len}, uint8, nullptr, {});
   sealed.set_data(allocator::malloc(frame));
-  array gathered({static_cast<int>(2 * frame)}, uint8, nullptr, {});
+  array gathered({gathered_len}, uint8, nullptr, {});
   gathered.set_data(allocator::malloc(2 * frame));
   array peer(in.shape(), in.dtype(), nullptr, {});
   peer.set_data(allocator::malloc(n));
@@ -303,9 +305,10 @@ void SealedAllSum::eval_streamed(const array& in, array& out) {
     default:
       throw std::runtime_error("[all_sum_sealed] unsupported dtype");
   }
-  array sealed({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  int frame_len = detail::frame_extent(layout.frame(), "[all_sum_sealed]");
+  array sealed({frame_len}, uint8, nullptr, {});
   sealed.set_data(allocator::malloc(layout.frame()));
-  array received({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  array received({frame_len}, uint8, nullptr, {});
   received.set_data(allocator::malloc(layout.frame()));
 
   int rank = group().rank();
@@ -383,9 +386,10 @@ void run_streamed(
     throw std::invalid_argument(
         std::string(name) + " a frame needs more than 65,535 sealed pieces");
   }
-  array sealed({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  int frame_len = detail::frame_extent(layout.frame(), name);
+  array sealed({frame_len}, uint8, nullptr, {});
   sealed.set_data(allocator::malloc(layout.frame()));
-  array received({static_cast<int>(layout.frame())}, uint8, nullptr, {});
+  array received({frame_len}, uint8, nullptr, {});
   received.set_data(allocator::malloc(layout.frame()));
   int rank = group.rank();
   uint64_t counter = next_sealed_counter();
@@ -440,9 +444,11 @@ void run_gathered(
     detail::AddPieceFn add,
     const char* name) {
   size_t frame = n + codec.overhead;
-  array sealed({static_cast<int>(frame)}, uint8, nullptr, {});
+  int sealed_len = detail::frame_extent(frame, name);
+  int gathered_len = detail::frame_extent(2 * frame, name);
+  array sealed({sealed_len}, uint8, nullptr, {});
   sealed.set_data(allocator::malloc(frame));
-  array gathered({static_cast<int>(2 * frame)}, uint8, nullptr, {});
+  array gathered({gathered_len}, uint8, nullptr, {});
   gathered.set_data(allocator::malloc(2 * frame));
   int rank = group.rank();
   uint64_t counter = next_sealed_counter();

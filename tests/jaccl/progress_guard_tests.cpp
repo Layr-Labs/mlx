@@ -614,6 +614,77 @@ void refused_destroy() {
       });
 }
 
+// When the verbs refuse to deregister a region, the failure is reported and
+// the region stays registered, so that the destructor tries again.
+void refused_deregister() {
+  check(
+      "refused deregister: the error is printed, the region stays for the destructor",
+      [&] {
+        fixture::MeshPair pair;
+        auto& buffer = pair.scratch[0].front();
+        auto* domain = pair.links[0][1].protection_domain;
+        std::ostringstream captured;
+        auto* previous = std::cerr.rdbuf(captured.rdbuf());
+        fixture::ledger().refuse_deregister = true;
+        buffer.deregister();
+        fixture::ledger().refuse_deregister = false;
+        std::cerr.rdbuf(previous);
+        fixture::require(
+            captured.str() ==
+                "[jaccl] Could not deregister a memory region (16)\n",
+            "The refused deregistration was not reported");
+        fixture::require(
+            buffer.local_key(domain) == 1,
+            "A region that was not deregistered was dropped");
+        buffer.deregister();
+        bool dropped = false;
+        try {
+          buffer.local_key(domain);
+        } catch (const std::out_of_range&) {
+          dropped = true;
+        }
+        fixture::require(dropped, "A deregistered region was kept");
+      });
+}
+
+// The wires of one mesh group share the failure flag: a failure on one wire
+// stops a call that waits on the other wire, and the group then refuses
+// every later call on every wire.
+void mesh_wires_share_failure() {
+  check(
+      "mesh wires: a failed wire stops the other wire, then both refuse",
+      [&] {
+        const auto failed = std::array{fixture::flag(), fixture::flag()};
+        fixture::MeshPair first(failed), second(failed);
+        arm(first.fabric);
+        arm(second.fabric);
+        fixture::endpoint(second.links[1][0]).fault.poll_error = true;
+        std::vector<char> out(100, 0x29), other(100, 0x29);
+        // Rank 0 sends nothing, so the receive on the first wire waits.
+        auto waiting = std::async(std::launch::async, [&] {
+          return attempt([&] { first.nodes[1]->recv(out.data(), 100, 0); });
+        });
+        std::this_thread::sleep_for(milliseconds(limit / 5));
+        const Outcome failure =
+            attempt([&] { second.nodes[1]->recv(other.data(), 100, 0); });
+        const Outcome stopped = waiting.get();
+        if (!failure.threw ||
+            failure.message.rfind("[jaccl] mesh recv: ", 0) != 0) {
+          mismatch("the call on the failed wire did not fail", failure);
+        }
+        if (!stopped.threw || stopped.message != jaccl::WireStopped().what()) {
+          mismatch("the waiting wire was not stopped", stopped);
+        }
+        if (stopped.ms >= limit) {
+          mismatch("the waiting wire ran into the limit", stopped);
+        }
+        expect_closed(
+            attempt([&] { first.nodes[1]->recv(out.data(), 100, 0); }));
+        expect_closed(
+            attempt([&] { second.nodes[1]->recv(other.data(), 100, 0); }));
+      });
+}
+
 // Traffic that waits, but less than the limit, is not touched.
 void below_limit() {
   check("below the limit: a peer that starts late is waited for", [&] {
@@ -1203,6 +1274,8 @@ int main(int count, char** arguments) {
     lost_completion();
     failed_completion();
     refused_destroy();
+    refused_deregister();
+    mesh_wires_share_failure();
     below_limit();
     pool_wire_error();
   } else if (mode == "disabled") {

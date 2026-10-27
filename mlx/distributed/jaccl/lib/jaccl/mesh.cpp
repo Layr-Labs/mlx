@@ -32,10 +32,16 @@ MeshGroup::MeshGroup(
   // Make sure every node has reached here before continuing
   side_channel_.barrier();
 
-  // Create the mesh implementation objects
+  // Create the mesh implementation objects. The wires share one failure flag.
+  auto failed = std::make_shared<std::atomic<bool>>(false);
   for (int w = 0; w < n_wires_; w++) {
     meshes_.emplace_back(
-        rank_, size_, connections_[w], buffers_[w], scatter_buffers_[w]);
+        rank_,
+        size_,
+        connections_[w],
+        buffers_[w],
+        scatter_buffers_[w],
+        failed);
   }
 }
 

@@ -21,6 +21,14 @@ void CustomKernel::eval_gpu(
   (void)is_precompiled_;
   (void)shared_memory_;
 
+  // Take the waits on fenced inputs that Fence::wait_in_consumer gave to this
+  // kernel before any check below can throw, so that no wait is left for a
+  // later kernel at the same address.
+  std::vector<metal::FencedInput> fenced;
+  if (!fenced_inputs_.empty()) {
+    fenced = metal::take_fenced_inputs(this);
+  }
+
   const auto [tx, ty, tz] = threadgroup_;
   const auto [gx, gy, gz] = grid_;
   if (tx <= 0 || ty <= 0 || tz <= 0 || gx < 0 || gy < 0 || gz < 0) {
@@ -57,19 +65,14 @@ void CustomKernel::eval_gpu(
     }
   }
 
-  // Waits on fenced inputs that Fence::wait_in_consumer gave to this kernel.
   // An input that is copied first is read before the kernel: wait for it now.
-  std::vector<metal::FencedInput> fenced;
-  if (!fenced_inputs_.empty()) {
-    fenced = metal::take_fenced_inputs(this);
-    for (auto it = fenced.begin(); it != fenced.end();) {
-      auto& in = inputs[it->input];
-      if (ensure_row_contiguous_ && !in.flags().row_contiguous) {
-        metal::encode_fence_wait(s, in, *it);
-        it = fenced.erase(it);
-      } else {
-        ++it;
-      }
+  for (auto it = fenced.begin(); it != fenced.end();) {
+    auto& in = inputs[it->input];
+    if (ensure_row_contiguous_ && !in.flags().row_contiguous) {
+      metal::encode_fence_wait(s, in, *it);
+      it = fenced.erase(it);
+    } else {
+      ++it;
     }
   }
 

@@ -18,7 +18,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 #include "mlx/distributed/sealed.h"
 
@@ -29,6 +32,16 @@ using ArrivedFn = std::function<void(size_t)>;
 // exchange(send, recv, bytes, ready, arrived): see GroupImpl::exchange.
 using ExchangeFn = std::function<
     void(const char*, char*, size_t, const ReadyFn&, const ArrivedFn&)>;
+
+// The length of a uint8 frame array of `bytes` bytes. Array shapes are int,
+// so a longer frame is refused instead of wrapping to a wrong length.
+inline int frame_extent(size_t bytes, const char* name) {
+  if (bytes > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    throw std::invalid_argument(
+        std::string(name) + " a sealed frame is longer than 2^31 - 1 bytes");
+  }
+  return static_cast<int>(bytes);
+}
 
 // The streamed frame of an n-byte partial.
 struct PieceLayout {

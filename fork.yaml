@@ -343,10 +343,14 @@ def:
         the group cannot be reopened in the process. The ring keeps its own guarded
         `dispatch_wires`, which also reports the errors of the ring pool wires that it used
         to drop. A mesh with more than one wire (upstream's second cable) has one `MeshImpl`,
-        and so one guard, for each wire: a failed wire closes its own queue pairs and buffers,
-        and later calls that use that wire are refused. The mesh runs its wires through the
+        and so one guard, for each wire, and the wires of a `MeshGroup` share one failure
+        flag: a failed wire closes its own queue pairs and buffers, a wire that waits in the
+        same call stops with `WireStopped` and closes its own, and every later call on the
+        group is refused. The mesh runs its wires through the
         shared `dispatch_wires` in `threadpool.h`, which upstream lets drop the error of a
-        pool wire; the fork throws that error after all wires returned. Each completion
+        pool wire; the fork throws that error after all wires returned. A region that the
+        verbs refuse to deregister is reported and kept for the destructor, as a refused
+        queue pair or completion queue is. Each completion
         queue has four times the entries its queue pair can have outstanding
         (`COMPLETION_QUEUE_DEPTH`, used by `mesh.cpp` and `ring.cpp` when they create the
         queues). MLX's `jaccl.cpp` registers the release hook each time it wraps a new JACCL
@@ -364,7 +368,8 @@ def:
         now remembers the index where the advertised GID was found and sends from it;
         behaviour is unchanged where that index is 1.
 
-        `tests/jaccl` is a separate CMake project that the MLX build does not build. It
+        `tests/jaccl` is a separate CMake project that the MLX build does not build; the
+        `build-cpp` job of Fork Tests builds it and runs it. It
         compiles the real mesh, ring and RDMA headers against simulated verbs and checks the
         frame tails, the guard and the release path under ASan, UBSan and TSan.
       globs:
@@ -486,7 +491,10 @@ def:
         kernel starts after every pass and kernel encoded before it (`wait_for_all_pending`
         and a barrier), as the `fence_wait` pass does, so the CPU work it waits for never
         waits for it. MLX keeps the separate wait when the input is copied first, when another
-        GPU stream feeds the CPU in the same eval, and while exporting. The declaration is not
+        GPU stream feeds the CPU in the same eval, and while exporting. A fenced input is
+        always in the device address space, never `constant`, because the GPU may load a
+        small constant buffer before the kernel's wait. The kernel takes its waits before any
+        argument check can throw, so no wait is left for a later kernel. The declaration is not
         part of the exported schema. Synchronization only: results do not change.
 
         The `fence_wait` dispatch itself makes its pass wait for every pass in flight
@@ -715,7 +723,8 @@ def:
         `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on
         GitHub-hosted macOS runners. Two jobs build in parallel. One job builds the Python
         wheel. The other job builds the C++ library and tests, and runs the C++ tests with the
-        GPU and then with the CPU as the default device. Then it runs the standalone allocation
+        GPU and then with the CPU as the default device, and builds and runs the JACCL tests
+        with simulated verbs (`tests/jaccl`). Then it runs the standalone allocation
         cap tests with ctest, one process for each case. The Python tests run in shard jobs:
         one set with the GPU as the default device, and one set with the CPU.
         `.github/scripts/fork-tests/python-shards.json` gives the shards.

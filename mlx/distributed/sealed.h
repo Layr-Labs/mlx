@@ -84,6 +84,12 @@ struct SealCodec {
 // Installs (or, with a null seal, removes) the process's codec. A sealed
 // all-sum without a codec is refused when the graph is built. A streamed
 // codec needs piece_bytes: a multiple of 16 in [4 KiB, 16 MiB].
+//
+// The counter starts at 0 in each process, is shared by every group and is
+// not reset by this call, so a codec must not reuse its keys across
+// processes (the counters would repeat). Each sealed primitive keeps a copy
+// of the codec it was built with: `ctx` must stay valid until every graph
+// built with it has been evaluated or released.
 MLX_API void set_seal_codec(SealCodec codec);
 MLX_API std::optional<SealCodec> seal_codec();
 

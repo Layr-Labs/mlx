@@ -159,8 +159,7 @@ std::string write_signature(
     // A fenced input is read after the kernel waits for its CPU producer,
     // so it stays in the device address space: the GPU may load a small
     // constant buffer before the kernel runs, which is before the wait.
-    bool is_fenced =
-        std::find(fenced_inputs.begin(), fenced_inputs.end(), i) !=
+    bool is_fenced = std::find(fenced_inputs.begin(), fenced_inputs.end(), i) !=
         fenced_inputs.end();
     auto dtype = get_type_string(arr.dtype());
     bool in_constant =

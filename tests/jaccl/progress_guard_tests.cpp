@@ -652,8 +652,7 @@ void refused_deregister() {
 // every later call on every wire.
 void mesh_wires_share_failure() {
   check(
-      "mesh wires: a failed wire stops the other wire, then both refuse",
-      [&] {
+      "mesh wires: a failed wire stops the other wire, then both refuse", [&] {
         const auto failed = std::array{fixture::flag(), fixture::flag()};
         fixture::MeshPair first(failed), second(failed);
         arm(first.fabric);

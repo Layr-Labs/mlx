@@ -2,9 +2,12 @@
 
 #pragma once
 
+#include <atomic>
+#include <exception>
 #include <memory>
 #include <span>
 
+#include "jaccl/progress_guard.h"
 #include "jaccl/rdma.h"
 
 constexpr int MESH_MAX_PEERS = 8;
@@ -21,14 +24,16 @@ class MeshImpl {
       int size,
       std::vector<Connection>& conns,
       std::vector<SharedBuffer>& buffers,
-      std::vector<SharedBuffer>& scatter_buffers)
+      std::vector<SharedBuffer>& scatter_buffers,
+      std::shared_ptr<std::atomic<bool>> failed =
+          std::make_shared<std::atomic<bool>>(false))
       : rank_(rank),
         size_(size),
         connections_(conns),
         buffers_(buffers),
         scatter_buffers_(scatter_buffers),
-        staging_mem_(
-            std::make_unique<char[]>(MESH_PIPELINE * MAX_BUFFER_SIZE)) {}
+        staging_mem_(std::make_unique<char[]>(MESH_PIPELINE * MAX_BUFFER_SIZE)),
+        failed_(std::move(failed)) {}
 
   MeshImpl() : rank_(0), size_(1) {}
 
@@ -42,6 +47,7 @@ class MeshImpl {
     // Our own data is copied to a staging buffer to ensure we can reduce it in
     // the output when needed.
 
+    Call call(*this, "mesh all_reduce");
     auto [sz, buffer_size] = buffer_size_from_message(size * sizeof(T));
     int64_t N = buffer_size / sizeof(T);
     constexpr int PIPELINE = 2;
@@ -74,10 +80,7 @@ class MeshImpl {
       int64_t elems = std::min(N, total - read_offset);
       std::copy(
           in + read_offset, in + read_offset + elems, local_staging(buff));
-      std::copy(
-          in + read_offset,
-          in + read_offset + elems,
-          send_buffer(sz, buff).begin<T>());
+      send_buffer(sz, buff).stage_send(in + read_offset, elems);
       recv_end[rank_]++;
       post_send_all(sz, buff);
 
@@ -101,6 +104,7 @@ class MeshImpl {
       // receives.
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      call.check(wc, n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -112,10 +116,7 @@ class MeshImpl {
           completed_send_count[buff]++;
           if (completed_send_count[buff] == num_peers) {
             int64_t elems = std::min(N, total - read_offset);
-            std::copy(
-                in + read_offset,
-                in + read_offset + elems,
-                send_buffer(sz, buff).begin<T>());
+            send_buffer(sz, buff).stage_send(in + read_offset, elems);
             post_send_all(sz, buff);
 
             completed_send_count[buff] = 0;
@@ -198,6 +199,7 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      call.check(wc, n);
       in_flight -= n;
     }
   }
@@ -207,6 +209,8 @@ class MeshImpl {
       char* out_ptr,
       int64_t n_bytes,
       int64_t stride) {
+    Call call(*this, "mesh all_gather");
+
     // Copy our data to the appropriate place. Skip when in place (the scatter
     // gather all reduce passes our own reduced shard which already lives at
     // out_ptr + rank_ * stride).
@@ -225,18 +229,16 @@ class MeshImpl {
 
     // Counters to maintain the state of transfers
     int in_flight = 0;
-    int read_offset = 0;
+    int64_t read_offset = 0;
     int completed_send_count[PIPELINE] = {0};
-    int write_offset[MESH_MAX_PEERS] = {0};
+    int64_t write_offset[MESH_MAX_PEERS] = {0};
 
     // Prefill the pipeline
     int buff = 0;
     while (read_offset < total && buff < PIPELINE) {
       post_recv_all(sz, buff);
-      std::copy(
-          our_data + read_offset,
-          our_data + std::min(read_offset + N, total),
-          send_buffer(sz, buff).begin<char>());
+      send_buffer(sz, buff).stage_send(
+          our_data + read_offset, std::min(N, total - read_offset));
       post_send_all(sz, buff);
 
       buff++;
@@ -250,6 +252,7 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      call.check(wc, n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -261,10 +264,8 @@ class MeshImpl {
         if (work_type == SEND_WR && read_offset < total) {
           completed_send_count[buff]++;
           if (completed_send_count[buff] == num_peers) {
-            std::copy(
-                our_data + read_offset,
-                our_data + std::min(read_offset + N, total),
-                send_buffer(sz, buff).begin<char>());
+            send_buffer(sz, buff).stage_send(
+                our_data + read_offset, std::min(N, total - read_offset));
             post_send_all(sz, buff);
 
             completed_send_count[buff] = 0;
@@ -310,6 +311,7 @@ class MeshImpl {
     // we use the dedicated scatter buffers: per (sz, buff) tile there are size_
     // send slots (slot p -> peer p) and size_ recv slots (slot p <- peer p).
 
+    Call call(*this, "mesh sum_scatter");
     const T* our_chunk = in + static_cast<int64_t>(rank_) * stride;
 
     auto [sz, buffer_size] = buffer_size_from_message(count * sizeof(T));
@@ -340,8 +342,7 @@ class MeshImpl {
           continue;
         }
         const T* src = in + static_cast<int64_t>(p) * stride + read_offset;
-        std::copy(
-            src, src + elems, scatter_send_buffer(sz, buff, p).begin<T>());
+        scatter_send_buffer(sz, buff, p).stage_send(src, elems);
       }
       scatter_post_send_all(sz, buff);
 
@@ -356,6 +357,7 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      call.check(wc, n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -375,10 +377,7 @@ class MeshImpl {
               }
               const T* src =
                   in + static_cast<int64_t>(p) * stride + read_offset;
-              std::copy(
-                  src,
-                  src + elems,
-                  scatter_send_buffer(sz, buff, p).begin<T>());
+              scatter_send_buffer(sz, buff, p).stage_send(src, elems);
             }
             scatter_post_send_all(sz, buff);
 
@@ -456,6 +455,7 @@ class MeshImpl {
   }
 
   void send(const char* in_ptr, int64_t n_bytes, int dst) {
+    Call call(*this, "mesh send");
     constexpr int PIPELINE = 2;
     constexpr int WC_NUM = PIPELINE;
     auto [sz, N] = buffer_size_from_message(n_bytes);
@@ -466,10 +466,8 @@ class MeshImpl {
     // Prefill the pipeline
     int buff = 0;
     while (read_offset < n_bytes && buff < PIPELINE) {
-      std::copy(
-          in_ptr + read_offset,
-          in_ptr + std::min(read_offset + N, n_bytes),
-          send_buffer(sz, buff).begin<char>());
+      send_buffer(sz, buff).stage_send(
+          in_ptr + read_offset, std::min(N, n_bytes - read_offset));
       send_to(sz, dst, buff);
 
       buff++;
@@ -485,6 +483,7 @@ class MeshImpl {
       // and send them.
       ibv_wc wc[WC_NUM];
       int n = connections_[dst].poll(WC_NUM, wc);
+      call.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
         int rank = wc[i].wr_id & 0xff;
@@ -492,10 +491,8 @@ class MeshImpl {
         in_flight--;
 
         if (read_offset < n_bytes) {
-          std::copy(
-              in_ptr + read_offset,
-              in_ptr + std::min(read_offset + N, n_bytes),
-              send_buffer(sz, buff).begin<char>());
+          send_buffer(sz, buff).stage_send(
+              in_ptr + read_offset, std::min(N, n_bytes - read_offset));
           send_to(sz, dst, buff);
 
           read_offset += N;
@@ -506,6 +503,7 @@ class MeshImpl {
   }
 
   void recv(char* out_ptr, int64_t n_bytes, int src) {
+    Call call(*this, "mesh recv");
     constexpr int PIPELINE = 2;
     constexpr int WC_NUM = PIPELINE;
     auto [sz, N] = buffer_size_from_message(n_bytes);
@@ -530,6 +528,7 @@ class MeshImpl {
       // data to fetch post another recv.
       ibv_wc wc[WC_NUM];
       int n = connections_[src].poll(WC_NUM, wc);
+      call.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
         int rank = wc[i].wr_id & 0xff;
@@ -553,6 +552,48 @@ class MeshImpl {
   }
 
  private:
+  // One call into the group. It refuses a closed group, and it closes the
+  // group when the call ends with an exception. Unless the failure action is
+  // Throw, it then leaves the process through teardown_exit().
+  class Call : public ProgressGuard {
+   public:
+    Call(MeshImpl& mesh, const char* op)
+        : ProgressGuard(op, *mesh.failed_),
+          mesh_(mesh),
+          exceptions_(std::uncaught_exceptions()) {
+      require_open(*mesh.failed_);
+    }
+
+    ~Call() {
+      if (std::uncaught_exceptions() > exceptions_) {
+        mesh_.close();
+        if (failure_action() == FailureAction::TeardownExit) {
+          teardown_exit(
+              failure().empty() ? "[jaccl] A mesh call failed with an error."
+                                : failure().c_str());
+        }
+      }
+    }
+
+   private:
+    MeshImpl& mesh_;
+    int exceptions_;
+  };
+
+  // Cancel the posted work and unpin the buffers.
+  void close() {
+    failed_->store(true);
+    for (auto& c : connections_) {
+      c.release();
+    }
+    for (auto& b : buffers_) {
+      b.deregister();
+    }
+    for (auto& b : scatter_buffers_) {
+      b.deregister();
+    }
+  }
+
   void send_to(int sz, int rank, int buff) {
     connections_[rank].post_send(
         send_buffer(sz, buff), SEND_WR << 16 | buff << 8 | rank);
@@ -640,6 +681,10 @@ class MeshImpl {
   std::span<SharedBuffer> buffers_;
   std::span<SharedBuffer> scatter_buffers_;
   std::unique_ptr<char[]> staging_mem_;
+  // Shared by the wires of one group, so that a failure on one wire stops the
+  // others and closes the group for every later call.
+  std::shared_ptr<std::atomic<bool>> failed_ =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 } // namespace jaccl

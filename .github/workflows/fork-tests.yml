@@ -6,7 +6,8 @@ name: Fork Tests
 # The jobs:
 #   build-wheel    builds the Python wheel and uploads it.
 #   build-cpp      builds the C++ library and tests, and runs the C++ tests
-#                  with the GPU and then with the CPU as the default device.
+#                  with the GPU and then with the CPU as the default device,
+#                  and the JACCL tests with simulated verbs (tests/jaccl).
 #                  Then it runs the standalone allocation cap tests, one
 #                  process for each case.
 #   python-gpu     runs the Python tests with the GPU as the default device.
@@ -139,6 +140,19 @@ jobs:
           DEVICE: cpu
           LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/cpu-%p-%m.profraw
         run: ./build/tests/tests
+
+      - name: Run the JACCL tests with simulated verbs
+        # tests/jaccl is its own CMake project, which the build above does
+        # not build: the real mesh, ring and RDMA headers against fake verbs,
+        # with ASan and UBSan. The step clears the coverage flags.
+        if: ${{ !cancelled() }}
+        env:
+          CFLAGS: ''
+          CXXFLAGS: ''
+        run: |
+          cmake -S tests/jaccl -B build-jaccl -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-jaccl -j $(sysctl -n hw.physicalcpu)
+          ctest --test-dir build-jaccl --output-on-failure --no-tests=error
 
       - name: Run the standalone allocation cap tests
         # The process allocation cap is install-once in each process. ctest

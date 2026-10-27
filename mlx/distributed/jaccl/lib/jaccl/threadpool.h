@@ -135,7 +135,8 @@ inline void ThreadPool::start_threads(size_t threads) {
 }
 
 // Run fn(lw) for each wire, the first n_wires - 1 on the pool and the last
-// inline, then wait for the pool calls before returning.
+// inline, then wait for the pool calls before returning. An error of a pool
+// call is thrown after all calls returned.
 template <typename Fn>
 void dispatch_wires(ThreadPool* pool, int n_wires, Fn&& fn) {
   if (n_wires <= 1 || pool == nullptr) {
@@ -163,6 +164,9 @@ void dispatch_wires(ThreadPool* pool, int n_wires, Fn&& fn) {
   }
   for (auto& f : futures) {
     f.wait();
+  }
+  for (auto& f : futures) {
+    f.get();
   }
 }
 

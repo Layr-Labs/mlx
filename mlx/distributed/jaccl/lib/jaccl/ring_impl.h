@@ -2,8 +2,13 @@
 
 #pragma once
 
+#include <atomic>
+#include <exception>
+#include <future>
+#include <memory>
 #include <span>
 
+#include "jaccl/progress_guard.h"
 #include "jaccl/rdma.h"
 #include "jaccl/threadpool.h"
 
@@ -89,7 +94,7 @@ class RingImpl {
 
     // Split the reduce scatter + all gather across the available wires. Each
     // wire handles a contiguous slice of each chunk in every direction.
-    dispatch_wires(pool_, n_wires, [&](int lw) {
+    dispatch_wires(n_wires, [&](int lw) {
       all_reduce_wire<MAX_DIR>(
           in_ptr,
           out_ptr,
@@ -195,7 +200,7 @@ class RingImpl {
     // Split the all gather across the available wires. Each wire handles a
     // contiguous slice of every rank's data in both directions.
     size_t n_bytes_per_wire = (n_bytes + (2 * n_wires) - 1) / (2 * n_wires);
-    dispatch_wires(pool_, n_wires, [&](int lw) {
+    dispatch_wires(n_wires, [&](int lw) {
       all_gather_wire(
           out_ptr,
           n_bytes,
@@ -272,7 +277,7 @@ class RingImpl {
     // Two directional regions, each split across the wires.
     int64_t size_per_wire = (chunk + (2 * n_wires) - 1) / (2 * n_wires);
 
-    dispatch_wires(pool_, n_wires, [&](int lw) {
+    dispatch_wires(n_wires, [&](int lw) {
       reduce_scatter_wire<T>(
           in_ptr, out_ptr, chunk, size_per_wire, n_wires, lw, reduce_op);
     });
@@ -368,6 +373,7 @@ class RingImpl {
       }
     };
 
+    ProgressGuard guard("ring reduce_scatter", *failed_);
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 forwards this rank's own input; later steps forward the partial
       // accumulated in the output by the previous step.
@@ -387,11 +393,13 @@ class RingImpl {
         }
         for (int lr = 0; lr < MAX_DIR; lr++) {
           int64_t offset = wire_offset[lr] + send_count[lr] * N;
-          std::copy(
-              send_base + send_base_offset[lr] + offset,
-              send_base + send_base_offset[lr] +
-                  std::max(offset, std::min(offset + N, wire_end[lr])),
-              send_buffer(sz, buff, lr, lw).template begin<T>());
+          const int64_t elems =
+              std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+          send_buffer(sz, buff, lr, lw)
+              .stage_send(
+                  elems > 0 ? send_base + send_base_offset[lr] + offset
+                            : nullptr,
+                  elems);
           send_count[lr]++;
           send_to(sz, buff, lr, lw);
         }
@@ -404,6 +412,7 @@ class RingImpl {
       while (in_flight > 0) {
         ibv_wc wc[WC_NUM];
         int n = poll_wire(lw, WC_NUM, wc);
+        guard.check(wc, n);
         for (int i = 0; i < n; i++) {
           int work_type = wc[i].wr_id >> 16;
           int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -414,11 +423,13 @@ class RingImpl {
           if (work_type == SEND_WR) {
             if (send_count[lr] < n_steps) {
               int64_t offset = wire_offset[lr] + send_count[lr] * N;
-              std::copy(
-                  send_base + send_base_offset[lr] + offset,
-                  send_base + send_base_offset[lr] +
-                      std::max(offset, std::min(offset + N, wire_end[lr])),
-                  send_buffer(sz, buff, lr, lw).template begin<T>());
+              const int64_t elems =
+                  std::max<int64_t>(0, std::min(N, wire_end[lr] - offset));
+              send_buffer(sz, buff, lr, lw)
+                  .stage_send(
+                      elems > 0 ? send_base + send_base_offset[lr] + offset
+                                : nullptr,
+                      elems);
               send_count[lr]++;
               send_to(sz, buff, lr, lw);
               in_flight++;
@@ -500,6 +511,7 @@ class RingImpl {
     };
     set_limits();
 
+    ProgressGuard guard("ring all_reduce/all_gather", *failed_);
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 sends this rank's own input; later steps send the accumulated
       // partial from out_ptr.
@@ -513,11 +525,12 @@ class RingImpl {
         }
         for (int lr = 0; lr < MAX_DIR; lr++) {
           int64_t offset = wire_offset[lr] + send_count[lr] * N;
-          std::copy(
-              send_base + send_offset[lr] + offset,
-              send_base + send_offset[lr] +
-                  std::max(offset, std::min(offset + N, send_limits[lr])),
-              send_buffer(sz, buff, lr, lw).template begin<T>());
+          const int64_t elems =
+              std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+          send_buffer(sz, buff, lr, lw)
+              .stage_send(
+                  elems > 0 ? send_base + send_offset[lr] + offset : nullptr,
+                  elems);
           send_count[lr]++;
           send_to(sz, buff, lr, lw);
         }
@@ -532,6 +545,7 @@ class RingImpl {
       while (in_flight > 0) {
         ibv_wc wc[WC_NUM];
         int n = poll_wire(lw, WC_NUM, wc);
+        guard.check(wc, n);
         for (int i = 0; i < n; i++) {
           int work_type = wc[i].wr_id >> 16;
           int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -541,11 +555,12 @@ class RingImpl {
 
           if (work_type == SEND_WR && send_count[lr] < n_steps) {
             int64_t offset = wire_offset[lr] + send_count[lr] * N;
-            std::copy(
-                send_base + send_offset[lr] + offset,
-                send_base + send_offset[lr] +
-                    std::max(offset, std::min(offset + N, send_limits[lr])),
-                send_buffer(sz, buff, lr, lw).template begin<T>());
+            const int64_t elems =
+                std::max<int64_t>(0, std::min(N, send_limits[lr] - offset));
+            send_buffer(sz, buff, lr, lw)
+                .stage_send(
+                    elems > 0 ? send_base + send_offset[lr] + offset : nullptr,
+                    elems);
             send_to(sz, buff, lr, lw);
             in_flight++;
             send_count[lr]++;
@@ -595,7 +610,7 @@ class RingImpl {
 
     // Split the send across the available wires. Each wire handles the
     // contiguous slice [lw * bytes_per_wire, (lw + 1) * bytes_per_wire).
-    dispatch_wires(pool_, n_wires, [&](int lw) {
+    dispatch_wires(n_wires, [&](int lw) {
       send_wire(in_ptr, n_bytes, dir, bytes_per_wire, lw);
     });
   }
@@ -624,10 +639,8 @@ class RingImpl {
     // Prefill the pipeline
     int buff = 0;
     while (read_offset < limit && buff < PIPELINE) {
-      std::copy(
-          in_ptr + read_offset,
-          in_ptr + std::min(read_offset + N, limit),
-          send_buffer(sz, buff, dir, lw).begin<char>());
+      send_buffer(sz, buff, dir, lw)
+          .stage_send(in_ptr + read_offset, std::min(N, limit - read_offset));
       send_to(sz, buff, dir, lw);
 
       buff++;
@@ -636,6 +649,7 @@ class RingImpl {
     }
 
     // Main loop
+    ProgressGuard guard("ring send", *failed_);
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -643,16 +657,16 @@ class RingImpl {
       // and send them.
       ibv_wc wc[WC_NUM];
       int n = conns[lw].poll(WC_NUM, wc);
+      guard.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
 
         in_flight--;
 
         if (read_offset < limit) {
-          std::copy(
-              in_ptr + read_offset,
-              in_ptr + std::min(read_offset + N, limit),
-              send_buffer(sz, buff, dir, lw).begin<char>());
+          send_buffer(sz, buff, dir, lw)
+              .stage_send(
+                  in_ptr + read_offset, std::min(N, limit - read_offset));
           send_to(sz, buff, dir, lw);
 
           read_offset += N;
@@ -674,7 +688,7 @@ class RingImpl {
 
     // Split the recv across the available wires. Each wire handles the
     // contiguous slice [lw * bytes_per_wire, (lw + 1) * bytes_per_wire).
-    dispatch_wires(pool_, n_wires, [&](int lw) {
+    dispatch_wires(n_wires, [&](int lw) {
       recv_wire(out_ptr, n_bytes, dir, bytes_per_wire, lw);
     });
   }
@@ -710,6 +724,7 @@ class RingImpl {
     }
 
     // Main loop
+    ProgressGuard guard("ring recv", *failed_);
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -717,6 +732,7 @@ class RingImpl {
       // data to fetch post another recv.
       ibv_wc wc[WC_NUM];
       int n = conns[lw].poll(WC_NUM, wc);
+      guard.check(wc, n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
 
@@ -780,6 +796,86 @@ class RingImpl {
         work_completions);
   }
 
+  // Run fn(lw) for each wire, the first n_wires - 1 on the pool and the last
+  // inline, then wait for the pool calls before returning.
+  //
+  // A wire that throws sets failed_, which stops the other wires. When all
+  // wires returned the group is closed and the first error is thrown, or,
+  // unless the failure action is Throw, the process leaves through
+  // teardown_exit().
+  template <typename Fn>
+  void dispatch_wires(int n_wires, Fn&& fn) {
+    require_open(*failed_);
+
+    auto run = [&](int lw) {
+      try {
+        fn(lw);
+      } catch (...) {
+        failed_->store(true);
+        throw;
+      }
+    };
+
+    std::exception_ptr error;
+    std::exception_ptr stopped;
+    auto wait = [&](auto&& call) {
+      try {
+        call();
+      } catch (const WireStopped&) {
+        stopped = std::current_exception();
+      } catch (...) {
+        if (!error) {
+          error = std::current_exception();
+        }
+      }
+    };
+
+    if (n_wires <= 1 || pool_ == nullptr) {
+      wait([&] {
+        for (int lw = 0; lw < n_wires; lw++) {
+          run(lw);
+        }
+      });
+    } else {
+      std::vector<std::future<void>> futures;
+      futures.reserve(n_wires - 1);
+      wait([&] {
+        for (int lw = 0; lw < n_wires - 1; lw++) {
+          futures.emplace_back(pool_->enqueue(run, lw));
+        }
+        run(n_wires - 1);
+      });
+      for (auto& f : futures) {
+        wait([&] { f.get(); });
+      }
+    }
+
+    if (error || stopped) {
+      close();
+      if (failure_action() == FailureAction::TeardownExit) {
+        teardown_exit(describe(error ? error : stopped).c_str());
+      }
+      std::rethrow_exception(error ? error : stopped);
+    }
+  }
+
+  // Cancel the posted work and unpin the buffers. No wire may be running.
+  void close() {
+    failed_->store(true);
+    for (auto& c : left_) {
+      c.release();
+    }
+    for (auto& c : right_) {
+      c.release();
+    }
+    for (auto& b : send_buffers_) {
+      b.deregister();
+    }
+    for (auto& b : recv_buffers_) {
+      b.deregister();
+    }
+  }
+
   int rank_;
   int size_;
   int n_conns_;
@@ -788,6 +884,8 @@ class RingImpl {
   std::span<SharedBuffer> send_buffers_;
   std::span<SharedBuffer> recv_buffers_;
   ThreadPool* pool_;
+  std::unique_ptr<std::atomic<bool>> failed_ =
+      std::make_unique<std::atomic<bool>>(false);
 };
 
 } // namespace jaccl

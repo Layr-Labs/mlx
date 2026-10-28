@@ -3775,7 +3775,7 @@ array gather(
   }
 
   // Broadcast and cast indices if necessary
-  auto inputs = broadcast_arrays(indices);
+  auto inputs = broadcast_arrays(indices, s);
   for (auto& idx : inputs) {
     idx = astype(idx, dtype, s);
   }
@@ -4054,7 +4054,7 @@ array scatter(
   }
 
   // Broadcast and cast indices if necessary
-  auto inputs = broadcast_arrays(indices);
+  auto inputs = broadcast_arrays(indices, s);
 
   Shape idx_shape;
   if (!inputs.empty()) {
@@ -4967,8 +4967,14 @@ array quantized_matmul(
   }
   std::vector<array> inputs;
   if (qmode == QuantizationMode::Affine) {
+    // On the caller's stream: a cast on the thread's default stream is a
+    // second GPU stream whenever the caller passed its own (mlx-swift's
+    // Stream.gpu), and every cast then crosses streams through fences.
     inputs = {
-        astype(x, dtype), w, astype(scales, dtype), astype(*biases, dtype)};
+        astype(x, dtype, s),
+        w,
+        astype(scales, dtype, s),
+        astype(*biases, dtype, s)};
   } else {
     inputs = {x, w, scales};
   }
@@ -5238,7 +5244,7 @@ affine_quantize(const array& w, int group_size, int bits, StreamOrDevice s_) {
       scales = where(mask, scales, negative(scales, s), s);
       array edge = where(mask, w_min, w_max, s);
       array q0 = round(divide(edge, scales, s), s);
-      scales = where(not_equal(q0, zero, s), divide(edge, q0, s), scales);
+      scales = where(not_equal(q0, zero, s), divide(edge, q0, s), scales, s);
       biases = where(equal(q0, zero, s), zero, edge, s);
     }
 

@@ -217,6 +217,31 @@ inline bool residency_debug() {
   return residency_debug_;
 }
 
+// Output tile of the steel affine quantized matmul on GPUs without neural
+// accelerators (see `qmm` in backend/metal/quantized.cpp): 32, 64, 6432,
+// 3264 or 6464, or 0 (default) for the input width's own tile. Builds whose
+// kernels come only from the precompiled library keep 32 x 32.
+inline int qmm_steel_tile() {
+  static int tile_ = get_var("MLX_QMM_STEEL_TILE", 0);
+  return tile_;
+}
+
+// Fewest 64 x 64 threadgroups a product must fill to take a tile other than
+// 32 x 32 (fewer keep 32 x 32 and their GPU occupancy).
+inline int qmm_steel_tile_min_groups() {
+  static int groups_ = get_var("MLX_QMM_STEEL_TILE_MIN_GROUPS", 0);
+  return groups_;
+}
+
+// Quantized matmuls (x @ w.T) with fewer rows than the vector limit use only
+// the vector kernels (see `QuantizedMatmul::eval_gpu` in
+// backend/metal/quantized.cpp). Then a row has the same bits at each row count
+// from 2 to the limit - 1.
+inline bool qmv_batch_invariant() {
+  static bool invariant_ = get_var("MLX_QMV_BATCH_INVARIANT", 0);
+  return invariant_;
+}
+
 inline bool metal_fast_synch() {
   static bool metal_fast_synch = get_var("MLX_METAL_FAST_SYNCH", 0);
   return metal_fast_synch;

@@ -25,6 +25,9 @@ class Fence {
  public:
   Fence() {};
   explicit Fence(Stream stream);
+  // `fast` false synchronizes with events even when fast synchronization is
+  // enabled. Backends without fast synchronization ignore it.
+  Fence(Stream stream, bool fast);
 
   uint32_t update(Stream stream, const array& x, bool cross_device);
   void wait(Stream stream, const array& x, uint32_t value);

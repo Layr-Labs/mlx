@@ -4938,3 +4938,20 @@ TEST_CASE("roll and tile shape overflow") {
   auto rolled = roll(x, -2147483647 - 1);
   CHECK(array_equal(rolled, x).item<bool>());
 }
+
+TEST_CASE("quantized matmul casts on the caller's stream") {
+  // mlx-swift passes its own stream to every op. A cast on the thread's
+  // default stream instead put one projection on two GPU streams.
+  auto s = new_stream(default_device());
+  auto w = reshape(astype(arange(64 * 64), float32), {64, 64});
+  auto quantized = quantize(w, 64, 4);
+  auto scales = astype(quantized[1], bfloat16);
+  auto biases = astype(quantized[2], bfloat16);
+  auto x = ones({1, 64}, float32);
+  auto out = quantized_matmul(
+      x, quantized[0], scales, biases, true, 64, 4, "affine", s);
+  // x is float32 already; the bfloat16 scales and biases are cast to it.
+  CHECK(out.primitive().stream() == s);
+  CHECK(out.inputs()[2].primitive().stream() == s);
+  CHECK(out.inputs()[3].primitive().stream() == s);
+}

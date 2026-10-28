@@ -16,7 +16,30 @@ if(MLX_BUILD_CUDA)
 endif()
 
 if(MLX_BUILD_METAL)
-  list(APPEND GPU_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp)
+  add_executable(metal_fence_chain metal_fence_chain.cpp)
+  target_link_libraries(metal_fence_chain PRIVATE mlx)
+  foreach(ops IN ITEMS 8 50 1024)
+    add_test(NAME metal_fence_chain_${ops} COMMAND metal_fence_chain)
+    set_tests_properties(
+      metal_fence_chain_${ops}
+      PROPERTIES TIMEOUT 60 ENVIRONMENT
+                 "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
+  endforeach()
+  list(APPEND GPU_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp
+       quantized_tile_tests.cpp qmv_batch_invariant_tests.cpp)
+  # MLX reads MLX_QMV_BATCH_INVARIANT once in each process, so this entry runs
+  # the case again in a new process with the switch on. The tests entries run it
+  # with the switch off. The entry fails also if no test case has this name.
+  add_test(
+    NAME qmv_batch_invariant
+    COMMAND
+      tests
+      "--test-case=quantized matmul rows keep their bits below the vector limit"
+  )
+  set_tests_properties(
+    qmv_batch_invariant
+    PROPERTIES ENVIRONMENT "MLX_QMV_BATCH_INVARIANT=1" PASS_REGULAR_EXPRESSION
+               "test cases: +1 \\| +1 passed \\| +0 failed")
 endif()
 
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)

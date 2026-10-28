@@ -25,6 +25,8 @@ Fence::Fence(Stream s) {
   fence_ = std::make_shared<FenceImpl>(0, s);
 }
 
+Fence::Fence(Stream s, bool) : Fence(s) {}
+
 void Fence::wait(Stream s, const array&, uint32_t value) {
   auto& f = cast<FenceImpl>();
   if (value == 0) {

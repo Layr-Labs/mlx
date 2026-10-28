@@ -1219,11 +1219,65 @@ void qmm(
 
   int B = out.size() / M / N;
 
+  // Prompt-sized products (256 rows or more) take a larger output tile than
+  // 32 x 32 on a GPU without neural accelerators (the NAX kernel above serves
+  // the rest): 64 rows x 32 columns for 16-bit inputs and 32 rows x 64
+  // columns for FP32 by default (measured on the M3 Ultra, 512-row products of
+  // a 4-bit 27B: 64 x 32 is 4-6% faster than 32 x 32 for BF16; FP32's
+  // threadgroup tiles are twice as large, and its 64 x 64 tile is slower while
+  // 32 x 64 rereads the FP32 rows half as often). Every output element still
+  // accumulates the same 8-wide K slabs in the same order with the same
+  // simdgroup multiply-accumulates, from the same dequantized values, whatever
+  // the tile's rows, columns or K depth: no element's bits change, only which
+  // threadgroup computes it. MLX_QMM_STEEL_TILE (or the calling thread's
+  // mlx_metal_set_thread_qmm_steel_tile) picks another tile: 32 (32 x 32, as
+  // before), 64 (64 x 64), 6432 (64 rows x 32 columns), 3264, or 6464 (64 x 64,
+  // K depth 64 for 16-bit inputs in groups of 64 or more).
+  int requested = metal::thread_qmm_steel_tile();
+  if (requested == 0) {
+    requested = env::qmm_steel_tile();
+    int groups =
+        (N / 64) * ((M + 63) / 64) * std::max(1, int(out.size() / M / N));
+    if (groups < env::qmm_steel_tile_min_groups()) {
+      requested = 32;
+    } else if (requested == 0) {
+      // Measured at prompt frames; fewer rows keep 32 x 32 (and their
+      // threadgroup count) unless a tile is chosen explicitly.
+      requested = M < 256 ? 32 : (x.itemsize() <= 2 ? 6432 : 3264);
+    }
+  }
+  int bm = 32, bn = 32, bk = 32;
+  // Only kernels compiled at run time take a tile other than 32 x 32: the
+  // precompiled library instantiates `affine_qmm_t` at 32 x 32 only, so a
+  // build without the JIT (CMake's default MLX_METAL_JIT=OFF) keeps it.
+  if (transpose && mode == "affine" && M >= 64 && N % 64 == 0 &&
+      kernels_jit_compiled()) {
+    switch (requested) {
+      case 64:
+        bm = 64, bn = 64;
+        break;
+      case 6432:
+        bm = 64;
+        break;
+      case 3264:
+        bn = 64;
+        break;
+      case 6464:
+        // A K depth of 64 needs groups of 64 or more, and both padded
+        // tiles in 32 KiB of threadgroup memory: 16-bit inputs only (FP32
+        // tiles would take 34 KiB), else 64 x 64 at a K depth of 32.
+        bm = 64, bn = 64;
+        if (group_size >= 64 && x.itemsize() <= 2) {
+          bk = 64;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  bool wide_tile = bm != 32 || bn != 32 || bk != 32;
   int wm = 2;
   int wn = 2;
-  int bm = 32;
-  int bk = 32;
-  int bn = 32;
 
   // Tune for larger tile with Fp4HalfLoader.
   if (use_fp4_half_loader(x, mode, global_scale, bits) && transpose) {
@@ -1256,8 +1310,11 @@ void qmm(
       bits,
       transpose ? (aligned ? "_alN_true" : "_alN_false") : "",
       batched ? "_batch_1" : "_batch_0",
-      (bm == 64 && bn == 64) ? "_bm_64_bn_64" : "",
+      (!wide_tile && bm == 64 && bn == 64) ? "_bm_64_bn_64" : "",
       global_scale ? "_hgs" : "");
+  if (wide_tile) {
+    concatenate(kname, "_bm", bm, "_bk", bk, "_bn", bn);
+  }
   std::string template_def;
   MTL::ComputePipelineState* kernel;
   if (transpose) {
@@ -2447,16 +2504,22 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   int vector_limit = transpose_ ? get_qmv_batch_limit(K, N, d) : 4;
   auto mode = quantization_mode_to_string(mode_);
 
+  // With MLX_QMV_BATCH_INVARIANT=1, rows below the vector limit use only the
+  // vector kernels (dispatch_qmv), as before the qmv_mma and the mid-row NAX
+  // split-K routes. Then each row has the same bits at each row count from 2
+  // to the limit - 1.
+  bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
   // For few rows use qmv_mma when N/K is large enough.
-  if (transpose_ && non_batched && (M >= 6) && (M <= 16) &&
+  if (!vector_rows && transpose_ && non_batched && (M >= 6) && (M <= 16) &&
       use_qmv_mma(x, w, scales, mode_, M, N, K, d)) {
     qmv_mma(x, w, scales, out, group_size_, bits_, M, N, K, d, s, mode);
     return;
   }
 
   // For mid rows use NAX qmm when output is large enough.
-  if (transpose_ && non_batched && (M >= 8) && (M < vector_limit) &&
-      (M * N >= 16384) &&
+  if (!vector_rows && transpose_ && non_batched && (M >= 8) &&
+      (M < vector_limit) && (M * N >= 16384) &&
       use_qmm_nax_splitk(x, biases, mode, M, N, K, group_size_)) {
     qmm_splitk_nax(
         x, w, scales, biases, out, group_size_, bits_, M, N, K, d, s, mode);

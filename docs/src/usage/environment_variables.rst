@@ -143,6 +143,20 @@ Metal
    it to ``0`` to use the GEMM convolution for all inputs. See
    :doc:`precision`.
 
+.. envvar:: MLX_QMV_BATCH_INVARIANT
+
+   Set it to ``1`` to compute a quantized matrix product ``x @ w.T`` with
+   fewer rows than the vector limit only with the vector kernels: ``qmv`` for
+   one row and ``qmv_wide`` from two rows. Then each row gets the same bits at
+   each row count from 2 to the limit - 1, so the rows of different requests
+   can share one product. The default, ``0``, also uses faster kernels that
+   give a row different bits at some row counts: ``qmv_mma`` for 6 to 16 rows
+   of the floating-point modes, and the affine split-K kernel from 8 rows on
+   GPUs with neural accelerators. The vector limit is 6 to 33 rows; it
+   depends on the GPU and on the shape. A row alone (``qmv``) can get bits
+   that are different from the bits of the same row among two or more rows.
+   MLX reads this variable once in each process.
+
 Advanced tuning
 ---------------
 
@@ -178,6 +192,26 @@ users. Their behavior may change as the implementation evolves.
    Override the number of reduction blocks used by the Metal scaled
    dot-product attention kernel. Positive values are rounded up to a multiple
    of ``32``.
+
+.. envvar:: MLX_QMM_STEEL_TILE
+
+   Output tile of the Metal steel affine quantized matmul (``x @ w.T`` with
+   at least 64 rows and a multiple of 64 outputs) where no neural-accelerator
+   kernel serves the product. The default, ``0``, takes 64 rows x 32 columns
+   for 16-bit inputs and 32 x 64 for FP32 inputs from 256 rows, and 32 x 32
+   below. ``32`` (32 x 32, the previous tile), ``64`` (64 x 64), ``6432``
+   (64 rows x 32 columns), ``3264`` (32 x 64) or ``6464`` (64 x 64 at a K
+   depth of 64 for 16-bit inputs in groups of 64 or more) choose one tile for
+   every product from 64 rows. Every tile gives the same bits; only the speed
+   changes. Only builds that compile kernels at run time (``MLX_METAL_JIT=ON``)
+   take a tile other than 32 x 32: the precompiled kernel library of the
+   default build holds the 32 x 32 kernels only, so there this variable has no
+   effect.
+
+.. envvar:: MLX_QMM_STEEL_TILE_MIN_GROUPS
+
+   Fewest 64 x 64 threadgroups a product must fill to take a tile other than
+   32 x 32; smaller products keep 32 x 32. The default is ``0``.
 
 CUDA
 ----

@@ -542,6 +542,9 @@ namespace {
 // Per-thread commit limits; zero selects the device default.
 thread_local int thread_max_ops_per_buffer = 0;
 thread_local int thread_max_mb_per_buffer = 0;
+// Per-thread steel quantized-matmul output tile (32, 64, 6432, 3264 or 6464);
+// zero selects MLX_QMM_STEEL_TILE (see `qmm` in quantized.cpp).
+thread_local int thread_qmm_steel_tile_override = 0;
 
 void set_thread_command_buffer_limits(
     int max_ops,
@@ -558,6 +561,10 @@ void set_thread_command_buffer_limits(
   thread_max_mb_per_buffer = std::max(0, max_mb);
 }
 } // namespace
+
+int thread_qmm_steel_tile() {
+  return thread_qmm_steel_tile_override;
+}
 
 std::tuple<int, int> Device::get_max_ops_mb_per_buffer() const {
   return std::make_tuple(
@@ -1128,6 +1135,18 @@ extern "C" void mlx_metal_set_thread_command_buffer_limits(
     int* previous_mb) {
   mlx::core::metal::set_thread_command_buffer_limits(
       max_ops, max_mb, previous_ops, previous_mb);
+}
+
+extern "C" void mlx_metal_set_thread_qmm_steel_tile(
+    int tile,
+    int* previous_tile) {
+  if (previous_tile != nullptr) {
+    *previous_tile = mlx::core::metal::thread_qmm_steel_tile_override;
+  }
+  mlx::core::metal::thread_qmm_steel_tile_override =
+      (tile == 32 || tile == 64 || tile == 6432 || tile == 3264 || tile == 6464)
+      ? tile
+      : 0;
 }
 
 extern "C" void mlx_metal_gemma4_expert_qmm_diagnostics_snapshot(

@@ -55,6 +55,14 @@ class RingImpl {
 
   RingImpl() : rank_(0), size_(1), n_conns_(0), pool_(nullptr) {}
 
+  void begin_startup_wait_budget(int64_t timeout_ms) {
+    wait_budget_->begin(timeout_ms, *failed_);
+  }
+
+  void end_startup_wait_budget() {
+    wait_budget_->end(*failed_);
+  }
+
   // Copy the received chunk into the output. Used by the all gather passes.
   struct CopyOp {
     template <typename T>
@@ -373,7 +381,7 @@ class RingImpl {
       }
     };
 
-    ProgressGuard guard("ring reduce_scatter", *failed_);
+    ProgressGuard guard("ring reduce_scatter", *failed_, wait_budget_.get());
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 forwards this rank's own input; later steps forward the partial
       // accumulated in the output by the previous step.
@@ -511,7 +519,8 @@ class RingImpl {
     };
     set_limits();
 
-    ProgressGuard guard("ring all_reduce/all_gather", *failed_);
+    ProgressGuard guard(
+        "ring all_reduce/all_gather", *failed_, wait_budget_.get());
     for (int k = 0; k < size_ - 1; k++) {
       // Step 0 sends this rank's own input; later steps send the accumulated
       // partial from out_ptr.
@@ -649,7 +658,7 @@ class RingImpl {
     }
 
     // Main loop
-    ProgressGuard guard("ring send", *failed_);
+    ProgressGuard guard("ring send", *failed_, wait_budget_.get());
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -724,7 +733,7 @@ class RingImpl {
     }
 
     // Main loop
-    ProgressGuard guard("ring recv", *failed_);
+    ProgressGuard guard("ring recv", *failed_, wait_budget_.get());
     while (in_flight > 0) {
       // Poll the hardware for completions.
       //
@@ -805,6 +814,7 @@ class RingImpl {
   // teardown_exit().
   template <typename Fn>
   void dispatch_wires(int n_wires, Fn&& fn) {
+    StartupWaitBudget::Call call(*wait_budget_);
     require_open(*failed_);
 
     auto run = [&](int lw) {
@@ -884,6 +894,8 @@ class RingImpl {
   std::span<SharedBuffer> send_buffers_;
   std::span<SharedBuffer> recv_buffers_;
   ThreadPool* pool_;
+  std::unique_ptr<StartupWaitBudget> wait_budget_ =
+      std::make_unique<StartupWaitBudget>();
   std::unique_ptr<std::atomic<bool>> failed_ =
       std::make_unique<std::atomic<bool>>(false);
 };

@@ -124,6 +124,19 @@ Metal
    Enable the faster Metal CPU/GPU synchronization path. The default is ``0``.
    This requires Metal 3.2 or later (macOS 15 or later, or iOS 18 or later).
 
+.. envvar:: MLX_METAL_FUSED_FENCE_UPDATE
+
+   With ``MLX_METAL_FAST_SYNCH=1``, make a GPU array visible to the CPU with
+   one dispatch instead of two: the coherent rewrite of the array and the
+   fence timestamp. The default is ``0``.
+
+.. envvar:: MLX_METAL_FENCED_INPUTS
+
+   With ``MLX_METAL_FAST_SYNCH=1``, a custom kernel made with
+   ``metal_kernel_with_fenced_inputs`` waits itself for a fenced input that a
+   CPU stream makes in the same evaluation, and MLX does not encode a separate
+   fence wait for that input. The default is ``0``.
+
 .. envvar:: MLX_CONV_WINOGRAD
 
    Allow the Winograd algorithm for 3x3 ``conv2d``. The default is ``1``. Set

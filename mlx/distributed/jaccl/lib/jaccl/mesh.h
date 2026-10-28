@@ -33,6 +33,19 @@ class MeshGroup : public Group {
     return size_;
   }
 
+  // Every wire gets the budget.
+  void begin_startup_wait_budget(int64_t timeout_ms) override {
+    for (auto& mesh : meshes_) {
+      mesh.begin_startup_wait_budget(timeout_ms);
+    }
+  }
+
+  void end_startup_wait_budget() override {
+    for (auto& mesh : meshes_) {
+      mesh.end_startup_wait_budget();
+    }
+  }
+
   void all_sum(const void* input, void* output, size_t n_bytes, int dtype)
       override;
 
@@ -51,6 +64,20 @@ class MeshGroup : public Group {
   void recv(void* output, size_t n_bytes, int src) override;
 
   void barrier() override;
+
+  bool supports_exchange() override {
+    return size_ == 2;
+  }
+
+  void exchange(
+      const char* input,
+      char* output,
+      size_t n_bytes,
+      const std::function<bool(size_t)>& ready,
+      const std::function<void(size_t)>& arrived) override {
+    // An exchange runs on the first wire only.
+    meshes_[0].exchange(input, output, n_bytes, ready, arrived);
+  }
 
  private:
   template <typename T, typename ReduceOp>

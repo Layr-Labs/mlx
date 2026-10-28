@@ -2,6 +2,7 @@
 
 #include "mlx/backend/common/metal_kernel.h"
 #include "mlx/backend/gpu/copy.h"
+#include "mlx/backend/metal/fenced_input.h"
 #include "mlx/backend/metal/jit/includes.h"
 #include "mlx/backend/metal/utils.h"
 #include "mlx/fast_primitives.h"
@@ -20,6 +21,14 @@ void CustomKernel::eval_gpu(
   (void)is_precompiled_;
   (void)shared_memory_;
 
+  // Take the waits on fenced inputs that Fence::wait_in_consumer gave to this
+  // kernel before any check below can throw, so that no wait is left for a
+  // later kernel at the same address.
+  std::vector<metal::FencedInput> fenced;
+  if (!fenced_inputs_.empty()) {
+    fenced = metal::take_fenced_inputs(this);
+  }
+
   const auto [tx, ty, tz] = threadgroup_;
   const auto [gx, gy, gz] = grid_;
   if (tx <= 0 || ty <= 0 || tz <= 0 || gx < 0 || gy < 0 || gz < 0) {
@@ -37,7 +46,8 @@ void CustomKernel::eval_gpu(
 
   auto& s = stream();
   auto& d = metal::device(s.device);
-  const auto device_max = d.mtl_device()->maxThreadsPerThreadgroup();
+  // The device limit is fixed: query it once rather than per launch.
+  static const auto device_max = d.mtl_device()->maxThreadsPerThreadgroup();
   if (static_cast<size_t>(tx) > device_max.width ||
       static_cast<size_t>(ty) > device_max.height ||
       static_cast<size_t>(tz) > device_max.depth) {
@@ -52,6 +62,17 @@ void CustomKernel::eval_gpu(
     if (ensure_row_contiguous_ && !inputs[i].flags().row_contiguous) {
       throw std::invalid_argument(
           "Mutable kernel inputs cannot use an implicit contiguous copy.");
+    }
+  }
+
+  // An input that is copied first is read before the kernel: wait for it now.
+  for (auto it = fenced.begin(); it != fenced.end();) {
+    auto& in = inputs[it->input];
+    if (ensure_row_contiguous_ && !in.flags().row_contiguous) {
+      metal::encode_fence_wait(s, in, *it);
+      it = fenced.erase(it);
+    } else {
+      ++it;
     }
   }
 
@@ -76,27 +97,63 @@ void CustomKernel::eval_gpu(
       return copies.back();
     }
   };
-  std::vector<array> checked_inputs;
-  for (const array& in : inputs) {
-    checked_inputs.push_back(check_input(in));
+  // Bind the inputs themselves unless one needs a contiguous copy (the same
+  // arrays either way, without a reference-counted copy of each).
+  bool needs_copy = false;
+  if (ensure_row_contiguous_) {
+    for (const array& in : inputs) {
+      needs_copy |= !in.flags().row_contiguous;
+    }
   }
+  std::vector<array> copied_inputs;
+  if (needs_copy) {
+    copied_inputs.reserve(inputs.size());
+    for (const array& in : inputs) {
+      copied_inputs.push_back(check_input(in));
+    }
+  }
+  const std::vector<array>& checked_inputs =
+      needs_copy ? copied_inputs : inputs;
 
-  std::string lib_name = fmt::format(
-      "{}_{:x}_{}", name_, std::hash<std::string>{}(source_), compile_options_);
-  auto lib = d.get_library(
-      lib_name, compile_options_, [this] { return metal::utils() + source_; });
-  auto kernel = d.get_kernel(name_, lib);
-  auto max_tg_size = kernel->maxTotalThreadsPerThreadgroup();
+  // Hashing the whole generated source (often tens of KB) on every dispatch
+  // dominated the host cost of decode-sized custom kernels; the kernel
+  // builder precomputes the identical name once per generated source.
+  const std::string& source = source_->source;
+  std::string derived_name;
+  if (source_->library_name.empty()) {
+    derived_name = fmt::format(
+        "{}_{:x}_{}",
+        name_,
+        std::hash<std::string>{}(source),
+        compile_options_);
+  }
+  const std::string& lib_name =
+      source_->library_name.empty() ? derived_name : source_->library_name;
+  // Launches that share a generated source skip the library and kernel
+  // lookups (a name hash and a shared lock each) after the first one.
+  std::call_once(source_->resolved, [&] {
+    auto lib = d.get_library(lib_name, compile_options_, [&source] {
+      return metal::utils() + source;
+    });
+    auto pipeline = d.get_kernel(name_, lib);
+    source_->max_total_threads = pipeline->maxTotalThreadsPerThreadgroup();
+    source_->pipeline = std::shared_ptr<void>(pipeline->retain(), [](void* p) {
+      static_cast<MTL::ComputePipelineState*>(p)->release();
+    });
+  });
+  auto kernel =
+      static_cast<MTL::ComputePipelineState*>(source_->pipeline.get());
+  auto max_tg_size = source_->max_total_threads;
   const bool retry_geometry = (tx == 512 || tx == 1024) && ty == 1 && tz == 1 &&
       gx >= tx && gx % tx == 0 && gy > 0 && gz > 0;
   if (tg_size > max_tg_size && retry_geometry) {
     const std::string declaration = "[[kernel]] void " + name_ + "(";
-    const auto position = source_.find(declaration);
+    const auto position = source.find(declaration);
     if (position != std::string::npos &&
-        source_.find(declaration, position + declaration.size()) ==
+        source.find(declaration, position + declaration.size()) ==
             std::string::npos) {
       // Keep the dispatch geometry and give the compiler its required size.
-      auto constrained_source = source_;
+      auto constrained_source = source;
       constrained_source.insert(
           position,
           "[[max_total_threads_per_threadgroup(" + std::to_string(tg_size) +
@@ -151,6 +208,24 @@ void CustomKernel::eval_gpu(
   for (auto& out : outputs) {
     compute_encoder.set_output_array(out, index);
     index++;
+  }
+  for (int i : fenced_inputs_) {
+    auto it = std::find_if(
+        fenced.begin(), fenced.end(), [i](auto& f) { return f.input == i; });
+    if (it != fenced.end()) {
+      metal::bind_fenced_input(compute_encoder, *it, index);
+    } else {
+      // No CPU-stream producer in this eval: a count of 0 does not wait.
+      compute_encoder.set_input_array(checked_inputs[i], index);
+      compute_encoder.set_bytes(uint32_t(0), index + 1);
+    }
+    index += 2;
+  }
+  if (!fenced.empty()) {
+    // As Fence::wait: start after every pass and kernel encoded before, so
+    // the CPU work that the kernel waits for never waits for the kernel.
+    compute_encoder.wait_for_all_pending();
+    compute_encoder.barrier();
   }
 
   MTL::Size group_dims =

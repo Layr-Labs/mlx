@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "mlx/array.h"
 #include "mlx/ops.h"
@@ -283,18 +284,50 @@ array::ArrayDesc::~ArrayDesc() {
 
   std::vector<std::shared_ptr<ArrayDesc>> for_deletion;
 
+  // The distinct inputs (and their siblings) of `ad`, one reference each.
+  // A graph node has a few inputs, so a vector with a linear search does
+  // the work of a hash map without allocating a node per input; large
+  // input lists also get a hash index.
   auto append_deletable_inputs = [&for_deletion](ArrayDesc& ad) {
-    std::unordered_map<std::uintptr_t, array> input_map;
+    constexpr size_t linear_max = 32;
+    // Ids are kept beside the arrays: a moved-out array has no id.
+    std::vector<std::pair<std::uintptr_t, array>> distinct;
+    std::unordered_set<std::uintptr_t> index;
+    auto contains = [&](std::uintptr_t id) {
+      if (distinct.size() <= linear_max) {
+        for (auto& x : distinct) {
+          if (x.first == id) {
+            return true;
+          }
+        }
+        return false;
+      }
+      return index.count(id) > 0;
+    };
+    auto insert = [&](const array& x) {
+      if (contains(x.id())) {
+        return;
+      }
+      distinct.emplace_back(x.id(), x);
+      if (distinct.size() == linear_max + 1) {
+        for (auto& y : distinct) {
+          index.insert(y.first);
+        }
+      } else if (distinct.size() > linear_max + 1) {
+        index.insert(x.id());
+      }
+    };
+    distinct.reserve(ad.inputs.size());
     for (array& a : ad.inputs) {
       if (a.array_desc_) {
-        input_map.insert({a.id(), a});
+        insert(a);
         for (auto& s : a.siblings()) {
-          input_map.insert({s.id(), s});
+          insert(s);
         }
       }
     }
     ad.inputs.clear();
-    for (auto& [_, a] : input_map) {
+    for (auto& [_, a] : distinct) {
       bool is_deletable =
           (a.array_desc_.use_count() <= a.siblings().size() + 1);
       // An array with siblings is deletable only if all of its siblings
@@ -303,7 +336,7 @@ array::ArrayDesc::~ArrayDesc() {
         if (!is_deletable) {
           break;
         }
-        int is_input = (input_map.find(s.id()) != input_map.end());
+        int is_input = contains(s.id());
         is_deletable &=
             s.array_desc_.use_count() <= a.siblings().size() + is_input;
       }

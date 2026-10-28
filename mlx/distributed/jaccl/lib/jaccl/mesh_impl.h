@@ -37,6 +37,14 @@ class MeshImpl {
 
   MeshImpl() : rank_(0), size_(1) {}
 
+  void begin_startup_wait_budget(int64_t timeout_ms) {
+    wait_budget_->begin(timeout_ms, *failed_);
+  }
+
+  void end_startup_wait_budget() {
+    wait_budget_->end(*failed_);
+  }
+
   template <typename T, typename ReduceOp>
   void all_reduce(const T* in, T* out, int64_t size, ReduceOp reduce_op) {
     // Fully connected all reduce with deterministic reduction order.
@@ -50,7 +58,11 @@ class MeshImpl {
     Call call(*this, "mesh all_reduce");
     auto [sz, buffer_size] = buffer_size_from_message(size * sizeof(T));
     int64_t N = buffer_size / sizeof(T);
-    constexpr int PIPELINE = 2;
+    // Frames in flight per peer (staging holds this many; NUM_BUFFERS >= it).
+    constexpr int PIPELINE = MESH_PIPELINE;
+    static_assert(
+        MESH_PIPELINE <= NUM_BUFFERS,
+        "mesh pipeline exceeds registered buffers");
     constexpr int WC_NUM = PIPELINE * MESH_MAX_PEERS * 2;
     int64_t total = static_cast<int64_t>(size);
     int num_peers = size_ - 1;
@@ -288,6 +300,90 @@ class MeshImpl {
           }
         }
       }
+    }
+  }
+
+  // Two ranks: send n_bytes from in_ptr while the peer's n_bytes land in
+  // out_ptr, with no self copy. Frame j goes out when ready(end of frame j)
+  // tells that its bytes are final. ready is polled between completions, so
+  // the receives are posted again in time. arrived(end) runs when
+  // out_ptr[0, end) is filled. The last frame uses the smallest buffer that
+  // holds it. Both ranks size each frame from n_bytes.
+  void exchange(
+      const char* in_ptr,
+      char* out_ptr,
+      int64_t n_bytes,
+      const std::function<bool(size_t)>& ready,
+      const std::function<void(size_t)>& arrived) {
+    if (size_ != 2 || n_bytes <= 0) {
+      throw std::invalid_argument(
+          "[jaccl] An exchange needs two ranks and a nonempty message.");
+    }
+    Call call(*this, "mesh exchange");
+    const int peer = 1 - rank_;
+    const int top = buffer_size_from_message(MAX_BUFFER_SIZE).first;
+    const int64_t N = int64_t(FRAME_SIZE) << top;
+    const int64_t frames = (n_bytes + N - 1) / N;
+    auto length = [&](int64_t j) { return std::min(N, n_bytes - j * N); };
+    auto size_class = [&](int64_t j) {
+      int sz = 0;
+      while (sz < top && (int64_t(FRAME_SIZE) << sz) < length(j)) {
+        sz++;
+      }
+      return sz;
+    };
+    constexpr int PIPELINE = MESH_PIPELINE;
+    constexpr int WC_NUM = 2 * PIPELINE;
+
+    int64_t recv_posted = 0;
+    int64_t received = 0;
+    int64_t sent = 0;
+    int64_t send_done = 0;
+    bool send_busy[PIPELINE] = {};
+    auto post_recv = [&]() {
+      recv_from(size_class(recv_posted), peer, int(recv_posted % PIPELINE));
+      recv_posted++;
+    };
+    auto post_ready_sends = [&]() {
+      while (sent < frames && !send_busy[sent % PIPELINE] &&
+             ready(size_t(sent * N + length(sent)))) {
+        int buff = int(sent % PIPELINE);
+        int sz = size_class(sent);
+        send_buffer(sz, buff).stage_send(in_ptr + sent * N, length(sent));
+        send_to(sz, peer, buff);
+        send_busy[buff] = true;
+        sent++;
+      }
+    };
+
+    while (recv_posted < std::min<int64_t>(PIPELINE, frames)) {
+      post_recv();
+    }
+    post_ready_sends();
+    while (received < frames || send_done < frames) {
+      ibv_wc wc[WC_NUM];
+      int n = connections_[peer].poll(WC_NUM, wc);
+      call.check(wc, n);
+      for (int i = 0; i < n; i++) {
+        int work_type = wc[i].wr_id >> 16;
+        int buff = (wc[i].wr_id >> 8) & 0xff;
+        if (work_type == SEND_WR) {
+          send_busy[buff] = false;
+          send_done++;
+        } else {
+          // Receives complete in the order they were posted.
+          std::memcpy(
+              out_ptr + received * N,
+              recv_buffer(size_class(received), buff, peer).begin<char>(),
+              length(received));
+          received++;
+          if (recv_posted < frames) {
+            post_recv();
+          }
+          arrived(size_t(std::min(n_bytes, received * N)));
+        }
+      }
+      post_ready_sends();
     }
   }
 
@@ -558,7 +654,7 @@ class MeshImpl {
   class Call : public ProgressGuard {
    public:
     Call(MeshImpl& mesh, const char* op)
-        : ProgressGuard(op, *mesh.failed_),
+        : ProgressGuard(op, *mesh.failed_, mesh.wait_budget_.get()),
           mesh_(mesh),
           exceptions_(std::uncaught_exceptions()) {
       require_open(*mesh.failed_);
@@ -681,6 +777,8 @@ class MeshImpl {
   std::span<SharedBuffer> buffers_;
   std::span<SharedBuffer> scatter_buffers_;
   std::unique_ptr<char[]> staging_mem_;
+  std::unique_ptr<StartupWaitBudget> wait_budget_ =
+      std::make_unique<StartupWaitBudget>();
   // Shared by the wires of one group, so that a failure on one wire stops the
   // others and closes the group for every later call.
   std::shared_ptr<std::atomic<bool>> failed_ =

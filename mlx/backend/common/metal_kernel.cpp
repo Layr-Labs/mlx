@@ -2,7 +2,12 @@
 
 #include <algorithm>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
+
+#include <fmt/format.h>
 
 #include "mlx/backend/common/compiled.h"
 #include "mlx/backend/metal/metal.h"
@@ -50,6 +55,52 @@ Stream resolve_metal_kernel_stream(StreamOrDevice s) {
   return Stream(-1, Device::gpu);
 }
 
+// MLX_FENCED_INPUT_WAIT(name): thread 0 of each threadgroup spins until the
+// CPU fence reaches the count, as fence_wait does. A count of 0 does not wait.
+constexpr const char* fenced_input_wait = R"(
+#pragma METAL internals : enable
+#ifndef __METAL_MEMORY_SCOPE_SYSTEM__
+#define __METAL_MEMORY_SCOPE_SYSTEM__ 3
+#endif
+inline void mlx_fenced_input_wait(
+    volatile coherent(system) device uint* fence,
+    uint count,
+    uint index) {
+  constexpr metal::thread_scope scope =
+      static_cast<metal::thread_scope>(__METAL_MEMORY_SCOPE_SYSTEM__);
+  if (count == 0) {
+    return;
+  }
+  if (index == 0) {
+    while (true) {
+      metal::atomic_thread_fence(
+          metal::mem_flags::mem_device, metal::memory_order_seq_cst, scope);
+      if (fence[0] >= count) {
+        break;
+      }
+    }
+  }
+  metal::threadgroup_barrier(metal::mem_flags::mem_device);
+  metal::atomic_thread_fence(
+      metal::mem_flags::mem_device, metal::memory_order_seq_cst, scope);
+}
+#define MLX_FENCED_INPUT_WAIT(name) mlx_fenced_input_wait( \
+    name##_fence, name##_fence_count, thread_index_in_threadgroup)
+)";
+
+constexpr const char* fenced_input_no_wait =
+    "\n#define MLX_FENCED_INPUT_WAIT(name) ((void)0)\n";
+
+bool fenced_inputs_enabled() {
+#ifdef __APPLE__
+  if (__builtin_available(macOS 15, iOS 18, *)) {
+    return env::metal_fenced_inputs() && env::metal_fast_synch() &&
+        !detail::in_export_tracing();
+  }
+#endif
+  return false;
+}
+
 std::string write_signature(
     std::string func_name,
     const std::string& header,
@@ -62,10 +113,13 @@ std::string write_signature(
     const std::vector<std::string>& attributes,
     const std::vector<std::tuple<bool, bool, bool>>& shape_infos,
     bool atomic_outputs,
-    const std::vector<int>& mutable_inputs) {
+    const std::vector<int>& mutable_inputs,
+    const char* fence_preamble,
+    const std::vector<int>& fenced_inputs) {
   std::string kernel_source;
   kernel_source.reserve(header.size() + source.size() + 16384);
   kernel_source += header;
+  kernel_source += fence_preamble;
   // Auto-generate a function signature based on `template_args`
   // and the dtype/shape of the arrays passed as `inputs`.
   if (!template_args.empty()) {
@@ -102,10 +156,15 @@ std::string write_signature(
     bool is_mutable =
         std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
         mutable_inputs.end();
+    // A fenced input is read after the kernel waits for its CPU producer,
+    // so it stays in the device address space: the GPU may load a small
+    // constant buffer before the kernel runs, which is before the wait.
+    bool is_fenced = std::find(fenced_inputs.begin(), fenced_inputs.end(), i) !=
+        fenced_inputs.end();
     auto dtype = get_type_string(arr.dtype());
-    std::string location = !is_mutable && arr.size() < max_constant_array_size
-        ? "constant"
-        : "device";
+    bool in_constant =
+        !is_mutable && !is_fenced && arr.size() < max_constant_array_size;
+    std::string location = in_constant ? "constant" : "device";
     std::string ref = !is_mutable && arr.ndim() == 0 ? "&" : "*";
     kernel_source += is_mutable ? "  " : "  const ";
     kernel_source += location;
@@ -165,6 +224,14 @@ std::string write_signature(
       kernel_source += ") {\n";
     }
     index++;
+  }
+  // Fenced inputs: the CPU fence and its count (attributes follow).
+  for (int i : fenced_inputs) {
+    const auto& name = input_names[i];
+    kernel_source += "  volatile coherent(system) device uint* " + name +
+        "_fence [[buffer(" + std::to_string(index++) + ")]],\n";
+    kernel_source += "  constant uint& " + name + "_fence_count [[buffer(" +
+        std::to_string(index++) + ")]],\n";
   }
 
   index = 0;
@@ -256,6 +323,30 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     bool ensure_row_contiguous,
     bool atomic_outputs,
     const CompileOptions& compile_options) {
+  return metal_kernel_with_fenced_inputs(
+      name,
+      input_names,
+      output_names,
+      source,
+      mutable_input_names,
+      {},
+      header,
+      ensure_row_contiguous,
+      atomic_outputs,
+      compile_options);
+}
+
+CustomKernelFunction metal_kernel_with_fenced_inputs(
+    const std::string& name,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    const std::string& source,
+    const std::vector<std::string>& mutable_input_names,
+    const std::vector<std::string>& fenced_input_names,
+    const std::string& header,
+    bool ensure_row_contiguous,
+    bool atomic_outputs,
+    const CompileOptions& compile_options) {
   std::vector<int> mutable_inputs;
   for (const auto& mutable_name : mutable_input_names) {
     auto it = std::find(input_names.begin(), input_names.end(), mutable_name);
@@ -271,6 +362,38 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     mutable_inputs.push_back(index);
   }
   std::sort(mutable_inputs.begin(), mutable_inputs.end());
+  std::vector<int> fenced_inputs;
+  for (const auto& fenced_name : fenced_input_names) {
+    auto it = std::find(input_names.begin(), input_names.end(), fenced_name);
+    if (it == input_names.end() ||
+        std::count(input_names.begin(), input_names.end(), fenced_name) != 1) {
+      throw std::invalid_argument("Fenced input must name one kernel input.");
+    }
+    int index = static_cast<int>(it - input_names.begin());
+    if (std::find(fenced_inputs.begin(), fenced_inputs.end(), index) !=
+            fenced_inputs.end() ||
+        std::find(mutable_inputs.begin(), mutable_inputs.end(), index) !=
+            mutable_inputs.end()) {
+      throw std::invalid_argument(
+          "A fenced kernel input must be unique and not mutable.");
+    }
+    for (const auto& suffix : {"_fence", "_fence_count"}) {
+      auto param = fenced_name + suffix;
+      if (std::count(input_names.begin(), input_names.end(), param) ||
+          std::count(output_names.begin(), output_names.end(), param)) {
+        throw std::invalid_argument(
+            "Kernel argument name " + param + " is used by a fenced input.");
+      }
+    }
+    if (source.find("MLX_FENCED_INPUT_WAIT(" + fenced_name + ")") ==
+        std::string::npos) {
+      throw std::invalid_argument(
+          "The kernel source must call MLX_FENCED_INPUT_WAIT(" + fenced_name +
+          ") before it reads the fenced input.");
+    }
+    fenced_inputs.push_back(index);
+  }
+  std::sort(fenced_inputs.begin(), fenced_inputs.end());
   if (output_names.empty()) {
     throw std::invalid_argument(
         "[metal_kernel] Must specify at least one output.");
@@ -308,10 +431,31 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
 
   std::vector<std::string> attributes;
   for (const auto& [attr, dtype] : metal_attributes) {
-    if (source.find(attr) != std::string::npos) {
+    if (source.find(attr) != std::string::npos ||
+        (!fenced_inputs.empty() && attr == "thread_index_in_threadgroup")) {
       attributes.push_back("  " + dtype + " " + attr + " [[" + attr + "]]");
     }
   }
+
+  // The generated source is a pure function of this kernel object (header,
+  // body, names, attributes, shape infos, atomic and mutable inputs: all
+  // fixed here) and of the per-call key built below: the template
+  // arguments and, per input, its dtype and how it is passed (mutable,
+  // scalar, constant or device; a 0-d mutable input also drops its shape
+  // parameters), the output dtypes and whether fenced waits are compiled in.
+  // Cache the kernel name, source and Metal library name per key, so a
+  // repeated call neither formats names nor regenerates the (often multi-KB)
+  // source, and every launch of one entry shares it (and its pipeline, see
+  // CustomKernel::eval_gpu). Shared by every copy of the returned function.
+  struct Generated {
+    std::string kernel_name;
+    std::shared_ptr<const CustomKernelSource> source;
+  };
+  struct SourceCache {
+    std::mutex mtx;
+    std::unordered_map<std::string, std::shared_ptr<const Generated>> entries;
+  };
+  auto source_cache = std::make_shared<SourceCache>();
 
   return [=,
           shape_infos = std::move(shape_infos),
@@ -340,66 +484,133 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
     check_size(output_dtypes.size(), output_names.size(), "output_dtypes");
 
     auto s = resolve_metal_kernel_stream(s_);
+    const bool fenced = !fenced_inputs.empty() && fenced_inputs_enabled();
 
-    std::string kernel_name = "custom_kernel_" + name;
-    std::string template_def = "";
-    if (!template_args.empty()) {
-      template_def = write_template(template_args);
-      auto template_hash = make_template_hash(template_def);
-      kernel_name += "_";
-      kernel_name += template_hash;
-    }
-
-    // The generated source depends on the dtypes of the inputs and outputs
-    // and on how each input is passed (see `write_signature`). Include them
-    // in the kernel name so that a given name always maps to the same source.
-    for (int i = 0; i < inputs.size(); ++i) {
-      const auto& arr = inputs[i];
-      kernel_name += "_";
-      kernel_name += get_type_string(arr.dtype());
-      if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
-          mutable_inputs.end()) {
-        kernel_name += "m";
-      } else if (arr.ndim() == 0) {
-        kernel_name += "s";
-      } else if (arr.size() < max_constant_array_size) {
-        kernel_name += "c";
+    // The per-call key as raw bytes: each template argument (name, kind,
+    // value), each input's dtype and passing, each output's dtype and the
+    // fenced form. It determines the kernel name and the source below.
+    thread_local std::string key;
+    key.clear();
+    for (const auto& [arg_name, arg] : template_args) {
+      key += arg_name;
+      key += '\0';
+      key += static_cast<char>(arg.index());
+      if (auto* v = std::get_if<int>(&arg)) {
+        key.append(reinterpret_cast<const char*>(v), sizeof(int));
+      } else if (auto* b = std::get_if<bool>(&arg)) {
+        key += *b ? '1' : '0';
+      } else {
+        key += static_cast<char>(std::get<Dtype>(arg).val());
       }
     }
-    for (const auto& dtype : output_dtypes) {
-      kernel_name += "_";
-      kernel_name += get_type_string(dtype);
+    key += '\0';
+    for (int i = 0; i < inputs.size(); ++i) {
+      const auto& arr = inputs[i];
+      key += static_cast<char>(arr.dtype().val());
+      if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+          mutable_inputs.end()) {
+        key += arr.ndim() == 0 ? 'z' : 'n';
+      } else if (arr.ndim() == 0) {
+        key += 's';
+      } else if (arr.size() < max_constant_array_size) {
+        key += 'c';
+      } else {
+        key += 'd';
+      }
     }
+    key += '\0';
+    for (const auto& dtype : output_dtypes) {
+      key += static_cast<char>(dtype.val());
+    }
+    key += fenced ? 'f' : 'u';
 
-    std::string kernel_source = write_signature(
-        kernel_name,
-        header,
-        source,
-        input_names,
-        inputs,
-        output_names,
-        output_dtypes,
-        template_args,
-        attributes,
-        shape_infos,
-        atomic_outputs,
-        mutable_inputs);
+    std::shared_ptr<const Generated> generated;
+    {
+      std::lock_guard lock(source_cache->mtx);
+      if (auto it = source_cache->entries.find(key);
+          it != source_cache->entries.end()) {
+        generated = it->second;
+      }
+    }
+    if (!generated) {
+      std::string kernel_name = "custom_kernel_" + name;
+      std::string template_def = "";
+      if (!template_args.empty()) {
+        template_def = write_template(template_args);
+        auto template_hash = make_template_hash(template_def);
+        kernel_name += "_";
+        kernel_name += template_hash;
+      }
 
-    if (!template_args.empty()) {
-      template_def = kernel_name + template_def;
-      kernel_source += "\ntemplate [[host_name(\"";
-      kernel_source += kernel_name;
-      kernel_source += "\")]] [[kernel]] decltype(";
-      kernel_source += template_def;
-      kernel_source += ") ";
-      kernel_source += template_def;
-      kernel_source += ";\n";
+      // The generated source depends on the dtypes of the inputs and outputs
+      // and on how each input is passed (see `write_signature`). Include them
+      // in the kernel name so that a given name always maps to the same
+      // source.
+      for (int i = 0; i < inputs.size(); ++i) {
+        const auto& arr = inputs[i];
+        kernel_name += "_";
+        kernel_name += get_type_string(arr.dtype());
+        if (std::find(mutable_inputs.begin(), mutable_inputs.end(), i) !=
+            mutable_inputs.end()) {
+          kernel_name += "m";
+        } else if (arr.ndim() == 0) {
+          kernel_name += "s";
+        } else if (arr.size() < max_constant_array_size) {
+          kernel_name += "c";
+        }
+      }
+      for (const auto& dtype : output_dtypes) {
+        kernel_name += "_";
+        kernel_name += get_type_string(dtype);
+      }
+
+      std::string kernel_source = write_signature(
+          kernel_name,
+          header,
+          source,
+          input_names,
+          inputs,
+          output_names,
+          output_dtypes,
+          template_args,
+          attributes,
+          shape_infos,
+          atomic_outputs,
+          mutable_inputs,
+          fenced_inputs.empty() ? ""
+              : fenced          ? fenced_input_wait
+                                : fenced_input_no_wait,
+          fenced ? fenced_inputs : std::vector<int>{});
+
+      if (!template_args.empty()) {
+        auto instantiation = kernel_name + template_def;
+        kernel_source += "\ntemplate [[host_name(\"";
+        kernel_source += kernel_name;
+        kernel_source += "\")]] [[kernel]] decltype(";
+        kernel_source += instantiation;
+        kernel_source += ") ";
+        kernel_source += instantiation;
+        kernel_source += ";\n";
+      }
+      // Exactly the name CustomKernel::eval_gpu derived before.
+      auto library_name = fmt::format(
+          "{}_{:x}_{}",
+          kernel_name,
+          std::hash<std::string>{}(kernel_source),
+          compile_options.serialize());
+      auto entry = std::make_shared<Generated>();
+      entry->kernel_name = std::move(kernel_name);
+      entry->source = std::make_shared<const CustomKernelSource>(
+          std::move(kernel_source), std::move(library_name));
+      generated = std::move(entry);
+      std::lock_guard lock(source_cache->mtx);
+      source_cache->entries.emplace(key, generated);
     }
 
     if (verbose) {
       std::cout << "Generated source code for `" << name << "`:" << std::endl
                 << "```" << std::endl
-                << kernel_source << std::endl
+                << generated->source->source << std::endl
                 << "```" << std::endl;
     }
 
@@ -409,8 +620,8 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
           output_dtypes,
           std::make_shared<MutableInputCustomKernel>(
               s,
-              kernel_name,
-              kernel_source,
+              generated->kernel_name,
+              generated->source,
               grid,
               threadgroup,
               shape_infos,
@@ -420,16 +631,17 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
               false,
               0,
               compile_options.serialize(),
-              mutable_inputs),
+              mutable_inputs,
+              fenced ? fenced_inputs : std::vector<int>{}),
           inputs);
     }
     return array::make_arrays(
-        std::move(output_shapes),
-        std::move(output_dtypes),
+        output_shapes,
+        output_dtypes,
         std::make_shared<CustomKernel>(
             s,
-            std::move(kernel_name),
-            std::move(kernel_source),
+            generated->kernel_name,
+            generated->source,
             grid,
             threadgroup,
             shape_infos,
@@ -438,8 +650,10 @@ CustomKernelFunction metal_kernel_with_mutable_inputs(
             std::vector<ScalarArg>{},
             false,
             0,
-            compile_options.serialize()),
-        std::move(inputs));
+            compile_options.serialize(),
+            std::vector<int>{},
+            fenced ? fenced_inputs : std::vector<int>{}),
+        inputs);
   };
 }
 

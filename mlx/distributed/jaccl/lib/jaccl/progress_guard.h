@@ -17,6 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "jaccl/startup_wait_budget.h"
+
 namespace jaccl {
 
 constexpr int64_t DEFAULT_PROGRESS_TIMEOUT_MS = 30000;
@@ -186,12 +188,30 @@ inline void require_open(const std::atomic<bool>& failed) {
  * owner of the group closes it and then, unless failure_action() is Throw,
  * calls teardown_exit().
  */
-class ProgressGuard {
+template <typename Clock = std::chrono::steady_clock>
+class BasicProgressGuard {
  public:
-  ProgressGuard(const char* op, std::atomic<bool>& failed)
-      : op_(op), failed_(failed), timeout_ms_(progress_timeout_ms()) {}
+  BasicProgressGuard(
+      const char* op,
+      std::atomic<bool>& failed,
+      BasicStartupWaitBudget<Clock>* startup = nullptr)
+      : op_(op), failed_(failed), timeout_ms_(progress_timeout_ms()) {
+    if (startup != nullptr) {
+      call_.emplace(*startup);
+      startup_deadline_ = call_->deadline();
+    }
+  }
 
   void check(const ibv_wc* wc, int n) {
+    if (startup_deadline_ &&
+        (n != 0 || ++startup_polls_ % PROGRESS_SAMPLE_POLLS == 0)) {
+      if (failed_.load()) {
+        throw WireStopped();
+      }
+      if (Clock::now() >= *startup_deadline_) {
+        fail("the absolute startup wait budget expired");
+      }
+    }
     if (n > 0) {
       idle_polls_ = 0;
       for (int i = 0; i < n; i++) {
@@ -221,10 +241,10 @@ class ProgressGuard {
     if (failed_.load()) {
       throw WireStopped();
     }
-    if (timeout_ms_ <= 0) {
+    if (startup_deadline_ || timeout_ms_ <= 0) {
       return;
     }
-    auto now = std::chrono::steady_clock::now();
+    auto now = Clock::now();
     // The first sample after a completion starts the measurement.
     if (idle_polls_ == PROGRESS_SAMPLE_POLLS) {
       idle_since_ = now;
@@ -254,8 +274,13 @@ class ProgressGuard {
   std::atomic<bool>& failed_;
   int64_t timeout_ms_;
   int64_t idle_polls_{0};
-  std::chrono::steady_clock::time_point idle_since_;
+  typename Clock::time_point idle_since_;
+  std::optional<typename BasicStartupWaitBudget<Clock>::Call> call_;
+  std::optional<typename Clock::time_point> startup_deadline_;
+  uint64_t startup_polls_{0};
   std::string failure_;
 };
+
+using ProgressGuard = BasicProgressGuard<>;
 
 } // namespace jaccl

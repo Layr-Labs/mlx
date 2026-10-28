@@ -105,6 +105,23 @@ MLX_API CustomKernelFunction metal_kernel_with_mutable_inputs(
     bool atomic_outputs = false,
     const CompileOptions& compile_options = {});
 
+// As `metal_kernel_with_mutable_inputs`. A fenced input can come from a CPU
+// stream in the same eval; with MLX_METAL_FENCED_INPUTS=1 the kernel waits for
+// that CPU work itself, and MLX encodes no separate fence wait. The source
+// calls MLX_FENCED_INPUT_WAIT(name) for each fenced input before it reads it,
+// in control flow that all threads of the threadgroup reach.
+MLX_API CustomKernelFunction metal_kernel_with_fenced_inputs(
+    const std::string& name,
+    const std::vector<std::string>& input_names,
+    const std::vector<std::string>& output_names,
+    const std::string& source,
+    const std::vector<std::string>& mutable_input_names,
+    const std::vector<std::string>& fenced_input_names,
+    const std::string& header = "",
+    bool ensure_row_contiguous = true,
+    bool atomic_outputs = false,
+    const CompileOptions& compile_options = {});
+
 MLX_API CustomKernelFunction cuda_kernel(
     const std::string& name,
     const std::vector<std::string>& input_names,

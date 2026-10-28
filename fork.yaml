@@ -293,6 +293,13 @@ def:
         queues). MLX's `jaccl.cpp` registers the release hook each time it wraps a new JACCL
         group.
 
+        Startup readiness: a per-group one-shot budget of 1..900000 ms replaces the
+        idle limit until its fixed monotonic deadline. Progress never renews it. Begin/end
+        refuse running calls; callers drain queued work and serialize scheduling. End
+        restores the original idle policy and refuses expired or closed groups. A mesh gives
+        the budget to each of its wires. The MLX Group API forwards to JACCL only;
+        unsupported backends refuse without fallback.
+
         Advertised GID: `Connection::info()` advertises the IPv4-mapped GID of the port, but
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
         now remembers the index where the advertised GID was found and sends from it;
@@ -308,6 +315,13 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/mesh.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/mesh_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/progress_guard.h"
+        - "mlx/distributed/jaccl/lib/jaccl/startup_wait_budget.h"
+        - "mlx/distributed/jaccl/lib/jaccl/group.h"
+        - "mlx/distributed/jaccl/lib/jaccl/mesh.h"
+        - "mlx/distributed/jaccl/lib/jaccl/ring.h"
+        - "mlx/distributed/distributed.h"
+        - "mlx/distributed/distributed_impl.h"
+        - "mlx/distributed/distributed.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/rdma.h"
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
@@ -318,6 +332,97 @@ def:
         - "docs/src/usage/environment_variables.rst"
         - "tests/jaccl/*"
         - "tests/jaccl/fake_verbs/infiniband/verbs.h"
+    - title: "Two-rank sealed all-sum"
+      description: |
+        The embedding program installs an authenticated frame codec for a two-rank
+        floating-point all-sum. The CPU communication stream seals each partial,
+        gathers the frames, opens the peer frame and adds in rank order. Missing
+        codecs and authentication failures refuse evaluation without a plaintext
+        fallback. The distributed primitive retains its temporary arrays until
+        the queued work completes. On a two-rank JACCL mesh the sum streams in 256 KiB
+        pieces, each with its own AES-256-GCM tag, over `MeshImpl::exchange`: a piece is
+        sent as soon as it is sealed and opened and added as soon as it lands. Other
+        groups keep the seal-gather-open path. Non-Apple builds use synchronous
+        piece sealing and opening without Apple dispatch or QoS APIs, preserving
+        the authenticated wire format and rank-ordered arithmetic. Apple keeps
+        its existing parallel path.
+      globs:
+        - "mlx/distributed/CMakeLists.txt"
+        - "mlx/distributed/primitives.h"
+        - "mlx/distributed/sealed.cpp"
+        - "mlx/distributed/sealed.h"
+        - "mlx/distributed/sealed_stream.h"
+        - "tests/distributed_sealed_stream_tests.cpp"
+    - title: "Fused cross-device fence update"
+      description: |
+        Opt-in (`MLX_METAL_FUSED_FENCE_UPDATE=1`, fast synch only). A GPU array that the CPU
+        reads in the same eval is made coherent and its fence timestamp is written in one
+        dispatch (`fence_update_coherent`) instead of `input_coherent` then `fence_update`.
+        Every word is still rewritten with system-coherent stores before a system-scope fence.
+        The last threadgroup to finish writes the timestamp. The fence buffer carries an
+        arrival count that only increases, so an unfinished earlier dispatch can delay a
+        timestamp but cannot release it early. Synchronization only: results do not change.
+      globs:
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/metal/kernels/fence.metal"
+        - "mlx/utils.h"
+        - "docs/src/usage/environment_variables.rst"
+    - title: "Fenced custom-kernel inputs"
+      description: |
+        Opt-in (`MLX_METAL_FENCED_INPUTS=1`, fast synch only). `metal_kernel_with_fenced_inputs`
+        declares inputs that can come from a CPU stream in the same eval, such as a CPU-stream
+        all-sum. The source calls `MLX_FENCED_INPUT_WAIT(name)` before it reads such an input.
+        MLX then gives the CPU fence and the value of the update it waits for to the kernel
+        instead of a `fence_wait` dispatch, and thread 0 of each threadgroup spins on it. The
+        kernel starts after every pass and kernel encoded before it (`wait_for_all_pending`
+        and a barrier), as the `fence_wait` pass does, so the CPU work it waits for never
+        waits for it. MLX keeps the separate wait when the input is copied first, when another
+        GPU stream feeds the CPU in the same eval, and while exporting. A fenced input is
+        always in the device address space, never `constant`, because the GPU may load a
+        small constant buffer before the kernel's wait. The kernel takes its waits before any
+        argument check can throw, so no wait is left for a later kernel. The declaration is not
+        part of the exported schema. Synchronization only: results do not change.
+
+        The `fence_wait` dispatch itself makes its pass wait for every pass in flight
+        (`wait_for_all_pending`), and a buffer barrier orders it after the earlier kernels of
+        the same pass. Upstream ([ml-explore/mlx#4689](https://github.com/ml-explore/mlx/pull/4689))
+        gets the same order with a pass of its own for each wait (`end_encoding()` before the
+        dispatch, `end_encoding(true)` after it). The fork keeps the wait in the current pass,
+        so a wait adds no encoder boundary; `end_encoding(true)` stays available and waits as
+        `wait_for_all_pending` does. Fence waits use the value that the producer's update
+        returned, as upstream does since
+        [ml-explore/mlx#4552](https://github.com/ml-explore/mlx/pull/4552).
+      globs:
+        - "mlx/fence.h"
+        - "mlx/transforms.cpp"
+        - "mlx/fast.h"
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "mlx/backend/metal/fence.cpp"
+        - "mlx/backend/metal/fenced_input.h"
+        - "mlx/backend/metal/device.h"
+        - "mlx/backend/metal/device.cpp"
+        - "mlx/backend/no_gpu/fence.cpp"
+        - "mlx/backend/cuda/fence.cpp"
+        - "mlx/utils.h"
+        - "docs/src/usage/environment_variables.rst"
+    - title: "Cheaper custom-kernel launches and graph bookkeeping"
+      description: |
+        Host time only: generated sources, kernel names, buffers and dispatch order do not
+        change. Custom-kernel primitives share the cached generated source and resolve the
+        pipeline once per source; repeat launches skip rebuilding the name, template string
+        and cache key, and bind inputs directly when none needs a contiguous copy. Graph
+        teardown dedups node inputs with a small vector, `eval_impl`'s per-node map is a flat
+        open-addressing map, and allocation reads the device's maximum buffer length once.
+      globs:
+        - "mlx/array.cpp"
+        - "mlx/transforms.cpp"
+        - "mlx/fast_primitives.h"
+        - "mlx/backend/common/metal_kernel.cpp"
+        - "mlx/backend/metal/custom_kernel.cpp"
+        - "mlx/backend/metal/allocator.cpp"
+        - "mlx/backend/cuda/custom_kernel.cpp"
     - title: "Quantized tile bounds and distinct loader symbols"
       description: |
         Sorted gathered matrix products use the remaining reduction width for a

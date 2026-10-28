@@ -270,8 +270,10 @@ Buffer MetalAllocator::malloc(size_t size) {
     return Buffer{nullptr};
   }
 
-  // More helpful message if maximum buffer length is exceeded
-  if (size > device_->maxBufferLength()) {
+  // More helpful message if maximum buffer length is exceeded. The limit is
+  // fixed for the device: read it once, not with a Metal call per buffer.
+  static const size_t max_buffer_length = device_->maxBufferLength();
+  if (size > max_buffer_length) {
     std::ostringstream msg;
     msg << "[metal::malloc] Attempting to allocate " << size
         << " bytes which is greater than"

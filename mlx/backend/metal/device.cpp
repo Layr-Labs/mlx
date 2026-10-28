@@ -365,13 +365,12 @@ void CommandEncoder::set_input_array(
     const array& a,
     int idx,
     int64_t offset /* = 0 */) {
-  if (all_inputs_.insert(a.buffer().ptr()).second) {
+  if (all_inputs_.insert(a.buffer().ptr())) {
     buffer_sizes_ += a.data_size();
   }
   auto r_buf = static_cast<MTL::Resource*>(const_cast<void*>(a.buffer().ptr()));
   next_inputs_.insert(r_buf);
-  needs_barrier_ =
-      needs_barrier_ | (prev_outputs_.find(r_buf) != prev_outputs_.end());
+  needs_barrier_ = needs_barrier_ | prev_outputs_.contains(r_buf);
   auto a_buf = static_cast<const MTL::Buffer*>(a.buffer().ptr());
   get_command_encoder()->setBuffer(a_buf, a.offset() + offset, idx);
 }
@@ -393,8 +392,7 @@ void CommandEncoder::register_output_array(const array& a) {
     concurrent_outputs_.insert(buf);
   } else {
     next_outputs_.insert(buf);
-    needs_barrier_ =
-        needs_barrier_ | (prev_inputs_.find(buf) != prev_inputs_.end());
+    needs_barrier_ = needs_barrier_ | prev_inputs_.contains(buf);
   }
 }
 
@@ -413,7 +411,7 @@ void CommandEncoder::maybeInsertBarrier() {
   if (needs_barrier_) {
     get_command_encoder()->memoryBarrier(MTL::BarrierScopeBuffers);
     needs_barrier_ = false;
-    // Preserve the hash tables' buckets for reuse across barrier epochs.
+    // Keep the sets' memory for reuse across barrier epochs.
     prev_inputs_.swap(next_inputs_);
     prev_outputs_.swap(next_outputs_);
   } else {
@@ -484,7 +482,7 @@ void CommandEncoder::end_encoding(bool wait_in_flight) {
     // A spin wait must start after all earlier encoders, as it might block
     // earlier operations to be finished.
     // See https://github.com/ml-explore/mlx/pull/4689
-    if (wait_in_flight) {
+    if (wait_in_flight || wait_all_pending_) {
       for (auto& [_, fence] : prev_ce_outputs_) {
         if (waiting_on.insert(fence).second) {
           encoder_->waitForFence(fence.get());
@@ -500,7 +498,8 @@ void CommandEncoder::end_encoding(bool wait_in_flight) {
   buffer_->addCompletedHandler([this,
                                 fence = std::move(fence_),
                                 temporaries = std::move(temporaries_),
-                                all_outputs = std::move(all_outputs_),
+                                all_outputs = std::vector<const void*>(
+                                    all_outputs_.begin(), all_outputs_.end()),
                                 waiting_on = std::move(waiting_on)](
                                    MTL::CommandBuffer*) mutable {
     std::lock_guard lk(outputs_mtx_);
@@ -516,6 +515,7 @@ void CommandEncoder::end_encoding(bool wait_in_flight) {
   encoder_->endEncoding();
   encoder_.reset();
   needs_barrier_ = false;
+  wait_all_pending_ = false;
   concurrent_ = false;
   prev_inputs_.clear();
   next_inputs_.clear();
@@ -523,6 +523,7 @@ void CommandEncoder::end_encoding(bool wait_in_flight) {
   next_outputs_.clear();
   concurrent_outputs_.clear();
   all_inputs_.clear();
+  all_outputs_.clear();
 }
 
 void CommandEncoder::signal_event(Event event, uint64_t value) {
@@ -579,10 +580,13 @@ void CommandEncoder::commit(std::function<void()> completion) {
       [&error_ = error_,
        wait_events = std::move(wait_events_),
        signal_events = std::move(signal_events_),
+       retained = std::move(retained_),
        completion = std::move(completion)](MTL::CommandBuffer* cbuf) mutable {
         if (completion) {
           completion();
         }
+        // The buffer finished: release what its primitives kept alive.
+        retained.clear();
         // If any of the waited event has error in it, poison the encoder.
         for (auto& event : wait_events) {
           if (error_.store_if_valid(event.load_error())) {
@@ -617,6 +621,9 @@ void CommandEncoder::commit(std::function<void()> completion) {
   buffer_ = NS::RetainPtr(queue_->commandBufferWithUnretainedReferences());
   buffer_ops_ = 0;
   buffer_sizes_ = 0;
+  // The moved-from vector is valid but unspecified: reset it explicitly.
+  retained_ = {};
+  retained_.reserve(256);
 }
 
 void CommandEncoder::synchronize() {

@@ -911,6 +911,8 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
 
     @unittest.skipIf(not mx.metal.is_available(), "Metal kernel path only")
     def test_sdpa_short_query_many_heads(self):
+        if mx.default_device() != mx.gpu:
+            self.skipTest("requires GPU")
         key = mx.random.key(0)
         for D, (qH, kH), qL, kL, mask, dtype in product(
             (64, 128, 256),
@@ -944,6 +946,8 @@ class TestFastSDPA(mlx_tests.MLXTestCase):
 
     @unittest.skipIf(not mx.metal.is_available(), "Metal kernel path only")
     def test_sdpa_split_large_values(self):
+        if mx.default_device() != mx.gpu:
+            self.skipTest("requires GPU")
         q = mx.zeros((1, 24, 6, 128), dtype=mx.float16)
         k = mx.zeros((1, 4, 128, 128), dtype=mx.float16)
         v = mx.full((1, 4, 128, 128), 10000, dtype=mx.float16)

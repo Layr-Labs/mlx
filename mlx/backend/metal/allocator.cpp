@@ -291,7 +291,11 @@ Buffer MetalAllocator::malloc(size_t size) {
   std::unique_lock lk(mutex_);
   buffer_allocation_attempted_ = true;
   if (cap_installed_) {
-    return malloc_capped(size, lk);
+    Buffer buffer = malloc_capped(size, lk);
+#ifndef NDEBUG
+    track_allocation(buffer.raw_ptr(), size);
+#endif
+    return buffer;
   }
   MTL::Buffer* buf = buffer_cache_.reuse_from_cache(size);
   if (!buf) {
@@ -366,7 +370,11 @@ Buffer MetalAllocator::malloc(size_t size) {
         get_cache_memory() - max_pool_size_);
   }
 
-  return Buffer{static_cast<void*>(buf)};
+  Buffer buffer(static_cast<void*>(buf));
+#ifndef NDEBUG
+  track_allocation(buffer.raw_ptr(), size);
+#endif
+  return buffer;
 }
 
 void MetalAllocator::clear_cache() {
@@ -379,6 +387,11 @@ void MetalAllocator::free(Buffer buffer) {
   if (buf == nullptr) {
     return;
   }
+
+#ifndef NDEBUG
+  untrack_allocation(buffer.raw_ptr());
+#endif
+
   std::unique_lock lk(mutex_);
   active_memory_ -= buf->length();
   if (get_cache_memory() < max_pool_size_) {

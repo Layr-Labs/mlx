@@ -1577,16 +1577,16 @@ METAL_FUNC void qmm_n_nax_tgp_impl(
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool aligned_N,
-    const bool batched,
-    const int BM = 64,
-    const int BK = 32,
-    const int BN = 64,
-    const int WM = 2,
-    const int WN = 2,
-    const bool has_global_scale = false>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N,
+    bool batched,
+    int BM = 64,
+    int BK = 32,
+    int BN = 64,
+    int WM = 2,
+    int WN = 2>
 [[kernel]] void affine_qmm_t_nax(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -1647,7 +1647,9 @@ template <
     typename T,
     int group_size,
     int bits,
+    bool has_global_scale, // unimplemented
     bool aligned_N,
+    bool batched, // unused
     int BM = 64,
     int BK = 64,
     int BN = 64,
@@ -1729,14 +1731,16 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool batched,
-    const int BM = 64,
-    const int BK = 64,
-    const int BN = 64,
-    const int WM = 2,
-    const int WN = 2>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N, // unused
+    bool batched,
+    int BM = 64,
+    int BK = 64,
+    int BN = 64,
+    int WM = 2,
+    int WN = 2>
 [[kernel]] void affine_qmm_n_nax(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -1789,15 +1793,16 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool aligned_N,
-    const int BM = 64,
-    const int BK = 64,
-    const int BN = 64,
-    const int WM = 2,
-    const int WN = 2,
-    const bool has_global_scale = false>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N,
+    bool batched, // unused
+    int BM = 64,
+    int BK = 64,
+    int BN = 64,
+    int WM = 2,
+    int WN = 2>
 [[kernel]] void affine_gather_qmm_t_nax(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -1929,12 +1934,13 @@ template <
     typename T,
     int group_size,
     int bits,
+    bool has_global_scale, // unused
+    bool transpose,
     int BM,
     int BN,
     int BK,
     int WM,
-    int WN,
-    bool transpose>
+    int WN>
 [[kernel]] void affine_gather_qmm_rhs_nax(
     const device T* x [[buffer(0)]],
     const device uint32_t* w [[buffer(1)]],

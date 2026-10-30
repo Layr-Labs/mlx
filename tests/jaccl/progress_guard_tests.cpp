@@ -114,14 +114,18 @@ void expect_timeout(const Outcome& outcome, const std::string& op) {
   show(shown, outcome);
 }
 
+// A failed completion or poll is raised by Connection::poll (upstream #4767)
+// before the guard sees it, with these messages.
+const std::string completion_failure =
+    "[jaccl] Work completion failed with status 5";
+const std::string poll_failure = "[jaccl] Polling the completion queue failed";
+
 // A failed completion must be an error at once; it must not wait for the limit.
 void expect_failed_completion(const Outcome& outcome, const std::string& op) {
   if (!outcome.threw) {
     mismatch("a failed completion was accepted as data", outcome);
   }
-  if (outcome.message.rfind(
-          "[jaccl] " + op + ": a work completion failed with status 5", 0) !=
-      0) {
+  if (outcome.message.rfind(completion_failure, 0) != 0) {
     mismatch("not the failed-completion error of " + op, outcome);
   }
   if (limit > 0 && outcome.ms >= limit / 2) {
@@ -465,10 +469,7 @@ void failed_completion() {
     std::vector<char> out(100, 0x29);
     const Outcome outcome =
         attempt([&] { pair.nodes[1]->recv(out.data(), 100, 0); });
-    if (!outcome.threw ||
-        outcome.message.rfind(
-            "[jaccl] mesh recv: the completion queue could not be polled", 0) !=
-            0 ||
+    if (!outcome.threw || outcome.message.rfind(poll_failure, 0) != 0 ||
         outcome.ms > 100) {
       mismatch("a failed poll was not an immediate error", outcome);
     }
@@ -485,10 +486,7 @@ void failed_completion() {
     const Outcome outcome = attempt([&] {
       pair.nodes[0]->all_reduce(b.in.data(), b.out.data(), 64, fixture::Add{});
     });
-    if (!outcome.threw ||
-        outcome.message.rfind(
-            "[jaccl] mesh all_reduce: the completion queue could not be polled",
-            0) != 0 ||
+    if (!outcome.threw || outcome.message.rfind(poll_failure, 0) != 0 ||
         outcome.ms > 100) {
       mismatch("a failed poll was not an immediate error", outcome);
     }
@@ -509,10 +507,7 @@ void failed_completion() {
             pair.nodes[0]->all_reduce<1>(
                 b.in.data(), b.out.data(), 64, 1, fixture::Add{});
           });
-          if (!outcome.threw ||
-              outcome.message.rfind(
-                  "[jaccl] ring all_reduce/all_gather: the completion queue could not be polled",
-                  0) != 0 ||
+          if (!outcome.threw || outcome.message.rfind(poll_failure, 0) != 0 ||
               outcome.ms > 100) {
             mismatch("a failed poll was not an immediate error", outcome);
           }
@@ -597,8 +592,7 @@ void refused_destroy() {
             attempt([&] { pair.nodes[1]->recv(out.data(), 100, 0); });
         fixture::ledger().refuse_destroy = false;
         std::cerr.rdbuf(previous);
-        if (!outcome.threw ||
-            outcome.message.rfind("[jaccl] mesh recv: ", 0) != 0) {
+        if (!outcome.threw || outcome.message.rfind(poll_failure, 0) != 0) {
           mismatch("the call did not fail", outcome);
         }
         expect_closed(later);
@@ -667,8 +661,7 @@ void mesh_wires_share_failure() {
         const Outcome failure =
             attempt([&] { second.nodes[1]->recv(other.data(), 100, 0); });
         const Outcome stopped = waiting.get();
-        if (!failure.threw ||
-            failure.message.rfind("[jaccl] mesh recv: ", 0) != 0) {
+        if (!failure.threw || failure.message.rfind(poll_failure, 0) != 0) {
           mismatch("the call on the failed wire did not fail", failure);
         }
         if (!stopped.threw || stopped.message != jaccl::WireStopped().what()) {
@@ -1178,8 +1171,7 @@ void teardown_exit_checks(const char* program) {
   check("teardown exit: a failed completion exits at once", [&] {
     const Env env = {{"JACCL_PROGRESS_TIMEOUT_MS", "4000"}};
     const Ended e = run_child(program, "mesh-failed-completion", env);
-    expect_teardown_exit(
-        e, "[jaccl] mesh recv: a work completion failed with status 5", 0);
+    expect_teardown_exit(e, completion_failure, 0);
   });
   check("teardown exit without a release hook still exits with 75", [&] {
     expect_teardown_exit(

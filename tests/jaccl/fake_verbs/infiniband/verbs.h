@@ -14,7 +14,19 @@ struct ibv_pd {};
 struct ibv_comp_channel {};
 struct ibv_qp_init_attr {};
 struct ibv_port_attr {};
-struct ibv_qp_attr {};
+enum ibv_qp_state {
+  IBV_QPS_RESET,
+  IBV_QPS_INIT,
+  IBV_QPS_RTR,
+  IBV_QPS_RTS,
+  IBV_QPS_SQD,
+  IBV_QPS_SQE,
+  IBV_QPS_ERR,
+};
+constexpr int IBV_QP_STATE = 1;
+struct ibv_qp_attr {
+  ibv_qp_state qp_state;
+};
 struct ibv_gid {
   uint8_t raw[16];
 };
@@ -57,8 +69,10 @@ enum ibv_wc_status { IBV_WC_SUCCESS = 0, IBV_WC_WR_FLUSH_ERR = 5 };
 struct ibv_wc {
   uint64_t wr_id;
   ibv_wc_status status;
+  int opcode;
   uint32_t vendor_err;
   uint32_t byte_len;
+  uint32_t qp_num;
 };
 
 constexpr int IBV_WR_SEND = 0;

@@ -84,6 +84,13 @@ int destroy_completion_queue(ibv_cq* queue) {
   return 0;
 }
 
+// The simulated queue pairs never enter an error state. Upstream's
+// tests/jaccl_tests.cpp checks the dead-link detection.
+int query_queue_pair(ibv_qp*, ibv_qp_attr* attr, int, ibv_qp_init_attr*) {
+  attr->qp_state = IBV_QPS_RTS;
+  return 0;
+}
+
 int deregister(ibv_mr* region) {
   fixture::ledger().deregister_calls++;
   if (fixture::ledger().refuse_deregister) {
@@ -138,6 +145,39 @@ Connection::Connection(Connection&& other) : Connection(nullptr) {
   std::swap(queue_pair, other.queue_pair);
   std::swap(src, other.src);
   std::swap(source_gid_index, other.source_gid_index);
+  std::swap(failure_, other.failure_);
+  std::swap(empty_polls_, other.empty_polls_);
+  std::swap(stall_start_, other.stall_start_);
+  std::swap(last_query_, other.last_query_);
+}
+
+// As in rdma.cpp.
+void Connection::check_stalled() const {
+  throw_if_failed();
+  auto now = std::chrono::steady_clock::now();
+  if (empty_polls_ == STALL_CHECK_POLLS) {
+    stall_start_ = last_query_ = now;
+  } else if (now - last_query_ >= STALL_QUERY_INTERVAL) {
+    last_query_ = now;
+    check_queue_pair();
+  }
+}
+
+void Connection::check_stall_end() const {
+  if (std::chrono::steady_clock::now() - stall_start_ >= STALL_WAKE_QUERY) {
+    check_queue_pair();
+  }
+}
+
+void Connection::check_queue_pair() const {
+  ibv_qp_attr attr = {};
+  ibv_qp_init_attr init_attr = {};
+  if (ibv().query_qp(queue_pair, &attr, IBV_QP_STATE, &init_attr)) {
+    return;
+  }
+  if (attr.qp_state == IBV_QPS_ERR || attr.qp_state == IBV_QPS_SQE) {
+    fail("Queue pair is in error state");
+  }
 }
 
 Connection::~Connection() {
@@ -148,7 +188,7 @@ Connection::~Connection() {
 }
 
 // The real wrapper loads librdma.dylib. The fake one has only the three verbs
-// that a failed group calls.
+// that a failed group calls, and the queue pair query of a stalled poll.
 IBVWrapper::IBVWrapper() : librdma_handle_(nullptr) {
   get_device_list = nullptr;
   get_device_name = nullptr;
@@ -161,6 +201,7 @@ IBVWrapper::IBVWrapper() : librdma_handle_(nullptr) {
   dealloc_pd = nullptr;
   query_port = nullptr;
   query_gid = nullptr;
+  query_qp = query_queue_pair;
   modify_qp = nullptr;
   reg_mr = nullptr;
   destroy_qp = destroy_queue_pair;

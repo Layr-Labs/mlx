@@ -662,11 +662,13 @@ class MeshImpl {
 
     ~Call() {
       if (std::uncaught_exceptions() > exceptions_) {
+        std::string reason =
+            failure().empty() ? mesh_.link_failure() : failure();
         mesh_.close();
         if (failure_action() == FailureAction::TeardownExit) {
           teardown_exit(
-              failure().empty() ? "[jaccl] A mesh call failed with an error."
-                                : failure().c_str());
+              reason.empty() ? "[jaccl] A mesh call failed with an error."
+                             : reason.c_str());
         }
       }
     }
@@ -675,6 +677,17 @@ class MeshImpl {
     MeshImpl& mesh_;
     int exceptions_;
   };
+
+  // A failure that a connection detected itself (a failed completion or a
+  // queue pair in an error state) is not recorded by the guard.
+  std::string link_failure() const {
+    for (auto& c : connections_) {
+      if (auto reason = c.failure_reason(); !reason.empty()) {
+        return reason;
+      }
+    }
+    return {};
+  }
 
   // Cancel the posted work and unpin the buffers.
   void close() {

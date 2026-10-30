@@ -2069,8 +2069,6 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
   tile_count.set_data(allocator::malloc(tile_count.nbytes()));
 
   auto& compute_encoder = metal::get_command_encoder(s);
-  compute_encoder.add_temporary(descriptors);
-  compute_encoder.add_temporary(tile_count);
   compute_encoder.set_compute_pipeline_state(descriptor_kernel);
   compute_encoder.set_input_array(indices, 0);
   compute_encoder.set_output_array(descriptors, 1);
@@ -2110,6 +2108,11 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
     }
   }
 
+  // Both buffers must outlive the tile kernel. A readback above commits the
+  // builder's command buffer, which releases its temporaries, so they are
+  // added to the command buffer that holds the tile kernel.
+  compute_encoder.add_temporary(descriptors);
+  compute_encoder.add_temporary(tile_count);
   compute_encoder.set_compute_pipeline_state(tile_kernel);
   int c = 0;
   compute_encoder.set_input_array(x, c++);

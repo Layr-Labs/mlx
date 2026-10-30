@@ -2110,7 +2110,8 @@ Gemma4ExpertQMMRoute try_gemma4_expert_qmm(
 
   // Both buffers must outlive the tile kernel. A readback above commits the
   // builder's command buffer, which releases its temporaries, so they are
-  // added to the command buffer that holds the tile kernel.
+  // added to the command buffer that holds the tile kernel. The caller
+  // retains the operands in that buffer.
   compute_encoder.add_temporary(descriptors);
   compute_encoder.add_temporary(tile_count);
   compute_encoder.set_compute_pipeline_state(tile_kernel);
@@ -2271,6 +2272,24 @@ bool gather_qmm_rhs(
       array expert_biases = ensure_row_contiguous(*biases_, d, s);
       route = try_gemma4_expert_qmm(
           x, w, scales, expert_biases, indices, out, M, N, K, d, s);
+      if (!d.gemma4_expert_qmm_trust_sorted()) {
+        // Without trust the route reads the tile count back, which commits
+        // the command buffer and releases its temporaries, among them the
+        // contiguous copies of this call's operands. The tile kernel, the
+        // legacy route below and the caller's unsorted routes read those
+        // copies from the next command buffer, so it retains them.
+        auto& encoder = metal::get_command_encoder(s);
+        for (const array& a :
+             {x_, w_, scales_, x, w, scales, indices, expert_biases}) {
+          encoder.retain_until_completed(a.data_shared_ptr());
+        }
+        if (biases_) {
+          encoder.retain_until_completed(biases_->data_shared_ptr());
+        }
+        if (biases) {
+          encoder.retain_until_completed(biases->data_shared_ptr());
+        }
+      }
       if (route == Gemma4ExpertQMMRoute::hit) {
         if (d.gemma4_expert_qmm_diagnostics_armed()) {
           d.record_armed_gemma4_expert_qmm(route);

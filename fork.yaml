@@ -721,7 +721,12 @@ def:
         section above, or when a section names files the fork no longer changes.
 
         `fork-tests.yml` builds the fork with Metal and runs its C++ and Python tests on
-        GitHub-hosted macOS runners. Two jobs build in parallel. One job builds the Python
+        macOS runners. Its `route` job and the `route` job of `forkdiff-check.yml` call
+        `darkbloom-route.yml`, a verbatim copy of the file in Layr-Labs/d-inference. It gives
+        each job a Darkbloom Sandbox when the Darkbloom plane grants one, and otherwise the
+        job's Blacksmith label (`blacksmith-12vcpu-macos-27`, or `blacksmith-4vcpu-ubuntu-2404`
+        for the fork-diff check). Each matrix entry has its own lane. Routing is off until the
+        repository variable `DARKBLOOM_ROUTING` is `on`. Two jobs build in parallel. One job builds the Python
         wheel. The other job builds the C++ library and tests, and runs the C++ tests with the
         GPU and then with the CPU as the default device, and builds and runs the JACCL tests
         with simulated verbs (`tests/jaccl`). Then it runs the standalone allocation
@@ -772,6 +777,7 @@ def:
         - ".github/scripts/fork-tests/python-shards.json"
         - ".github/scripts/fork-tests/python_shards.py"
         - ".github/workflows/fork-tests.yml"
+        - ".github/workflows/darkbloom-route.yml"
         - "python/tests/test_conv.py"
         - "python/tests/test_fft.py"
         - "python/tests/test_reduce.py"

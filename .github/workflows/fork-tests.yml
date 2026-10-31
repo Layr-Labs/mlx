@@ -54,19 +54,21 @@ jobs:
   # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each job below.
   # A lane is granted whole or falls back whole, so each matrix entry has its
   # own lane. The python-gpu and python-cpu lanes match their shard matrices.
+  # The fallback is macOS 26: the Blacksmith macOS 27 image has Xcode 27
+  # without its Metal Toolchain, so the Metal build fails there.
   route:
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
-        build-wheel macos_arm64 blacksmith-12vcpu-macos-27
-        build-cpp macos_arm64 blacksmith-12vcpu-macos-27
-        python-gpu-0 macos_arm64 blacksmith-12vcpu-macos-27
-        python-gpu-1 macos_arm64 blacksmith-12vcpu-macos-27
-        python-cpu-0 macos_arm64 blacksmith-12vcpu-macos-27
-        python-cpu-1 macos_arm64 blacksmith-12vcpu-macos-27
-        python-cpu-2 macos_arm64 blacksmith-12vcpu-macos-27
-        metal-build-and-test macos_arm64 blacksmith-12vcpu-macos-27
+        build-wheel macos_arm64 blacksmith-12vcpu-macos-26
+        build-cpp macos_arm64 blacksmith-12vcpu-macos-26
+        python-gpu-0 macos_arm64 blacksmith-12vcpu-macos-26
+        python-gpu-1 macos_arm64 blacksmith-12vcpu-macos-26
+        python-cpu-0 macos_arm64 blacksmith-12vcpu-macos-26
+        python-cpu-1 macos_arm64 blacksmith-12vcpu-macos-26
+        python-cpu-2 macos_arm64 blacksmith-12vcpu-macos-26
+        metal-build-and-test macos_arm64 blacksmith-12vcpu-macos-26
 
   build-wheel:
     needs: route

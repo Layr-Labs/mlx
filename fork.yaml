@@ -724,7 +724,7 @@ def:
         macOS runners. Its `route` job and the `route` job of `forkdiff-check.yml` call
         `darkbloom-route.yml`, a verbatim copy of the file in Layr-Labs/d-inference. It gives
         each job a Darkbloom Sandbox when the Darkbloom plane grants one, and otherwise the
-        job's Blacksmith label (`blacksmith-12vcpu-macos-27`, or `blacksmith-4vcpu-ubuntu-2404`
+        job's Blacksmith label (`blacksmith-12vcpu-macos-26`, or `blacksmith-4vcpu-ubuntu-2404`
         for the fork-diff check). Each matrix entry has its own lane. Routing is off until the
         repository variable `DARKBLOOM_ROUTING` is `on`. Two jobs build in parallel. One job builds the Python
         wheel. The other job builds the C++ library and tests, and runs the C++ tests with the

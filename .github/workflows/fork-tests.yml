@@ -5,8 +5,8 @@ name: Fork Tests
 #
 # The jobs:
 #   route          selects the runner of each job below: a Darkbloom Sandbox
-#                  Mac when the Darkbloom plane grants one, otherwise a
-#                  Blacksmith macOS runner (darkbloom-route.yml).
+#                  Mac when the Darkbloom plane grants one, otherwise the
+#                  hosted macos-26 runner (darkbloom-route.yml).
 #   build-wheel    builds the Python wheel and uploads it.
 #   build-cpp      builds the C++ library and tests, and runs the C++ tests
 #                  with the GPU and then with the CPU as the default device,
@@ -25,7 +25,7 @@ name: Fork Tests
 # in no shard or in two shards.
 #
 # A run uses 8 macOS jobs. Each job has its own route lane, so the plane can
-# give a Darkbloom Mac to some jobs and send the others to Blacksmith. A new
+# give a Darkbloom Mac to some jobs and keep the others on macos-26. A new
 # push to a pull request cancels the older run and frees its runners.
 
 on:
@@ -51,24 +51,26 @@ env:
   CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
 
 jobs:
-  # Chooses a Darkbloom Sandbox or the Blacksmith fallback for each job below.
+  # Chooses a Darkbloom Sandbox or the fallback runner for each job below.
   # A lane is granted whole or falls back whole, so each matrix entry has its
   # own lane. The python-gpu and python-cpu lanes match their shard matrices.
-  # The fallback is macOS 26: the Blacksmith macOS 27 image has Xcode 27
-  # without its Metal Toolchain, so the Metal build fails there.
+  # The fallback is the hosted macos-26 runner that these jobs used before.
+  # The Blacksmith macOS 27 image has Xcode 27 without its Metal Toolchain, so
+  # the Metal build fails there, and blacksmith-12vcpu-macos-26 did not start
+  # jobs for this organization (2026-10-31).
   route:
     uses: ./.github/workflows/darkbloom-route.yml
     permissions: {}
     with:
       lanes: |
-        build-wheel macos_arm64 blacksmith-12vcpu-macos-26
-        build-cpp macos_arm64 blacksmith-12vcpu-macos-26
-        python-gpu-0 macos_arm64 blacksmith-12vcpu-macos-26
-        python-gpu-1 macos_arm64 blacksmith-12vcpu-macos-26
-        python-cpu-0 macos_arm64 blacksmith-12vcpu-macos-26
-        python-cpu-1 macos_arm64 blacksmith-12vcpu-macos-26
-        python-cpu-2 macos_arm64 blacksmith-12vcpu-macos-26
-        metal-build-and-test macos_arm64 blacksmith-12vcpu-macos-26
+        build-wheel macos_arm64 macos-26
+        build-cpp macos_arm64 macos-26
+        python-gpu-0 macos_arm64 macos-26
+        python-gpu-1 macos_arm64 macos-26
+        python-cpu-0 macos_arm64 macos-26
+        python-cpu-1 macos_arm64 macos-26
+        python-cpu-2 macos_arm64 macos-26
+        metal-build-and-test macos_arm64 macos-26
 
   build-wheel:
     needs: route

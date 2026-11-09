@@ -242,6 +242,14 @@ inline bool qmv_batch_invariant() {
   return invariant_;
 }
 
+// The split-K tile kernel for 6 to 16 quantized rows (affine_qmv_tile): 0
+// turns it off, 1 turns it on for each GPU without neural accelerators. The
+// default, -1, uses it on Ultra GPUs from gen 15.
+inline int qmv_tile() {
+  static int qmv_tile_ = get_var("MLX_QMV_TILE", -1);
+  return qmv_tile_;
+}
+
 inline bool metal_fast_synch() {
   static bool metal_fast_synch = get_var("MLX_METAL_FAST_SYNCH", 0);
   return metal_fast_synch;

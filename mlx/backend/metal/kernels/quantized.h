@@ -2050,6 +2050,196 @@ template <
       simd_lid);
 }
 
+// x @ w.T for 6 to 16 rows of x. A threadgroup of 8 simdgroups computes 128
+// outputs over one part of K. With split_k, y holds float partial sums.
+// One row block applies the scale and bias once per group:
+// s * sum((1024 + q) * x) + (b - 1024 * s) * sum(x).
+template <typename T, int group_size, int bits, int row_blocks, bool split_k>
+[[kernel]] void affine_qmv_tile(
+    const device uint32_t* w [[buffer(0)]],
+    const device T* scales [[buffer(1)]],
+    const device T* biases [[buffer(2)]],
+    const device T* x [[buffer(3)]],
+    device metal::conditional_t<split_k, float, T>* y [[buffer(4)]],
+    const constant int& K [[buffer(5)]],
+    const constant int& N [[buffer(6)]],
+    const constant int& M [[buffer(7)]],
+    const constant int& n_splits [[buffer(8)]],
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  static_assert(bits == 4, "qmv_tile reads 4-bit weights");
+  static_assert(
+      group_size == 32 || group_size == 64 || group_size == 128,
+      "qmv_tile reads groups of 32, 64 and 128");
+  static_assert(row_blocks == 1 || row_blocks == 2, "qmv_tile takes 16 rows");
+  using out_t = metal::conditional_t<split_k, float, T>;
+  constexpr int BK = 256;
+  constexpr int BM = 8 * row_blocks;
+  constexpr int groups = BK / group_size;
+  constexpr bool deferred = row_blocks == 1;
+
+  threadgroup float xs[BM * BK];
+  threadgroup float xg[deferred ? BM * groups : 1];
+
+  const int chunks = K / BK;
+  const int k_begin = (int(tid.y) * chunks / n_splits) * BK;
+  const int k_end = ((int(tid.y) + 1) * chunks / n_splits) * BK;
+  const int o0 = tid.x * 128 + simd_gid * 16;
+  const short qid = simd_lid / 4;
+  const short fm = (qid & 4) + ((simd_lid / 2) % 4);
+  const short fn = (qid & 2) * 2 + (simd_lid % 2) * 2;
+
+  const device uint32_t* wr[2];
+  const device T* sr[2];
+  const device T* br[2];
+#pragma clang loop unroll(full)
+  for (int t = 0; t < 2; t++) {
+    const int64_t row = o0 + 8 * t + fm;
+    wr[t] = w + row * (K / 8);
+    sr[t] = scales + row * (K / group_size);
+    br[t] = biases + row * (K / group_size);
+  }
+
+  simdgroup_matrix<float, 8, 8> acc[2][row_blocks];
+#pragma clang loop unroll(full)
+  for (int t = 0; t < 2; t++) {
+#pragma clang loop unroll(full)
+    for (int u = 0; u < row_blocks; u++) {
+      acc[t][u] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    }
+  }
+
+  for (int k0 = k_begin; k0 < k_end; k0 += BK) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+#pragma clang loop unroll(full)
+    for (int j = 0; j < BM * BK / 256; j++) {
+      const int i = lid + 256 * j;
+      const int r = i / BK;
+      int c = i % BK;
+      if (deferred) {
+        // Slot s of 8 columns holds column s / 2 + 4 * (s % 2), the order of
+        // the two 4-bit weights that one half2 unpacks.
+        c = (c & ~7) + ((c & 7) >> 1) + 4 * (c & 1);
+      }
+      xs[i] = r < M ? float(x[r * K + k0 + c]) : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if constexpr (deferred) {
+      if (lid < BM * groups) {
+        const threadgroup float* p =
+            xs + (lid / groups) * BK + (lid % groups) * group_size;
+        float sum = 0.0f;
+        for (int j = 0; j < group_size; j++) {
+          sum += p[j];
+        }
+        xg[lid] = sum;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+
+#pragma clang loop unroll(full)
+      for (int g = 0; g < groups; g++) {
+        const int gi = (k0 + g * group_size) / group_size;
+        float s[2];
+        float b[2];
+        simdgroup_matrix<float, 8, 8> part[2];
+#pragma clang loop unroll(full)
+        for (int t = 0; t < 2; t++) {
+          s[t] = float(sr[t][gi]);
+          b[t] = float(br[t][gi]) - 1024.0f * s[t];
+          part[t] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+#pragma clang loop unroll(full)
+        for (int v = 0; v < group_size / 32; v++) {
+          const int c = g * group_size + 32 * v;
+          uint4 wv[2];
+#pragma clang loop unroll(full)
+          for (int t = 0; t < 2; t++) {
+            wv[t] = *(const device uint4*)(wr[t] + (k0 + c) / 8);
+          }
+#pragma clang loop unroll(full)
+          for (int e = 0; e < 4; e++) {
+            simdgroup_matrix<float, 8, 8> xm;
+            simdgroup_load(xm, xs + c + 8 * e, BK, ulong2(0, 0), true);
+#pragma clang loop unroll(full)
+            for (int t = 0; t < 2; t++) {
+              // With 0x6400 set, each half reads as 1024 + q, exactly.
+              const uint q = ((wv[t][e] >> (2 * fn)) & 0x000F000F) | 0x64006400;
+              simdgroup_matrix<float, 8, 8> wm;
+              reinterpret_cast<thread float2&>(wm.thread_elements()) =
+                  float2(as_type<half2>(q));
+              simdgroup_multiply_accumulate(part[t], wm, xm, part[t]);
+            }
+          }
+        }
+#pragma clang loop unroll(full)
+        for (int t = 0; t < 2; t++) {
+          auto p = part[t].thread_elements();
+          thread auto& a = acc[t][0].thread_elements();
+          a[0] += s[t] * p[0] + b[t] * xg[fn * groups + g];
+          a[1] += s[t] * p[1] + b[t] * xg[(fn + 1) * groups + g];
+        }
+      }
+    } else {
+#pragma clang loop unroll(full)
+      for (int v = 0; v < BK / 32; v++) {
+        const int c = 32 * v;
+        const int gi = (k0 + c) / group_size;
+        uint4 wv[2];
+        float s[2];
+        float b[2];
+#pragma clang loop unroll(full)
+        for (int t = 0; t < 2; t++) {
+          wv[t] = *(const device uint4*)(wr[t] + (k0 + c) / 8);
+          s[t] = float(sr[t][gi]);
+          b[t] = float(br[t][gi]);
+        }
+#pragma clang loop unroll(full)
+        for (int e = 0; e < 4; e++) {
+          simdgroup_matrix<float, 8, 8> xm[row_blocks];
+#pragma clang loop unroll(full)
+          for (int u = 0; u < row_blocks; u++) {
+            simdgroup_load(
+                xm[u], xs + u * 8 * BK + c + 8 * e, BK, ulong2(0, 0), true);
+          }
+#pragma clang loop unroll(full)
+          for (int t = 0; t < 2; t++) {
+            const uint q = wv[t][e] >> (4 * fn);
+            simdgroup_matrix<float, 8, 8> wm;
+            reinterpret_cast<thread float2&>(wm.thread_elements()) = float2(
+                fma(float(q & 0xF), s[t], b[t]),
+                fma(float((q >> 4) & 0xF), s[t], b[t]));
+#pragma clang loop unroll(full)
+            for (int u = 0; u < row_blocks; u++) {
+              simdgroup_multiply_accumulate(acc[t][u], wm, xm[u], acc[t][u]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Each lane holds output o0 + 8 * t + fm of rows 8 * u + fn and + 1.
+  y += split_k ? int64_t(tid.y) * M * N : 0;
+#pragma clang loop unroll(full)
+  for (int t = 0; t < 2; t++) {
+#pragma clang loop unroll(full)
+    for (int u = 0; u < row_blocks; u++) {
+      auto a = acc[t][u].thread_elements();
+      const int col = o0 + 8 * t + fm;
+      const int r = 8 * u + fn;
+      if (r < M) {
+        y[r * N + col] = static_cast<out_t>(a[0]);
+      }
+      if (r + 1 < M) {
+        y[(r + 1) * N + col] = static_cast<out_t>(a[1]);
+      }
+    }
+  }
+}
+
 template <
     typename T,
     const int group_size,

@@ -25,8 +25,14 @@ if(MLX_BUILD_METAL)
       PROPERTIES TIMEOUT 60 ENVIRONMENT
                  "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
   endforeach()
-  list(APPEND GPU_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp
-       quantized_tile_tests.cpp qmv_batch_invariant_tests.cpp)
+  list(
+    APPEND
+    GPU_TEST_SOURCES
+    residency_tests.cpp
+    gptoss_mxfp4_tests.cpp
+    quantized_tile_tests.cpp
+    qmv_batch_invariant_tests.cpp
+    qmv_tile_tests.cpp)
   # MLX reads MLX_QMV_BATCH_INVARIANT once in each process, so this entry runs
   # the case again in a new process with the switch on. The tests entries run it
   # with the switch off. The entry fails also if no test case has this name.
@@ -40,6 +46,17 @@ if(MLX_BUILD_METAL)
     qmv_batch_invariant
     PROPERTIES ENVIRONMENT "MLX_QMV_BATCH_INVARIANT=1" PASS_REGULAR_EXPRESSION
                "test cases: +1 \\| +1 passed \\| +0 failed")
+  # The same for MLX_QMV_TILE=1: the tile kernel on each GPU without neural
+  # accelerators. The tests entries run the case on the default routes.
+  add_test(
+    NAME qmv_tile
+    COMMAND
+      tests
+      "--test-case=quantized matmul of 6 to 16 rows matches the dequantized product"
+  )
+  set_tests_properties(
+    qmv_tile PROPERTIES ENVIRONMENT "MLX_QMV_TILE=1" PASS_REGULAR_EXPRESSION
+                        "test cases: +1 \\| +1 passed \\| +0 failed")
 endif()
 
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)

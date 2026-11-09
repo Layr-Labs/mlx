@@ -638,6 +638,115 @@ void qmv_wide(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
+// The vector kernels leave most cores of an Ultra GPU idle at 6 to 16 rows.
+// MLX_QMV_TILE can turn the tile kernel on for other GPUs, or off.
+inline bool use_qmv_tile(
+    const array& x,
+    const array& w,
+    const std::optional<array>& biases,
+    QuantizationMode mode,
+    int group_size,
+    int bits,
+    int M,
+    int N,
+    int K,
+    metal::Device& d) {
+  int setting = env::qmv_tile();
+  if (setting == 0 || mode != QuantizationMode::Affine || !biases ||
+      bits != 4 ||
+      (group_size != 32 && group_size != 64 && group_size != 128) ||
+      (x.dtype() != float16 && x.dtype() != bfloat16) || M < 6 || M > 16 ||
+      K % 256 != 0 || N % 128 != 0 || (w.offset() % 16) ||
+      metal::is_nax_available()) {
+    return false;
+  }
+  return setting == 1 ||
+      (d.get_architecture().back() == 'd' && d.get_architecture_gen() >= 15);
+}
+
+void qmv_tile(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const array& biases,
+    array& out,
+    int group_size,
+    int bits,
+    int M,
+    int N,
+    int K,
+    metal::Device& d,
+    const Stream& s) {
+  // Split K until about 240 threadgroups run, 4 for each core of a 60-core GPU.
+  int n_tiles = N / 128;
+  int n_splits = std::max(1, std::min(K / 256, (240 + n_tiles - 1) / n_tiles));
+  int row_blocks = M > 8 ? 2 : 1;
+  bool split_k = n_splits > 1;
+
+  std::string type_string = get_type_string(x.dtype());
+  std::string kname;
+  kname.reserve(64);
+  concatenate(
+      kname,
+      "affine_qmv_tile_",
+      type_string,
+      "_gs_",
+      group_size,
+      "_b_",
+      bits,
+      "_rb_",
+      row_blocks,
+      split_k ? "_sk_1" : "_sk_0");
+  auto kernel = get_quantized_kernel_wrapped(
+      d,
+      kname,
+      "qmv_tile",
+      "affine",
+      type_string,
+      group_size,
+      bits,
+      row_blocks,
+      split_k);
+
+  auto& compute_encoder = metal::get_command_encoder(s);
+  array partials({n_splits, M, N}, float32, nullptr, {});
+  if (split_k) {
+    partials.set_data(allocator::malloc(partials.nbytes()));
+    compute_encoder.add_temporary(partials);
+  }
+
+  compute_encoder.set_compute_pipeline_state(kernel);
+  int c = 0;
+  compute_encoder.set_input_array(w, c++);
+  compute_encoder.set_input_array(scales, c++);
+  compute_encoder.set_input_array(biases, c++);
+  compute_encoder.set_input_array(x, c++);
+  compute_encoder.set_output_array(split_k ? partials : out, c++);
+  compute_encoder.set_bytes(K, c++);
+  compute_encoder.set_bytes(N, c++);
+  compute_encoder.set_bytes(M, c++);
+  compute_encoder.set_bytes(n_splits, c++);
+  compute_encoder.dispatch_threadgroups(
+      MTL::Size(n_tiles, n_splits, 1), MTL::Size(256, 1, 1));
+  if (!split_k) {
+    return;
+  }
+
+  // Sum the partitions and cast to the output type, as in qmm_splitk.
+  int partition_stride = M * N;
+  auto accum_kname = "steel_gemm_splitk_accum_" + type_to_name(out) + "_" +
+      type_to_name(partials);
+  auto accum_kernel =
+      get_steel_gemm_splitk_accum_kernel(d, accum_kname, partials, out, false);
+  compute_encoder.set_compute_pipeline_state(accum_kernel);
+  compute_encoder.set_input_array(partials, 0);
+  compute_encoder.set_output_array(out, 1);
+  compute_encoder.set_bytes(n_splits, 2);
+  compute_encoder.set_bytes(partition_stride, 3);
+  compute_encoder.set_bytes(N, 4);
+  compute_encoder.dispatch_threads(MTL::Size(N, M, 1), get_block_dims(N, M, 1));
+}
+
 inline bool use_qmv_mma(
     const array& x,
     const array& w,
@@ -2509,6 +2618,12 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // split-K routes. Then each row has the same bits at each row count from 2
   // to the limit - 1.
   bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
+  if (!vector_rows && transpose_ && non_batched &&
+      use_qmv_tile(x, w, biases, mode_, group_size_, bits_, M, N, K, d)) {
+    qmv_tile(x, w, scales, *biases, out, group_size_, bits_, M, N, K, d, s);
+    return;
+  }
 
   // For few rows use qmv_mma when N/K is large enough.
   if (!vector_rows && transpose_ && non_batched && (M >= 6) && (M <= 16) &&

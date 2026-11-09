@@ -148,6 +148,40 @@ def:
         - "tests/qmv_batch_invariant_tests.cpp"
         - "tests/CMakeLists.txt"
         - ".github/workflows/fork-tests.yml"
+    - title: "Split-K tile kernel for 6 to 16 quantized rows on Ultra GPUs"
+      description: |
+        A quantized `x @ w.T` with 6 to 16 rows (batched decode, speculative verification)
+        runs the vector kernels below the vector limit and split-K `qmm` from it. On an Ultra
+        GPU both leave most cores idle or read the weights more than once. Upstream's affine
+        `qmv_mma` ([ml-explore/mlx#4787](https://github.com/ml-explore/mlx/pull/4787), not in
+        this fork yet) keeps Ultra GPUs on the vector kernels. `affine_qmv_tile` reads each
+        weight once: a threadgroup of 8 simdgroups computes 128 outputs with float simdgroup
+        MMAs from `x` rows in threadgroup memory, and K is split until about 240 threadgroups
+        run (float partial sums, summed by `steel_gemm_splitk_accum`). Up to 8 rows it applies
+        each group's scale and bias once (`s * sum((1024 + q) * x) + (b - 1024 * s) * sum(x)`,
+        two 4-bit weights unpacked into one `half2`); 9 to 16 rows dequantize each weight.
+        It serves 4-bit affine weights in groups of 32, 64 and 128 with `float16` or `bfloat16`
+        rows, `K % 256 == 0` and `N % 128 == 0`. `MLX_QMV_TILE` (read once in each process)
+        picks it: the default uses it on Ultra GPUs from gen 15 without neural accelerators,
+        `1` on each GPU without them, `0` never. With `MLX_QMV_BATCH_INVARIANT=1` it does not
+        run below the vector limit. Measured on an M3 Ultra in a Qwen3.8 27B (4-bit, groups of
+        64, bfloat16), one build with `MLX_QMV_TILE=0` against the default, two rounds each: a
+        pass of 8 tokens takes 57.0 ms instead of 84.4 ms, 12 to 16 tokens 91.8-94.4 ms instead
+        of 135.3-136.1 ms, 9 and 10 tokens 6% less, and a decode step of 16 streams 99.2 ms
+        instead of 145.2 ms. 1 to 5 rows do not change. The argmax of the logits is the same.
+        `tests/qmv_tile_tests.cpp` and `test_qmv_tile` compare 6 to 16 rows with the float32
+        product of the dequantized weights; the `qmv_tile` ctest entry, which Fork Tests runs,
+        turns the kernel on for the CI GPU.
+      globs:
+        - "mlx/utils.h"
+        - "mlx/backend/metal/kernels/quantized.h"
+        - "mlx/backend/metal/kernels/quantized.metal"
+        - "mlx/backend/metal/quantized.cpp"
+        - "docs/src/usage/environment_variables.rst"
+        - "python/tests/test_quantized.py"
+        - "tests/qmv_tile_tests.cpp"
+        - "tests/CMakeLists.txt"
+        - ".github/workflows/fork-tests.yml"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

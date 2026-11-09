@@ -1266,6 +1266,37 @@ class TestQuantized(mlx_tests.MLXTestCase):
                     self.assertEqual(y_q.shape, y_hat.shape)
                     self.assertLess((y_q - y_hat).abs().max(), tol)
 
+    def test_qmv_tile(self):
+        # 4-bit affine products of 6 to 16 half-precision rows with K % 256 == 0
+        # and N % 128 == 0. Ultra GPUs (or MLX_QMV_TILE=1) use the tile kernel.
+        key = mx.random.key(0)
+        k1, k2 = mx.random.split(key)
+        shapes = [(256, 1024), (512, 256), (2304, 4096)]
+        for dtype, group_size, (K, N) in product(
+            [mx.float16, mx.bfloat16], [32, 64, 128], shapes
+        ):
+            tol = 2e-3 if dtype == mx.float16 else 1e-2
+            w = 0.05 * mx.random.normal(shape=(N, K), key=k2)
+            w_q, scales, biases = mx.quantize(w, group_size, 4)
+            scales, biases = scales.astype(dtype), biases.astype(dtype)
+            w_hat = mx.dequantize(
+                w_q,
+                scales.astype(mx.float32),
+                biases.astype(mx.float32),
+                group_size,
+                4,
+            )
+            for M in [6, 7, 8, 9, 13, 16]:
+                with self.subTest(dtype=dtype, group_size=group_size, K=K, N=N, M=M):
+                    x = (2.0 * mx.random.normal(shape=(M, K), key=k1)).astype(dtype)
+                    y_q = mx.quantized_matmul(
+                        x, w_q, scales, biases, True, group_size, 4
+                    )
+                    y_hat = x.astype(mx.float32) @ w_hat.T
+                    self.assertEqual(y_q.dtype, dtype)
+                    err = (y_q.astype(mx.float32) - y_hat).abs().max()
+                    self.assertLess(err, tol * y_hat.abs().max())
+
     def test_qvm(self):
         key = mx.random.key(0)
         k1, k2 = mx.random.split(key)

@@ -6,7 +6,7 @@ name: Fork Tests
 # The jobs:
 #   route          chooses each job's runner (darkbloom-route.yml): a
 #                  Darkbloom Sandbox when the plane grants the job's lane,
-#                  otherwise the lane's fallback, GitHub's macos-26. Each job
+#                  otherwise the lane's fallback, GitHub's xcode-27. Each job
 #                  and each shard has a lane of its own.
 #   build-wheel    builds the Python wheel and uploads it.
 #   build-cpp      builds the C++ library and tests, and runs the C++ tests
@@ -57,14 +57,14 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        build-wheel macos_arm64 macos-26
-        build-cpp macos_arm64 macos-26
-        python-gpu-0 macos_arm64 macos-26
-        python-gpu-1 macos_arm64 macos-26
-        python-cpu-0 macos_arm64 macos-26
-        python-cpu-1 macos_arm64 macos-26
-        python-cpu-2 macos_arm64 macos-26
-        metal-build-and-test macos_arm64 macos-26
+        build-wheel macos_arm64 xcode-27
+        build-cpp macos_arm64 xcode-27
+        python-gpu-0 macos_arm64 xcode-27
+        python-gpu-1 macos_arm64 xcode-27
+        python-cpu-0 macos_arm64 xcode-27
+        python-cpu-1 macos_arm64 xcode-27
+        python-cpu-2 macos_arm64 xcode-27
+        metal-build-and-test macos_arm64 xcode-27
 
   build-wheel:
     needs: route

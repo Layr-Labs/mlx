@@ -163,6 +163,16 @@ class TestReduce(mlx_tests.MLXTestCase):
         self.assertTrue(np.all(z == y))
 
     def test_zero_size(self):
+        for op in ["all", "any"]:
+            for shape, axis in [((0,), None), ((0, 3), 0), ((3, 0), 1), ((0, 3), 1)]:
+                with self.subTest(op=op, shape=shape, axis=axis):
+                    a_np = np.zeros(shape, dtype=np.bool_)
+                    expected = getattr(np, op)(a_np, axis=axis)
+                    actual = getattr(mx, op)(mx.array(a_np), axis=axis)
+                    mx.eval(actual)
+                    self.assertEqual(actual.shape, expected.shape)
+                    self.assertEqual(actual.tolist(), expected.tolist())
+
         # max and min have no identity, so they are only undefined when an axis
         # being reduced is itself empty. An array that is empty because of some
         # other axis reduces into an empty result.

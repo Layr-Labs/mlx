@@ -760,8 +760,12 @@ def:
         no Darkbloom cache, `fork-build-cache` sets `CI_ACTIONS_CACHE=off` and every
         cache step is skipped, so that the sandbox does not write GitHub's Actions
         cache. The Darkbloom macOS image has Xcode 27.2 on macOS 27, and `xcode-27` has
-        Xcode 27. No job selects an Xcode. The Linux jobs of `build_and_test.yml` and the fork-diff
-        workflows stay on GitHub-hosted runners (David's ruling, 2026-11-11).
+        Xcode 27. No job selects an Xcode. The lint job of `build_and_test.yml` and the
+        fork-diff check ask for Linux ARM64 sandboxes, with their previous GitHub-hosted
+        labels as fallbacks. Lint uses a Python 3.12 virtual environment and keeps its
+        pre-commit cache separate by runner architecture. It skips Actions caching when
+        the sandbox has no Darkbloom cache. The Linux sanitizer and Fedora
+        jobs and the fork-diff deployment still use GitHub-hosted runners.
 
         Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),

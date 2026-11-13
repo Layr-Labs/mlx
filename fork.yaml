@@ -763,7 +763,8 @@ def:
         Xcode 27. No job selects an Xcode. The lint job of `build_and_test.yml` and the
         fork-diff check ask for Linux ARM64 sandboxes, with their previous GitHub-hosted
         labels as fallbacks. Lint uses a Python 3.12 virtual environment and keeps its
-        pre-commit cache separate by runner architecture. The Linux sanitizer and Fedora
+        pre-commit cache separate by runner architecture. It skips Actions caching when
+        the sandbox has no Darkbloom cache. The Linux sanitizer and Fedora
         jobs and the fork-diff deployment still use GitHub-hosted runners.
 
         Three Python tests check behavior that exists only in

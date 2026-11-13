@@ -40,7 +40,14 @@ jobs:
           "$RUNNER_TEMP/lint-venv/bin/python" -m pip install pre-commit
           "$RUNNER_TEMP/lint-venv/bin/python" -m pip freeze --local
           echo "$RUNNER_TEMP/lint-venv/bin" >> "$GITHUB_PATH"
+      - name: Choose this job's Actions cache
+        run: |
+          if [[ ${RUNNER_NAME:-} == darkbloom-* && -z ${DARKBLOOM_CACHE_URL:-} ]]; then
+            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
+            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so the cache step is skipped."
+          fi
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: env.CI_ACTIONS_CACHE != 'off'
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-3|${{ runner.os }}|${{ runner.arch }}|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}

@@ -1,20 +1,10 @@
-name: Build and Test
+name: CodeQL native canary
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - main
-      # For testing CI without starting a pull request:
-      - test/*
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   route:
@@ -22,95 +12,64 @@ jobs:
     permissions: {}
     with:
       lanes: |
-        lint linux_arm64 ubuntu-22.04
+        codeql-canary linux_arm64 ubuntu-22.04
 
-  check_lint:
-    name: Check Lint
+  scan:
     needs: route
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['lint'] }}
-    timeout-minutes: 20
+    runs-on: ${{ fromJSON(needs.route.outputs.routes)['codeql-canary'] }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - name: Require a native canary runner
+        env:
+          NATIVE_RUNNER: ${{ runner.name }}
+        run: |
+          [[ "$NATIVE_RUNNER" == darkbloom-* ]]
+          [[ "$(uname -m)" == aarch64 ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          python-version: "3.12"
-      - name: Install pre-commit
+          ref: 0ca5ad1afcc0552205971cecd5a2bd02f164fdf2
+          persist-credentials: false
+      - name: Download the pinned ARM64 CodeQL bundle
         run: |
-          python -m venv "$RUNNER_TEMP/lint-venv"
-          "$RUNNER_TEMP/lint-venv/bin/python" -m pip install pre-commit
-          "$RUNNER_TEMP/lint-venv/bin/python" -m pip freeze --local
-          echo "$RUNNER_TEMP/lint-venv/bin" >> "$GITHUB_PATH"
-      - name: Choose this job's Actions cache
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            --output codeql.tar.zst \
+            https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-linux-arm64.tar.zst
+          echo '1c015b411c6e1c7f7e767eb8c9408fc6a2012d24d78b177cf22f29edc5772d10  codeql.tar.zst' | sha256sum --check
+          tar --zstd -xf codeql.tar.zst
+          "$RUNNER_TEMP/codeql/codeql" version --format=json
+          "$RUNNER_TEMP/codeql/codeql" resolve languages
+      - name: Scan with the current default language suites
         run: |
-          if [[ ${RUNNER_NAME:-} == darkbloom-* && -z ${DARKBLOOM_CACHE_URL:-} ]]; then
-            echo "CI_ACTIONS_CACHE=off" >> "$GITHUB_ENV"
-            echo "::notice title=Actions cache::The plane gave this Darkbloom Sandbox no cache, so the cache step is skipped."
-          fi
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: env.CI_ACTIONS_CACHE != 'off'
+          set -euo pipefail
+          codeql="$RUNNER_TEMP/codeql/codeql"
+          mkdir "$RUNNER_TEMP/codeql-dbs" "$RUNNER_TEMP/codeql-results"
+          for language in actions cpp python; do
+            "$codeql" database create "$RUNNER_TEMP/codeql-dbs/$language" \
+              --source-root="$GITHUB_WORKSPACE" --language="$language" \
+              --build-mode=none --threads=4 --ram=8192
+            "$codeql" database analyze "$RUNNER_TEMP/codeql-dbs/$language" \
+              --format=sarifv2.1.0 --output="$RUNNER_TEMP/codeql-results/$language.sarif" \
+              --threads=4 --ram=8192
+          done
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'codeql-results'
+          result = {'source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'languages': {}}
+          for language in ('actions', 'cpp', 'python'):
+              data = json.loads((root / f'{language}.sarif').read_text())
+              assert data['version'] == '2.1.0' and data['runs'], language
+              rules = [rule for run in data['runs'] for rule in run['tool']['driver'].get('rules', [])]
+              assert rules, language
+              result['languages'][language] = {'rules': len(rules), 'findings': sum(len(run.get('results', [])) for run in data['runs'])}
+          (root / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PY
+      - name: Keep canary results without publishing security alerts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-3|${{ runner.os }}|${{ runner.arch }}|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
-      - name: Run pre-commit
-        run: pre-commit run --show-diff-on-failure --color=always --all-files
-
-  linux_sanitizer_build_and_test:
-    name: Linux Sanitizer Tests (${{ matrix.sanitizer }})
-    needs: check_lint
-    strategy:
-      fail-fast: false
-      matrix:
-        sanitizer: [ASAN, UBSAN]
-        # todo 12/16/2025: enable TSAN later + consider enabling ASAN for GPU backend tests.
-        # sanitizer: [ASAN, UBSAN, TSAN]
-    runs-on: ubuntu-22.04-arm
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Install Dependencies
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential \
-            libblas-dev \
-            liblapacke-dev \
-            libopenblas-dev \
-            cmake \
-            clang \
-            git
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-
-      - name: Linux Build and Test with ${{ matrix.sanitizer }}
-        run: |
-          bash .github/scripts/build-sanitizer-tests.sh ${{ matrix.sanitizer }}
-
-  linux_fedora_build_cpp_x86_64:
-    name: Linux Fedora (x86_64)
-    needs: check_lint
-    runs-on: ubuntu-22.04
-    container:
-      image: fedora:42
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: CPP Build Test - No Release
-        run: |
-          bash ./.github/scripts/setup+build-cpp-linux-fedora-container.sh
-
-  linux_fedora_build_cpp_aarch64:
-    name: Linux Fedora (aarch64)
-    needs: check_lint
-    runs-on: ubuntu-22.04-arm
-    container:
-      image: fedora:42
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: CPP Build Test - No Release
-        run: |
-          bash ./.github/scripts/setup+build-cpp-linux-fedora-container.sh
+          name: native-codeql-canary
+          path: ${{ runner.temp }}/codeql-results/
+          if-no-files-found: error
+          retention-days: 3

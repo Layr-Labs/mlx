@@ -201,6 +201,31 @@
 
 instantiate_quantized_all()
 
+#define instantiate_quantized_tile(type, group_size, row_blocks, split_k) \
+  instantiate_kernel(                                                     \
+      "affine_qmv_tile_" #type "_gs_" #group_size "_b_4_rb_" #row_blocks  \
+      "_sk_" #split_k,                                                    \
+      affine_qmv_tile,                                                    \
+      type,                                                               \
+      group_size,                                                         \
+      4,                                                                  \
+      row_blocks,                                                         \
+      split_k)
+
+#define instantiate_quantized_tile_types(group_size)       \
+  instantiate_quantized_tile(float16_t, group_size, 1, 0)  \
+  instantiate_quantized_tile(float16_t, group_size, 1, 1)  \
+  instantiate_quantized_tile(float16_t, group_size, 2, 0)  \
+  instantiate_quantized_tile(float16_t, group_size, 2, 1)  \
+  instantiate_quantized_tile(bfloat16_t, group_size, 1, 0) \
+  instantiate_quantized_tile(bfloat16_t, group_size, 1, 1) \
+  instantiate_quantized_tile(bfloat16_t, group_size, 2, 0) \
+  instantiate_quantized_tile(bfloat16_t, group_size, 2, 1)
+
+instantiate_quantized_tile_types(32)
+instantiate_quantized_tile_types(64)
+instantiate_quantized_tile_types(128)
+
 instantiate_kernel(
     "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32",
     affine_gather_qmm_gemma4_expert_tiles,

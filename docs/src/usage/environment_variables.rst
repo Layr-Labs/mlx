@@ -151,11 +151,23 @@ Metal
    each row count from 2 to the limit - 1, so the rows of different requests
    can share one product. The default, ``0``, also uses faster kernels that
    give a row different bits at some row counts: ``qmv_mma`` for 6 to 16 rows
-   of the floating-point modes, and the affine split-K kernel from 8 rows on
-   GPUs with neural accelerators. The vector limit is 6 to 33 rows; it
+   of the floating-point modes, the affine split-K kernel from 8 rows on
+   GPUs with neural accelerators, and the tile kernel of
+   :envvar:`MLX_QMV_TILE`. The vector limit is 6 to 33 rows; it
    depends on the GPU and on the shape. A row alone (``qmv``) can get bits
    that are different from the bits of the same row among two or more rows.
    MLX reads this variable once in each process.
+
+.. envvar:: MLX_QMV_TILE
+
+   Selects the split-K tile kernel for a quantized matrix product ``x @ w.T``
+   with 6 to 16 rows of ``float16`` or ``bfloat16``, 4-bit affine weights in
+   groups of 32, 64 or 128, ``K`` a multiple of 256 and ``N`` a multiple of
+   128. The default, ``-1``, uses it on Ultra GPUs from gen 15 (M3 Ultra),
+   where the vector kernels leave most cores idle. Set it to ``1`` to use it
+   on each GPU without neural accelerators, or to ``0`` to not use it. With
+   :envvar:`MLX_QMV_BATCH_INVARIANT` set, rows below the vector limit do not
+   use it. MLX reads this variable once in each process.
 
 Advanced tuning
 ---------------

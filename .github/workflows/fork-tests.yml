@@ -209,6 +209,16 @@ jobs:
           ctest --test-dir build -R '^qmv_batch_invariant$' \
             --output-on-failure --no-tests=error
 
+      - name: Run the quantized matmul rows with MLX_QMV_TILE=1
+        # The runner is not an Ultra GPU, so the C++ test steps above do not
+        # use the tile kernel. This ctest entry turns it on (tests/CMakeLists.txt).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/qmv-tile-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^qmv_tile$' \
+            --output-on-failure --no-tests=error
+
       - name: Merge the coverage profiles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

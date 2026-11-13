@@ -612,6 +612,14 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/backend/metal/scaled_dot_product_attention.cpp"
+    - title: "CPU reductions of empty arrays"
+      description: |
+        An empty-input CPU reduction fills its output with the operation's identity
+        before planning a reduction. A 4 GiB output previously reached a strided
+        reduction whose 32-bit loop counter wrapped to zero and wrote past the buffer.
+        The existing large-output regression and empty-array identity tests cover this.
+      globs:
+        - "mlx/backend/cpu/reduce.cpp"
     - title: "CPU qqmm refuses a global scale"
       description: |
         The CPU `QQMatmul` kernel has no global scale input. Upstream passes the scales to it,
@@ -733,7 +741,9 @@ def:
         profiles of all jobs into one report. The `setup` action pins its actions to full
         commit SHAs, because the organization blocks actions that are not pinned. The
         organization also blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with
-        Homebrew and restores the ccache files with `actions/cache`. The `fork-build-cache`
+        Homebrew and restores the ccache files with `actions/cache`. The macOS setup
+        also installs pinned Ninja 1.13.2 in its Python environment, so both CMake builds
+        have their selected generator. The `fork-build-cache`
         action saves the ccache files. It also keeps a cache of the compiled Metal kernels: the
         build jobs put `metal-cache/xcrun` first in `PATH`, and that script gives the kernel
         compile and link commands a cache. The key of a kernel is its preprocessed source,

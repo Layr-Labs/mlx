@@ -171,6 +171,13 @@ runs:
           echo MLX_PTX_CACHE_DIR=/tmp/mlx-ptx-cache >> $GITHUB_ENV
         fi
 
+    - name: Install Ninja on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        uv pip install --python .venv/bin/python --only-binary=:all: 'ninja==1.13.2'
+        .venv/bin/ninja --version
+
     - name: Setup Python venv (Windows)
       if: runner.os == 'Windows'
       shell: cmd

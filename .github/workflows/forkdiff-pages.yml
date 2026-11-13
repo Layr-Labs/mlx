@@ -57,6 +57,8 @@ jobs:
 
       - name: Build forkdiff
         run: |
+          # Render this exact checkout on main and on manual branch canaries.
+          git update-ref refs/heads/main HEAD
           mkdir -p tmp/pages
           go run github.com/protolambda/forkdiff@v0.1.1 \
             -repo . -fork fork.yaml -out tmp/pages/index.html

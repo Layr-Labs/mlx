@@ -71,11 +71,6 @@ jobs:
           path: tmp/pages/index.html
           retention-days: 30
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
-        with:
-          path: tmp/pages
-
   deploy:
     name: Deploy fork diff
     needs: render
@@ -109,6 +104,23 @@ jobs:
       - name: Setup Pages
         if: steps.pages.outputs.enabled == 'true'
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Download the rendered page
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: forkdiff-page
+          path: tmp/pages
+
+      - name: Prepare the static page
+        if: steps.pages.outputs.enabled == 'true'
+        run: touch tmp/pages/.nojekyll
+
+      - name: Upload Pages artifact
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: tmp/pages
 
       - name: Deploy to GitHub Pages
         if: steps.pages.outputs.enabled == 'true'

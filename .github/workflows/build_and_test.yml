@@ -87,19 +87,24 @@ jobs:
         run: |
           bash .github/scripts/build-sanitizer-tests.sh ${{ matrix.sanitizer }}
 
-  linux_fedora_build_cpp:
-    name: Linux Fedora (${{ matrix.arch }})
+  linux_fedora_build_cpp_x86_64:
+    name: Linux Fedora (x86_64)
     needs: check_lint
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - host: ubuntu-22.04
-            arch: x86_64
-          - host: ubuntu-22.04-arm
-            arch: aarch64
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:42
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-    runs-on: ${{ matrix.host }}
+      - name: CPP Build Test - No Release
+        run: |
+          bash ./.github/scripts/setup+build-cpp-linux-fedora-container.sh
+
+  linux_fedora_build_cpp_aarch64:
+    name: Linux Fedora (aarch64)
+    needs: check_lint
+    runs-on: ubuntu-22.04-arm
     container:
       image: fedora:42
     steps:

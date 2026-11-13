@@ -745,7 +745,11 @@ def:
         organization also blocks `hendrikmuhs/ccache-action`, so `setup` installs ccache with
         Homebrew and restores the ccache files with `actions/cache`. The macOS setup
         also installs pinned Ninja 1.13.2 in its Python environment, so both CMake builds
-        have their selected generator. The `fork-build-cache`
+        have their selected generator. Native build jobs fetch the Apple Metal C++
+        headers with four bounded attempts, then check the exact size and SHA-256
+        before safe ZIP extraction. Both wheel and C++ builds use that verified
+        directory; CMake also pins the archive hash for other callers.
+        The `fork-build-cache`
         action saves the ccache files. It also keeps a cache of the compiled Metal kernels: the
         build jobs put `metal-cache/xcrun` first in `PATH`, and that script gives the kernel
         compile and link commands a cache. The key of a kernel is its preprocessed source,
@@ -790,6 +794,7 @@ def:
         its log at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
+        - "CMakeLists.txt"
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"
         - ".github/actions/build-wheel/action.yml"
@@ -814,6 +819,8 @@ def:
         - ".github/scripts/fork-tests/metal-cache/xcrun"
         - ".github/scripts/fork-tests/python-shards.json"
         - ".github/scripts/fork-tests/python_shards.py"
+        - ".github/scripts/fork-tests/metal_cpp.py"
+        - ".github/scripts/fork-tests/test_metal_cpp.py"
         - ".github/workflows/fork-tests.yml"
         - ".github/workflows/darkbloom-route.yml"
         - ".github/workflows/darkbloom-watchdog.yml"

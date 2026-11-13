@@ -228,7 +228,9 @@ if(MLX_BUILD_METAL)
 
   set(METAL_CPP_URL
       https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip)
-  FetchContent_Declare(metal_cpp URL ${METAL_CPP_URL})
+  FetchContent_Declare(
+    metal_cpp URL ${METAL_CPP_URL}
+    URL_HASH SHA256=4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4)
   FetchContent_MakeAvailable(metal_cpp)
   target_include_directories(
     mlx PUBLIC $<BUILD_INTERFACE:${metal_cpp_SOURCE_DIR}>

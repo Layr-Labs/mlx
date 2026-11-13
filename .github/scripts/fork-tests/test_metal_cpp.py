@@ -36,7 +36,7 @@ class MetalCppIntegrity(unittest.TestCase):
 
     def test_cmake_pins_the_verified_archive(self):
         source = Path(__file__).resolve().parents[3] / "CMakeLists.txt"
-        self.assertIn("URL_HASH SHA256=" + metal_cpp.SHA256, source.read_text())
+        self.assertRegex(source.read_text(), r"URL_HASH\s+SHA256=" + metal_cpp.SHA256)
         self.assertIn(metal_cpp.URL, source.read_text())
 
     def test_partial_transfer_retries_from_empty_file(self):

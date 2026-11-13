@@ -311,10 +311,16 @@ TEST_CASE("test async_eval does not throw a stored stream error") {
   // A failed CPU task stores its error in the stream. Wait for the task
   // without synchronize, so the error is still stored when async_eval runs.
   auto s = new_stream(Device::cpu);
-  scheduler::enqueue(s, []() { throw std::runtime_error("task failed"); });
+  auto release = std::make_shared<std::promise<void>>();
+  auto can_throw = release->get_future().share();
+  scheduler::enqueue(s, [can_throw]() {
+    can_throw.wait();
+    throw std::runtime_error("task failed");
+  });
   auto done = std::make_shared<std::promise<void>>();
   auto finished = done->get_future();
   scheduler::enqueue(s, [done]() { done->set_value(); });
+  release->set_value();
   finished.wait();
 
   auto x = add(array(1.0f), array(2.0f), s);

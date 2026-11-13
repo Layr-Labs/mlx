@@ -209,6 +209,18 @@ jobs:
           ctest --test-dir build -R '^qmv_batch_invariant$' \
             --output-on-failure --no-tests=error
 
+      - name: Run the quantized matmul rows with MLX_QMV_ROW_EXACT=16
+        # MLX reads the row limit once in each process. The C++ test steps
+        # above run the case with the row-exact kernel off; these ctest entries
+        # run it with the kernel on, and the batch-invariant case with the two
+        # switches (tests/CMakeLists.txt).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LLVM_PROFILE_FILE: ${{ runner.temp }}/profiles/qmv-rows-%p-%m.profraw
+        run: |
+          ctest --test-dir build -R '^qmv_row_exact' \
+            --output-on-failure --no-tests=error
+
       - name: Merge the coverage profiles
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

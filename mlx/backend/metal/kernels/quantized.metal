@@ -201,6 +201,41 @@
 
 instantiate_quantized_all()
 
+#define instantiate_quantized_rows(type, group_size, bits, fast, rows) \
+  instantiate_kernel(                                                  \
+      "affine_qmv_rows_" #type "_gs_" #group_size "_b_" #bits          \
+      "_fast_" #fast "_rows_" #rows,                                   \
+      affine_qmv_rows,                                                 \
+      type,                                                            \
+      group_size,                                                      \
+      bits,                                                            \
+      fast,                                                            \
+      rows)
+
+#define instantiate_quantized_rows_counts(type, group_size, bits, fast) \
+  instantiate_quantized_rows(type, group_size, bits, fast, 2)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 3)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 4)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 5)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 6)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 7)           \
+  instantiate_quantized_rows(type, group_size, bits, fast, 8)
+
+#define instantiate_quantized_rows_bits(type, group_size)      \
+  instantiate_quantized_rows_counts(type, group_size, 4, 0)    \
+  instantiate_quantized_rows_counts(type, group_size, 4, 1)    \
+  instantiate_quantized_rows_counts(type, group_size, 8, 0)    \
+  instantiate_quantized_rows_counts(type, group_size, 8, 1)
+
+#define instantiate_quantized_rows_groups(type) \
+  instantiate_quantized_rows_bits(type, 32)     \
+  instantiate_quantized_rows_bits(type, 64)     \
+  instantiate_quantized_rows_bits(type, 128)
+
+instantiate_quantized_rows_groups(float)
+instantiate_quantized_rows_groups(float16_t)
+instantiate_quantized_rows_groups(bfloat16_t)
+
 instantiate_kernel(
     "affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32",
     affine_gather_qmm_gemma4_expert_tiles,

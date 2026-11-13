@@ -769,6 +769,13 @@ def:
         the sandbox has no Darkbloom cache. The Linux sanitizer and Fedora
         jobs and the fork-diff deployment still use GitHub-hosted runners.
 
+        The native CodeQL workflow remains disabled until the operator switches
+        from GitHub default setup and enables `CODEQL_NATIVE`. Its read-only ARM
+        scan uses the pinned CodeQL 2.27.4 bundle and the existing Actions, C/C++
+        and Python default query suites. A separate GitHub-hosted job validates
+        the same run's fingerprinted SARIF before uploading the original category
+        identities. It checks out and executes no repository source.
+
         Three Python tests check behavior that exists only in
         the Metal backend (Winograd batch tiling, the Winograd switch and the FFT size limit),
         so they skip when the default device is not the GPU. Upstream's
@@ -790,13 +797,17 @@ def:
         - ".github/actions/test-wheel/action.yml"
         - ".github/actions/test-windows/action.yml"
         - ".github/workflows/build_and_test.yml"
+        - ".github/workflows/codeql-native.yml"
         - ".github/workflows/documentation.yml"
         - ".github/workflows/release.yml"
         - ".github/workflows/update_bypass_list.yml"
         - ".github/scripts/find-eligible-contributors.js"
+        - ".github/scripts/codeql_artifacts.py"
+        - ".github/scripts/codeql_artifacts_test.py"
         - ".github/scripts/update-bypass-list.js"
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
+        - "docs/ci-codeql-native.md"
         - "README.md"
         - ".github/actions/setup/action.yml"
         - ".github/actions/fork-build-cache/action.yml"

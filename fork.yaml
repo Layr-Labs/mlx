@@ -672,6 +672,8 @@ def:
         `scheduler::DeferStreamErrors` guard, and `enqueue` does not throw while the guard
         lives on the thread. `synchronize` throws the error later. `eval` does not change.
         A C++ test stores the error first, so it fails without the fix on every run.
+        The failing task waits until its completion marker is queued, so the test's
+        setup cannot consume the error before the `async_eval` assertion.
       globs:
         - "mlx/scheduler.h"
         - "mlx/scheduler.cpp"

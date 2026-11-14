@@ -12,15 +12,15 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 5
     steps:
-      - name: Verify the existing eight-core Mac profile
+      - name: Verify the existing twelve-core Mac profile
         env:
           NATIVE_RUNNER: ${{ runner.name }}
         run: |
           set -euo pipefail
           [[ "$NATIVE_RUNNER" == darkbloom-* ]]
           [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]
-          [[ "$(/usr/sbin/sysctl -n hw.ncpu)" == 8 ]]
-          [[ "$(/usr/sbin/sysctl -n hw.memsize)" == 17179869184 ]]
+          [[ "$(/usr/sbin/sysctl -n hw.ncpu)" == 12 ]]
+          [[ "$(/usr/sbin/sysctl -n hw.memsize)" == 34359738368 ]]
           xcodebuild -version
           xcrun swift --version
           printf 'Classic Mac admission completed on %s\n' "$NATIVE_RUNNER"

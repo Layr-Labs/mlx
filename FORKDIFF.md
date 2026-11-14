@@ -35,9 +35,14 @@ to hosted runners. These bounds are not a promise of a 24-hour native queue.
 The `DARKBLOOM_ROUTING` variable controls the separate dynamic route workflow;
 it does not turn off these native-only jobs.
 
-The GitHub-hosted Pages job still packages and publishes the rendered artifact
-through its protected environment. The Fedora jobs still use their existing
-hosted runners. The disabled native CodeQL workflow keeps its separate routing
+The Fedora aarch64 job runs the unchanged Fedora script on a Darkbloom Linux
+ARM64 runner. The sandbox has no Docker, so `.github/scripts/fedora-proot/`
+unpacks the archived Fedora 42 container rootfs (pinned by digest) and runs the
+script under PRoot, built from pinned source with its missing ARM64 `faccessat2`
+entry added. PRoot fakes root through ptrace and is not an isolation boundary;
+the job VM is. The Fedora x86_64 job keeps its hosted runner: emulating x86 on
+ARM was not qualified. The GitHub-hosted Pages job still packages and publishes
+the rendered artifact through its protected environment. The disabled native CodeQL workflow keeps its separate routing
 and activation rules.
 
 ## The gate

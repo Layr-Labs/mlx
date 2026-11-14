@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "proot_commit": "d4b49e2243dee34e41c13dfeca6a3d07e9cf0f00",
+  "fedora_manifest": "sha256:cf9e82fbfad546ad06c626dabe8ba1aac6100ecfde4339e521352e9b77eaa794",
+  "files": {
+    "fedora.oci.tar.xz": {
+      "url": "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/42/Container/aarch64/images/Fedora-Container-Base-Generic-42-1.1.aarch64.oci.tar.xz",
+      "size": 57715532,
+      "sha256": "137a907cd0931d9c4c7cfd5467031e03da3715141f24c39078c7b7f76c809038"
+    },
+    "proot.tar.gz": {
+      "url": "https://codeload.github.com/proot-me/proot/tar.gz/d4b49e2243dee34e41c13dfeca6a3d07e9cf0f00",
+      "size": 234642,
+      "sha256": "25ffd8f31f32a0edd644da770008d8b8ee99197da03dc80cd20226b3012b7d26"
+    },
+    "libtalloc-dev.deb": {
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261026T000000Z/pool/main/t/talloc/libtalloc-dev_2.4.2-1build2_arm64.deb",
+      "size": 62224,
+      "sha256": "d63fc770129092ba8c40d44db4e2d740f645d5291ea6a9bf9b61d7e5294dcf5c"
+    },
+    "libtalloc2.deb": {
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261026T000000Z/pool/main/t/talloc/libtalloc2_2.4.2-1build2_arm64.deb",
+      "size": 26748,
+      "sha256": "4b182e41db5537937a423fc8f9593c65330553442eba17e058c4cc1c7a73a382"
+    },
+    "pkgconf-bin.deb": {
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261026T000000Z/pool/main/p/pkgconf/pkgconf-bin_1.8.1-2build1_arm64.deb",
+      "size": 20458,
+      "sha256": "bcd0d24c48b8b73ed7ba20ffc21a3575d5d9bdd53c3cee5a8051b7bde5fbf638"
+    },
+    "libpkgconf3.deb": {
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261026T000000Z/pool/main/p/pkgconf/libpkgconf3_1.8.1-2build1_arm64.deb",
+      "size": 31226,
+      "sha256": "f476cb81e1ecec6bf974f21181469cf5edcc749c4ead621469cdbf584dfd3be8"
+    }
+  },
+  "fedora_layer": {
+    "archive": "fedora.oci.tar.xz",
+    "manifest": "sha256:cf9e82fbfad546ad06c626dabe8ba1aac6100ecfde4339e521352e9b77eaa794",
+    "sha256": "cfc0be9fb5518ec8eb4521cdb4dc2ee14df42924e0f468d24a8e6cfbdda5fdc9",
+    "size": 58468983
+  }
+}

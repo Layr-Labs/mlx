@@ -761,8 +761,10 @@ def:
         without a hosted fallback. The Linux lint, ASAN/UBSAN, fork-diff check
         and Pages renderer also use native-only labels. The sanitizer jobs use
         the qualified compiler image and a tool preflight, retaining their
-        original test script within a 60-minute cap. Fedora jobs stay on
-        GitHub-hosted runners, and the protected Pages publisher stays hosted.
+        original test script within a 60-minute cap. The Fedora aarch64 job runs
+        the same Fedora script natively in the archived Fedora 42 container rootfs
+        under PRoot (`.github/scripts/fedora-proot/`); the Fedora x86_64 job and
+        the protected Pages publisher stay on GitHub-hosted runners.
         `FORKDIFF.md` describes the qualification and watchdog time bounds.
         `darkbloom-watchdog.yml` remains unchanged;
         a rerun keeps these static labels. On a Darkbloom Sandbox that has
@@ -795,6 +797,7 @@ def:
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actionlint.yaml"
+        - ".github/scripts/fedora-proot/*"
         - "CMakeLists.txt"
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"

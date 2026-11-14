@@ -148,6 +148,37 @@ def:
         - "tests/qmv_batch_invariant_tests.cpp"
         - "tests/CMakeLists.txt"
         - ".github/workflows/fork-tests.yml"
+    - title: "Row-exact quantized matmul rows (opt-in)"
+      description: |
+        Opt-in (`MLX_QMV_ROW_EXACT=<rows>`, read once in each process, default 0). An affine
+        4-bit or 8-bit `x @ w.T` (group size 32, 64 or 128) with 2 rows up to the limit then
+        runs `affine_qmv_rows`. Each row gets the bits that `qmv` gives the row alone: the
+        kernel does, for each row, the lanes, expressions and order of additions of the
+        one-row kernel (`qmv_fast_impl` where K is a multiple of 512 for 4 bits or 256 for
+        8 bits, else `qmv_impl`), and the rows share only the read of the weights. One launch
+        holds tiles of up to 8 rows (4 bits) or 6 rows (8 bits). K = 64 and K = 128 go to
+        `qmv_quad`, which makes each row alone. With `MLX_QMV_BATCH_INVARIANT=1` also, the
+        kernel serves each row count below the vector limit. This closes the gap that `MLX_QMV_BATCH_INVARIANT` leaves (a row alone can
+        have other bits than the same row among more rows), so a caller can verify some
+        tokens in one pass, or decode the rows of some requests together, with the bits of
+        serial one-row decode. One-row products, other modes and bit widths, and products
+        above the limit do not change. With the switch, the products that the kernel serves
+        get other bits than the default routes give them (`qmv_wide`, `qmv_mma`, split-K), so
+        the default stays 0. `tests/qmv_row_exact_tests.cpp` compares the bytes of each row
+        of products of 2 to 16 rows with the same row alone, for 4 and 8 bits, three group
+        sizes, three float types, and K and N that cover the fast kernel, the general kernel
+        with a short last block, `qmv_quad` and a part of a tile of output rows. The
+        `qmv_row_exact` ctest entry, which Fork Tests runs, sets the switch, and
+        `qmv_row_exact_batch_invariant` runs the batch-invariant case with the two switches.
+      globs:
+        - "mlx/utils.h"
+        - "mlx/backend/metal/quantized.cpp"
+        - "mlx/backend/metal/kernels/quantized.h"
+        - "mlx/backend/metal/kernels/quantized.metal"
+        - "docs/src/usage/environment_variables.rst"
+        - "tests/qmv_row_exact_tests.cpp"
+        - "tests/CMakeLists.txt"
+        - ".github/workflows/fork-tests.yml"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

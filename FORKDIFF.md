@@ -42,7 +42,9 @@ script under PRoot, built from pinned source with its missing ARM64 `faccessat2`
 entry added. PRoot fakes root through ptrace and is not an isolation boundary;
 the job VM is. The Fedora x86_64 job keeps its hosted runner: emulating x86 on
 ARM was not qualified. The GitHub-hosted Pages job still packages and publishes
-the rendered artifact through its protected environment. The disabled native CodeQL workflow keeps its separate routing
+the rendered artifact through its protected environment. If its first deploy
+fails before it creates a deployment (the packaged artifact is not listed yet),
+it waits 20 seconds and tries once more. The disabled native CodeQL workflow keeps its separate routing
 and activation rules.
 
 ## The gate

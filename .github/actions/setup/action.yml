@@ -88,16 +88,23 @@ runs:
         :: Export to all steps.
         >>%GITHUB_ENV% set
 
-    # setup-uv aborts its download after about five seconds. Behind a Darkbloom
-    # sandbox's egress proxy the connection sometimes takes longer (two Mac jobs
-    # on 2026-11-14 failed this way), and a native job has no hosted fallback.
-    # Only when the first try failed, wait and try once more.
+    # setup-uv fetches its 1.5 MB version manifest (raw.githubusercontent.com)
+    # with a 5-second limit. Through a Darkbloom sandbox's egress proxy that takes
+    # about 3.3 seconds when it works, and some hosts failed twice in a row on
+    # 2026-11-14; a native job has no hosted fallback. So pin uv and hand setup-uv
+    # a one-entry manifest inline (data: URL, nothing to fetch). The archive still
+    # comes from the Astral mirror, with the tool cache's own retries, and must
+    # match this SHA-256 (the official manifest's, 2026-11-12). Bump all three
+    # together. Only when the first try failed, wait and try once more.
     - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
       id: setup-uv
       continue-on-error: true
       with:
         enable-cache: false
         quiet: true
+        version: 0.13.8
+        checksum: 6b71028a6b904f2ae3340ef52e595512de807d06c0a20eaef2f692581b246558
+        manifest-file: data:application/x-ndjson;base64,eyJ2ZXJzaW9uIjoiMC4xMy44IiwiZGF0ZSI6IjIwMjYtMTEtMTJUMTc6MDM6MDdaIiwiYXJ0aWZhY3RzIjpbeyJwbGF0Zm9ybSI6ImFhcmNoNjQtYXBwbGUtZGFyd2luIiwidmFyaWFudCI6ImRlZmF1bHQiLCJ1cmwiOiJodHRwczovL2dpdGh1Yi5jb20vYXN0cmFsLXNoL3V2L3JlbGVhc2VzL2Rvd25sb2FkLzAuMTMuOC91di1hYXJjaDY0LWFwcGxlLWRhcndpbi50YXIuZ3oiLCJhcmNoaXZlX2Zvcm1hdCI6InRhci5neiIsInNoYTI1NiI6IjZiNzEwMjhhNmI5MDRmMmFlMzM0MGVmNTJlNTk1NTEyZGU4MDdkMDZjMGEyMGVhZWYyZjY5MjU4MWIyNDY1NTgifV19Cg==
 
     - name: Wait before the second uv setup
       if: steps.setup-uv.outcome == 'failure'
@@ -109,6 +116,9 @@ runs:
       with:
         enable-cache: false
         quiet: true
+        version: 0.13.8
+        checksum: 6b71028a6b904f2ae3340ef52e595512de807d06c0a20eaef2f692581b246558
+        manifest-file: data:application/x-ndjson;base64,eyJ2ZXJzaW9uIjoiMC4xMy44IiwiZGF0ZSI6IjIwMjYtMTEtMTJUMTc6MDM6MDdaIiwiYXJ0aWZhY3RzIjpbeyJwbGF0Zm9ybSI6ImFhcmNoNjQtYXBwbGUtZGFyd2luIiwidmFyaWFudCI6ImRlZmF1bHQiLCJ1cmwiOiJodHRwczovL2dpdGh1Yi5jb20vYXN0cmFsLXNoL3V2L3JlbGVhc2VzL2Rvd25sb2FkLzAuMTMuOC91di1hYXJjaDY0LWFwcGxlLWRhcndpbi50YXIuZ3oiLCJhcmNoaXZlX2Zvcm1hdCI6InRhci5neiIsInNoYTI1NiI6IjZiNzEwMjhhNmI5MDRmMmFlMzM0MGVmNTJlNTk1NTEyZGU4MDdkMDZjMGEyMGVhZWYyZjY5MjU4MWIyNDY1NTgifV19Cg==
 
     # The organization blocks hendrikmuhs/ccache-action. The next three steps
     # do the same work with Homebrew and actions/cache. They run on macOS only.

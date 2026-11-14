@@ -39,7 +39,7 @@ inputs:
 outputs:
   cmake-args:
     description: 'The args for generating CMake project'
-    value: ${{ steps.setup.outputs.cmake-args }}
+    value: ${{ steps.setup.outputs.cmake-args }} ${{ steps.metal-cpp.outputs.cmake-args }}
   ccache-save-key:
     description: 'The key to save the ccache files with'
     value: ${{ steps.setup.outputs.ccache-save-key }}
@@ -111,6 +111,14 @@ runs:
         # The build and the C++ tests do not use openmpi. Only the
         # distributed test in python-gpu shard 0 does.
         install-macos-deps: 'false'
+
+    - name: Fetch verified Apple headers with bounded retries
+      id: metal-cpp
+      if: inputs.phase == 'restore' && runner.os == 'macOS' && startsWith(runner.name, 'darkbloom-')
+      shell: bash
+      run: |
+        python3 .github/scripts/fork-tests/test_metal_cpp.py
+        python3 .github/scripts/fork-tests/metal_cpp.py >> "$GITHUB_OUTPUT"
 
     - name: Restore the Metal kernel cache
       if: inputs.phase == 'restore' && env.CI_ACTIONS_CACHE != 'off'

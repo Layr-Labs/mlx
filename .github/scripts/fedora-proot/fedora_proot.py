@@ -306,6 +306,13 @@ def run_pilot(work, source, pins):
 
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
+                evidence["steps"].append(
+                    {
+                        "name": name,
+                        "seconds": time.monotonic() - before,
+                        "exit": "timeout",
+                    }
+                )
                 print(
                     (work / (name + ".log")).read_text(errors="replace"),
                     end="",

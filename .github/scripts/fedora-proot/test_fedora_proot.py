@@ -325,18 +325,23 @@ class Downloads(unittest.TestCase):
             return False
 
     def test_a_stale_partial_file_is_removed_before_the_first_attempt(self):
+        calls = []
+
+        def urlopen(url, timeout):
+            calls.append(url)
+            return self.Response(b"approved")
+
         with (
             tempfile.TemporaryDirectory() as tmp,
-            unittest.mock.patch.object(
-                pilot.urllib.request,
-                "urlopen",
-                lambda url, timeout: self.Response(b"approved"),
-            ),
+            unittest.mock.patch.object(pilot.urllib.request, "urlopen", urlopen),
+            unittest.mock.patch.object(pilot.time, "sleep", lambda s: None),
         ):
             part = Path(tmp) / "input.part"
             part.write_bytes(b"stale")
             pilot.download("https://example.invalid/x", part, 8)
             self.assertEqual(part.read_bytes(), b"approved")
+            # One attempt: the stale file was removed up front, not after a failure.
+            self.assertEqual(len(calls), 1)
 
     def test_a_truncated_body_is_retried(self):
         bodies = [b"appr", b"approved"]

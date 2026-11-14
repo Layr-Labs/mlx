@@ -17,17 +17,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  route:
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        lint linux_arm64 ubuntu-22.04
-
   check_lint:
     name: Check Lint
-    needs: route
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['lint'] }}
+    runs-on: [self-hosted, linux, ARM64, darkbloom-linux-arm64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,25 +55,19 @@ jobs:
         sanitizer: [ASAN, UBSAN]
         # todo 12/16/2025: enable TSAN later + consider enabling ASAN for GPU backend tests.
         # sanitizer: [ASAN, UBSAN, TSAN]
-    runs-on: ubuntu-22.04-arm
+    runs-on: [self-hosted, linux, ARM64, darkbloom-linux-arm64]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Install Dependencies
+      - name: Check the native sanitizer image tools
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential \
-            libblas-dev \
-            liblapacke-dev \
-            libopenblas-dev \
-            cmake \
-            clang \
-            git
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
+          [[ "$RUNNER_NAME" == darkbloom-* ]]
+          [[ "$(uname -s)" == Linux && "$(uname -m)" == aarch64 ]]
+          cmake --version
+          clang --version
+          c++ --version
+          command -v make git
 
       - name: Linux Build and Test with ${{ matrix.sanitizer }}
         run: |

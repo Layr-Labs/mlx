@@ -758,19 +758,19 @@ def:
 
         All eight Mac jobs in `fork-tests.yml` use native macOS ARM64 labels and
         the approved 12-core, 32-GiB profile. They wait for compatible capacity
-        without a hosted fallback. Their steps, tests and timeouts stay unchanged.
-        `FORKDIFF.md` describes the qualification and watchdog time bounds.
-        `darkbloom-watchdog.yml` remains unchanged; a rerun keeps these static
-        labels. On a Darkbloom Sandbox that has
+        without a hosted fallback. The Linux lint, ASAN/UBSAN, fork-diff check
+        and Pages renderer also use native-only labels. The sanitizer jobs use
+        the qualified compiler image and a tool preflight, retaining their
+        original test script. Fedora jobs remain separate, and the protected
+        Pages publisher stays hosted. `FORKDIFF.md` describes the qualification,
+        job and watchdog time bounds. `darkbloom-watchdog.yml` remains unchanged;
+        a rerun keeps these static labels. On a Darkbloom Sandbox that has
         no Darkbloom cache, `fork-build-cache` sets `CI_ACTIONS_CACHE=off` and every
         cache step is skipped, so that the sandbox does not write GitHub's Actions
-        cache. The Darkbloom macOS image has Xcode 27.2 on macOS 27.
-        No job selects an Xcode. The lint job of `build_and_test.yml`, the fork-diff
-        check and the Pages renderer ask for Linux ARM64 sandboxes, with GitHub-hosted
-        labels as fallbacks. Lint uses a Python 3.12 virtual environment and keeps its
-        pre-commit cache separate by runner architecture. It skips Actions caching when
-        the sandbox has no Darkbloom cache. The Linux sanitizer, Fedora and protected
-        Pages publishing jobs still use GitHub-hosted runners.
+        cache. The Darkbloom macOS image has Xcode 27.2 on macOS 27. No job selects
+        an Xcode. Lint uses a Python 3.12 virtual environment and keeps its pre-commit
+        cache separate by runner architecture. It skips Actions caching when the
+        sandbox has no Darkbloom cache.
 
         The native CodeQL workflow remains disabled until the operator switches
         from GitHub default setup and enables `CODEQL_NATIVE`. Its read-only ARM
@@ -794,6 +794,8 @@ def:
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actionlint.yaml"
+        - ".github/workflows/forkdiff-check.yml"
+        - ".github/workflows/forkdiff-pages.yml"
         - "CMakeLists.txt"
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"

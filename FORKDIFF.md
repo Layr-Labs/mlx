@@ -18,25 +18,27 @@ Settings → Pages → Source: **GitHub Actions**. The workflow token cannot do
 this itself. Until it's done the deploy workflow still builds the page (kept
 as a run artifact, `forkdiff-page`) and exits with a notice instead of failing.
 
-## Native Mac CI
+## Native CI
 
-All eight Mac jobs in `fork-tests.yml` use only Darkbloom macOS ARM64 runners
-with the approved 12-core, 32-GiB profile. They keep their original steps, tests
-and job timeouts. When compatible capacity is busy they wait; these jobs have
-no GitHub-hosted or Blacksmith fallback.
+The Linux lint job, ASAN/UBSAN tests, fork-diff check and page renderer use only
+Darkbloom Linux ARM64 runners. All eight Mac jobs in `fork-tests.yml` use only
+Darkbloom macOS ARM64 runners with the approved 12-core, 32-GiB profile.
+They keep their original steps, tests and job timeouts.
+The sanitizer jobs use the qualified image's compilers and dependencies, with a
+tool preflight in place of installing packages through sudo. When compatible
+capacity is busy they wait; these jobs have no GitHub-hosted or Blacksmith
+fallback. The current profile qualification lifetime is one hour, and the
+existing watchdog can cancel or retry a job after its 30-minute wait threshold.
+The watchdog can rerun a stranded workflow once, then cancel another stranded
+attempt. These jobs keep native labels on a rerun; the watchdog cannot send them
+to hosted runners. These bounds are not a promise of a 24-hour native queue.
+The `DARKBLOOM_ROUTING` variable controls the separate dynamic route workflow;
+it does not turn off these native-only jobs.
 
-The current profile qualification lifetime is one hour. The existing watchdog
-can cancel or retry a job after its 30-minute wait threshold. It can rerun a
-stranded workflow once, then cancel another stranded attempt. A rerun keeps
-these native labels; it cannot send the Mac jobs to hosted runners. These bounds
-are not a promise of a 24-hour native queue. The `DARKBLOOM_ROUTING` variable
-controls the separate dynamic route workflow; it does not turn off these Mac
-jobs.
-
-Linux lint, the fork-diff check and page renderer keep their dynamic routing.
-The sanitizer and Fedora jobs keep their existing hosted runners. The protected
-Pages publisher stays hosted, and native CodeQL keeps its separate activation
-gate.
+The GitHub-hosted Pages job still packages and publishes the rendered artifact
+through its protected environment. The Fedora jobs still use their existing
+hosted runners. The disabled native CodeQL workflow keeps its separate routing
+and activation rules.
 
 ## The gate
 

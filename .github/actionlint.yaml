@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
+    - darkbloom-linux-arm64
     - darkbloom-macos-arm64

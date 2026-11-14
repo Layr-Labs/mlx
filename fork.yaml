@@ -761,9 +761,10 @@ def:
         without a hosted fallback. The Linux lint, ASAN/UBSAN, fork-diff check
         and Pages renderer also use native-only labels. The sanitizer jobs use
         the qualified compiler image and a tool preflight, retaining their
-        original test script. Fedora jobs remain separate, and the protected
-        Pages publisher stays hosted. `FORKDIFF.md` describes the qualification,
-        job and watchdog time bounds. `darkbloom-watchdog.yml` remains unchanged;
+        original test script within a 60-minute cap. Fedora jobs stay on
+        GitHub-hosted runners, and the protected Pages publisher stays hosted.
+        `FORKDIFF.md` describes the qualification and watchdog time bounds.
+        `darkbloom-watchdog.yml` remains unchanged;
         a rerun keeps these static labels. On a Darkbloom Sandbox that has
         no Darkbloom cache, `fork-build-cache` sets `CI_ACTIONS_CACHE=off` and every
         cache step is skipped, so that the sandbox does not write GitHub's Actions
@@ -794,8 +795,6 @@ def:
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
         - ".github/actionlint.yaml"
-        - ".github/workflows/forkdiff-check.yml"
-        - ".github/workflows/forkdiff-pages.yml"
         - "CMakeLists.txt"
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"

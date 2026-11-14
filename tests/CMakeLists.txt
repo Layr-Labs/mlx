@@ -56,6 +56,18 @@ if(MLX_BUILD_METAL)
     qmv_row_exact
     PROPERTIES ENVIRONMENT "MLX_QMV_ROW_EXACT=16" PASS_REGULAR_EXPRESSION
                "test cases: +1 \\| +1 passed \\| +0 failed")
+  # MLX reads MLX_QMV_ROWS_BROADCAST once in each process, so this entry runs
+  # the broadcast case with the batched qmv. The tests entries run it with the
+  # row-exact kernel (the default).
+  add_test(
+    NAME qmv_rows_broadcast_off
+    COMMAND
+      tests
+      "--test-case=quantized matmul broadcast batches keep the bits of one row")
+  set_tests_properties(
+    qmv_rows_broadcast_off
+    PROPERTIES ENVIRONMENT "MLX_QMV_ROWS_BROADCAST=0" PASS_REGULAR_EXPRESSION
+               "test cases: +1 \\| +1 passed \\| +0 failed")
   # With the two switches, the row-exact kernel serves each row count below the
   # vector limit, and the batch-invariant case must stay correct.
   add_test(

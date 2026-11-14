@@ -179,6 +179,33 @@ def:
         - "tests/qmv_row_exact_tests.cpp"
         - "tests/CMakeLists.txt"
         - ".github/workflows/fork-tests.yml"
+    - title: "Row kernel for broadcast batches of one-row products, and 2 bits"
+      description: |
+        `affine_qmv_rows` also serves 2 bits where `qmv` uses its fast kernel (K a multiple
+        of 512): for each row the expressions of `load_vector` and `qdot` for 2 bits and one
+        pack per thread, as in `qmv_fast_impl`. A batch of one-row products with one weight
+        matrix (`x` of shape `[..., 1, K]` with contiguous rows, and the weights, scales and
+        biases broadcast over the batch) now runs `affine_qmv_rows` instead of the batched
+        `qmv` (`MLX_QMV_ROWS_BROADCAST`, read once in each process, default 1; 0 keeps the
+        batched `qmv`). Both give each row the bits that `qmv` gives the row alone, so no
+        output bit changes; the kernel reads the weights once for each tile of up to 8 rows
+        (2 or 4 bits) or 6 rows (8 bits) instead of once for each row. The signed-Hadamard
+        2-bit linear layers of mlx-swift (`HadamardQuantizedLinear`) send their multi-row
+        projections this way to keep each row's bits, so their prefill and batched decode
+        read the weights once per tile. K = 64 and K = 128 (`qmv_quad`), 2 bits outside the
+        fast kernel, other modes and bit widths keep the batched `qmv`.
+        `tests/qmv_row_exact_tests.cpp` compares the bytes of each row of broadcast batches of
+        2 to 19 rows, and of row-exact products with 2 bits, with the same row alone; the
+        `qmv_rows_broadcast_off` ctest entry runs the broadcast case with the batched `qmv`.
+      globs:
+        - "mlx/utils.h"
+        - "mlx/backend/metal/quantized.cpp"
+        - "mlx/backend/metal/kernels/quantized.h"
+        - "mlx/backend/metal/kernels/quantized.metal"
+        - "docs/src/usage/environment_variables.rst"
+        - "tests/qmv_row_exact_tests.cpp"
+        - "tests/CMakeLists.txt"
+        - ".github/workflows/fork-tests.yml"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

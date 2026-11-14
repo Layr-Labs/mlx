@@ -222,6 +222,7 @@ instantiate_quantized_all()
   instantiate_quantized_rows(type, group_size, bits, fast, 8)
 
 #define instantiate_quantized_rows_bits(type, group_size)      \
+  instantiate_quantized_rows_counts(type, group_size, 2, 1)    \
   instantiate_quantized_rows_counts(type, group_size, 4, 0)    \
   instantiate_quantized_rows_counts(type, group_size, 4, 1)    \
   instantiate_quantized_rows_counts(type, group_size, 8, 0)    \

@@ -173,7 +173,21 @@ Metal
    ``MLX_QMV_BATCH_INVARIANT=1`` also, the kernel serves each row count below
    the vector limit, thus a row keeps its bits from 1 row to the limit minus
    1. The default, ``0``, does not use the kernel. MLX reads this variable
-   once in each process.
+   once in each process. The kernel also serves 2 bits where ``qmv`` uses its
+   fast kernel (K a multiple of 512).
+
+.. envvar:: MLX_QMV_ROWS_BROADCAST
+
+   A batch of one-row quantized products with one weight matrix (``x`` of
+   shape ``[..., 1, K]`` and the weights, scales and biases broadcast over the
+   batch) uses the row-exact kernel of ``MLX_QMV_ROW_EXACT``. The batched
+   ``qmv`` gives each row the bits that the row gets alone, and so does the
+   row-exact kernel, which reads the weights once for each tile of rows
+   instead of once for each row. Thus the bits do not change. It serves the
+   affine mode with 4 or 8 bits, or 2 bits where ``qmv`` uses its fast
+   kernel, and a group size of 32, 64 or 128; other products keep the batched
+   ``qmv``. The default, ``1``, uses the kernel; ``0`` keeps the batched
+   ``qmv``. MLX reads this variable once in each process.
 
 Advanced tuning
 ---------------

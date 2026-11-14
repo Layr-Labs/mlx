@@ -638,8 +638,9 @@ void qmv_wide(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
-// The row-exact kernel (qmv_rows) serves the affine x @ w.T with 4 or 8 bits
-// for 2 rows up to row_limit, which comes from MLX_QMV_ROW_EXACT.
+// The row-exact kernel (qmv_rows) serves the affine x @ w.T with 4 or 8 bits,
+// or with 2 bits where qmv uses its fast kernel, for 2 rows up to row_limit,
+// which comes from MLX_QMV_ROW_EXACT.
 inline bool use_qmv_rows(
     const std::optional<array>& biases,
     QuantizationMode mode,
@@ -652,15 +653,53 @@ inline bool use_qmv_rows(
     int row_limit) {
   return M >= 2 && M <= row_limit && transpose && non_batched &&
       mode == QuantizationMode::Affine && biases.has_value() &&
-      (bits == 4 || bits == 8) &&
+      (bits == 4 || bits == 8 ||
+       (bits == 2 && K % qmv_fast_k_alignment(bits) == 0)) &&
       (group_size == 32 || group_size == 64 || group_size == 128) &&
       K % group_size == 0;
 }
 
+// True if the batch dimensions of a (all but the last two) are broadcast: every
+// matrix of the batch is the first one.
+inline bool is_broadcast_batch(const array& a) {
+  for (int i = 0; i + 2 < a.ndim(); ++i) {
+    if (a.shape(i) > 1 && a.strides()[i] != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A batch of one-row products with one weight matrix: x is [..., 1, K] with
+// contiguous rows, and the weights, scales and biases are broadcast over the
+// batch. The batched qmv gives each row the bits that qmv gives the row alone,
+// and so does affine_qmv_rows, which reads the weights once for a tile of rows
+// (MLX_QMV_ROWS_BROADCAST, on by default).
+inline bool use_qmv_rows_broadcast(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const std::optional<array>& biases,
+    QuantizationMode mode,
+    bool transpose,
+    bool non_batched,
+    int group_size,
+    int bits,
+    int M,
+    int K) {
+  int rows = x.size() / K;
+  return env::qmv_rows_broadcast() && M == 1 && !non_batched && rows >= 2 &&
+      K != 64 && K != 128 && x.flags().row_contiguous &&
+      is_broadcast_batch(w) && is_broadcast_batch(scales) &&
+      biases.has_value() && is_broadcast_batch(*biases) &&
+      use_qmv_rows(
+             biases, mode, transpose, true, group_size, bits, rows, K, rows);
+}
+
 // Dispatches affine_qmv_rows: each row of x gets the bits that qmv gives it
 // alone, and one launch reads each weight once for a tile of rows. A tile has
-// up to 8 rows (4 bits) or 6 rows (8 bits, where 7 or 8 rows are slower than
-// two tiles).
+// up to 8 rows (2 or 4 bits) or 6 rows (8 bits, where 7 or 8 rows are slower
+// than two tiles). w, scales and biases are read as one matrix each.
 void qmv_rows(
     const array& x,
     const array& w,
@@ -2592,6 +2631,36 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // split-K routes. Then each row has the same bits at each row count from 2
   // to the limit - 1.
   bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
+  // A batch of one-row products with one weight matrix keeps the bits of the
+  // batched qmv and reads the weights once for each tile of rows.
+  if (use_qmv_rows_broadcast(
+          x,
+          w,
+          scales,
+          biases,
+          mode_,
+          transpose_,
+          non_batched,
+          group_size_,
+          bits_,
+          M,
+          K)) {
+    qmv_rows(
+        x,
+        w,
+        scales,
+        *biases,
+        out,
+        group_size_,
+        bits_,
+        x.size() / K,
+        N,
+        K,
+        d,
+        s);
+    return;
+  }
 
   // With MLX_QMV_ROW_EXACT, each row of a few rows has the bits of the row
   // alone. One row of K = 64 or 128 is qmv_quad, which makes each row alone.

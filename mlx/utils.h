@@ -250,6 +250,15 @@ inline int qmv_row_exact() {
   return rows_;
 }
 
+// A batch of one-row quantized products with one weight matrix uses the
+// row-exact kernel, which gives each row the bits of the batched qmv and reads
+// the weights once per tile of rows (see `use_qmv_rows_broadcast` in
+// backend/metal/quantized.cpp). On by default; 0 is off.
+inline bool qmv_rows_broadcast() {
+  static bool on_ = get_var("MLX_QMV_ROWS_BROADCAST", 1);
+  return on_;
+}
+
 inline bool metal_fast_synch() {
   static bool metal_fast_synch = get_var("MLX_METAL_FAST_SYNCH", 0);
   return metal_fast_synch;

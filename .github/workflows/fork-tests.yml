@@ -4,10 +4,6 @@ name: Fork Tests
 # runners. The steps use the actions in .github/actions.
 #
 # The jobs:
-#   route          chooses each job's runner (darkbloom-route.yml): a
-#                  Darkbloom Sandbox when the plane grants the job's lane,
-#                  otherwise the lane's fallback, GitHub's xcode-27. Each job
-#                  and each shard has a lane of its own.
 #   build-wheel    builds the Python wheel and uploads it.
 #   build-cpp      builds the C++ library and tests, and runs the C++ tests
 #                  with the GPU and then with the CPU as the default device,
@@ -25,9 +21,9 @@ name: Fork Tests
 # .github/scripts/fork-tests/python_shards.py fails a job if a test file is
 # in no shard or in two shards.
 #
-# The hosted macOS runners are a shared pool. A run uses 8 macOS jobs, and
-# at most 6 hosted ones run at the same time. A new push to a pull request
-# cancels the older run and frees its runners.
+# A run uses 8 Darkbloom macOS jobs. They wait for compatible capacity and
+# have no hosted fallback. A new push to a pull request cancels the older
+# run and frees its runners. FORKDIFF.md describes the queue time bounds.
 
 on:
   pull_request:
@@ -52,23 +48,8 @@ env:
   CXXFLAGS: -fprofile-instr-generate -fcoverage-mapping
 
 jobs:
-  route:
-    uses: ./.github/workflows/darkbloom-route.yml
-    permissions: {}
-    with:
-      lanes: |
-        build-wheel macos_arm64 xcode-27
-        build-cpp macos_arm64 xcode-27
-        python-gpu-0 macos_arm64 xcode-27
-        python-gpu-1 macos_arm64 xcode-27
-        python-cpu-0 macos_arm64 xcode-27
-        python-cpu-1 macos_arm64 xcode-27
-        python-cpu-2 macos_arm64 xcode-27
-        metal-build-and-test macos_arm64 xcode-27
-
   build-wheel:
-    needs: route
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['build-wheel'] }}
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 45
     env:
       # The runners have macOS 26 or later. Version 26.2 is the lowest
@@ -114,8 +95,7 @@ jobs:
           overwrite: true
 
   build-cpp:
-    needs: route
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['build-cpp'] }}
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '26.2'
@@ -239,14 +219,14 @@ jobs:
           overwrite: true
 
   python-gpu:
-    needs: [route, build-wheel]
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('python-gpu-{0}', matrix.shard)] }}
+    needs: build-wheel
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         # One job for each "gpu" shard in python-shards.json. The script
-        # fails if the two counts are not equal. Each shard has a route lane.
+        # fails if the two counts are not equal.
         shard: [0, 1]
     env:
       METAL_DEBUG_ERROR_MODE: 0
@@ -350,14 +330,13 @@ jobs:
 
   python-cpu:
     # Run the CPU code of ops that also have a Metal implementation.
-    needs: [route, build-wheel]
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)[format('python-cpu-{0}', matrix.shard)] }}
+    needs: build-wheel
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # One job for each "cpu" shard in python-shards.json. Each shard has
-        # a route lane.
+        # One job for each "cpu" shard in python-shards.json.
         shard: [0, 1, 2]
     env:
       DEVICE: cpu
@@ -426,9 +405,9 @@ jobs:
           overwrite: true
 
   metal-build-and-test:
-    needs: [route, build-wheel, build-cpp, python-gpu, python-cpu]
+    needs: [build-wheel, build-cpp, python-gpu, python-cpu]
     if: ${{ !cancelled() }}
-    runs-on: ${{ fromJSON(needs.route.outputs.routes)['metal-build-and-test'] }}
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

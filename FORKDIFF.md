@@ -18,6 +18,26 @@ Settings → Pages → Source: **GitHub Actions**. The workflow token cannot do
 this itself. Until it's done the deploy workflow still builds the page (kept
 as a run artifact, `forkdiff-page`) and exits with a notice instead of failing.
 
+## Native Mac CI
+
+All eight Mac jobs in `fork-tests.yml` use only Darkbloom macOS ARM64 runners
+with the approved 12-core, 32-GiB profile. They keep their original steps, tests
+and job timeouts. When compatible capacity is busy they wait; these jobs have
+no GitHub-hosted or Blacksmith fallback.
+
+The current profile qualification lifetime is one hour. The existing watchdog
+can cancel or retry a job after its 30-minute wait threshold. It can rerun a
+stranded workflow once, then cancel another stranded attempt. A rerun keeps
+these native labels; it cannot send the Mac jobs to hosted runners. These bounds
+are not a promise of a 24-hour native queue. The `DARKBLOOM_ROUTING` variable
+controls the separate dynamic route workflow; it does not turn off these Mac
+jobs.
+
+Linux lint, the fork-diff check and page renderer keep their dynamic routing.
+The sanitizer and Fedora jobs keep their existing hosted runners. The protected
+Pages publisher stays hosted, and native CodeQL keeps its separate activation
+gate.
+
 ## The gate
 
 A fork-diff page is only useful while it is true, and two things make it go

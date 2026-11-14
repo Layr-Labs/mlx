@@ -756,22 +756,21 @@ def:
         its arguments, the metal compiler version and the SDK build. The ccache key holds
         the clang version, and ccache checks the compiler content of each object.
 
-        The `route` job of `fork-tests.yml` asks Darkbloom Sandboxes for a macOS runner
-        for each job, one lane for each job and each Python shard
-        (`darkbloom-route.yml`, a copy of Layr-Labs/d-inference's). A lane that the
-        plane does not grant runs on GitHub's `xcode-27` runner. Routing is off unless the
-        repository variable `DARKBLOOM_ROUTING` is `on`. `darkbloom-watchdog.yml`, an
-        unchanged copy of Darkbloom's template, cancels and re-runs on `xcode-27` a run
-        whose Darkbloom job waits too long for a runner. On a Darkbloom Sandbox that has
+        All eight Mac jobs in `fork-tests.yml` use native macOS ARM64 labels and
+        the approved 12-core, 32-GiB profile. They wait for compatible capacity
+        without a hosted fallback. Their steps, tests and timeouts stay unchanged.
+        `FORKDIFF.md` describes the qualification and watchdog time bounds.
+        `darkbloom-watchdog.yml` remains unchanged; a rerun keeps these static
+        labels. On a Darkbloom Sandbox that has
         no Darkbloom cache, `fork-build-cache` sets `CI_ACTIONS_CACHE=off` and every
         cache step is skipped, so that the sandbox does not write GitHub's Actions
-        cache. The Darkbloom macOS image has Xcode 27.2 on macOS 27, and `xcode-27` has
-        Xcode 27. No job selects an Xcode. The lint job of `build_and_test.yml` and the
-        fork-diff check ask for Linux ARM64 sandboxes, with their previous GitHub-hosted
+        cache. The Darkbloom macOS image has Xcode 27.2 on macOS 27.
+        No job selects an Xcode. The lint job of `build_and_test.yml`, the fork-diff
+        check and the Pages renderer ask for Linux ARM64 sandboxes, with GitHub-hosted
         labels as fallbacks. Lint uses a Python 3.12 virtual environment and keeps its
         pre-commit cache separate by runner architecture. It skips Actions caching when
-        the sandbox has no Darkbloom cache. The Linux sanitizer and Fedora
-        jobs and the fork-diff deployment still use GitHub-hosted runners.
+        the sandbox has no Darkbloom cache. The Linux sanitizer, Fedora and protected
+        Pages publishing jobs still use GitHub-hosted runners.
 
         The native CodeQL workflow remains disabled until the operator switches
         from GitHub default setup and enables `CODEQL_NATIVE`. Its read-only ARM
@@ -790,10 +789,11 @@ def:
         #4437, which needs 2^32 output elements (more than one 32-bit grid dimension), and
         bool outputs of one byte each give 4 GiB. David ruled on 2026-10-23 to keep this skip
         and not to use a larger runner. A Darkbloom Sandbox caps a Metal buffer at half its memory
-        (8 GiB of the default 16 GiB), so the test runs there. When a Python test entry fails, the job prints the end of
+        (16 GiB of the approved 32 GiB), so the test runs there. When a Python test entry fails, the job prints the end of
         its log at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
+        - ".github/actionlint.yaml"
         - "CMakeLists.txt"
         - ".github/actions/build/action.yml"
         - ".github/actions/build-docs/action.yml"

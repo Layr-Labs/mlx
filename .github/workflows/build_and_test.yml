@@ -94,13 +94,26 @@ jobs:
   linux_fedora_build_cpp_aarch64:
     name: Linux Fedora (aarch64)
     needs: check_lint
-    runs-on: ubuntu-22.04-arm
-    container:
-      image: fedora:42
+    # The sandbox has no Docker: fedora_proot.py runs the same Fedora script in the archived
+    # Fedora 42 container rootfs under PRoot (built from pinned source). About 2.5 minutes.
+    runs-on: [self-hosted, linux, ARM64, darkbloom-linux-arm64]
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check the runner tools and test the Fedora PRoot helper
+        run: |
+          [[ "$RUNNER_NAME" == darkbloom-* ]]
+          [[ "$(uname -s)" == Linux && "$(uname -m)" == aarch64 ]]
+          cc --version
+          make --version
+          dpkg-deb --version
+          python3 --version
+          python3 -B .github/scripts/fedora-proot/test_fedora_proot.py
 
       - name: CPP Build Test - No Release
         run: |
-          bash ./.github/scripts/setup+build-cpp-linux-fedora-container.sh
+          python3 .github/scripts/fedora-proot/fedora_proot.py run --source "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/fedora-proot"

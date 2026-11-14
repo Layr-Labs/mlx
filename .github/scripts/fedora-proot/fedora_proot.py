@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Run MLX's Fedora 42 C++ build test in a Fedora userspace on a Darkbloom Linux ARM64 runner.
+"""Run MLX's Fedora 42 C++ build test in Fedora userspace on a Darkbloom ARM64 runner.
 
-The sandbox has no Docker, so the unchanged .github/scripts/setup+build-cpp-linux-fedora-container.sh
-runs under PRoot (built here from pinned source) in the official archived Fedora 42 container rootfs.
-PRoot translates paths and fakes UID 0 through ptrace; it is not an isolation boundary (the job VM is).
+The sandbox has no Docker, so the unchanged Fedora build script
+(.github/scripts/setup+build-cpp-linux-fedora-container.sh) runs under PRoot, built here
+from pinned source, in the official archived Fedora 42 container rootfs. PRoot
+translates paths and fakes UID 0 through ptrace; it is not an isolation boundary (the
+job VM is).
 """
+
 import argparse
 import hashlib
 import http.client
 import json
 import os
-from pathlib import Path, PurePosixPath
 import platform
 import shutil
 import subprocess
-import sys
 import tarfile
-import tempfile
 import time
 import urllib.request
-
+from pathlib import Path, PurePosixPath
 
 PTRACE_PROBE = r"""
 #include <signal.h>
@@ -32,7 +32,8 @@ PTRACE_PROBE = r"""
 int main(void) {
   if (getuid() != 1000 || geteuid() != 1000 || prctl(PR_GET_NO_NEW_PRIVS,0,0,0,0) != 1)
     return 10;
-  printf("PTRACE_PROBE uid=%lu dumpable=%d no_new_privs=1\n", (unsigned long)getuid(), prctl(PR_GET_DUMPABLE));
+  printf("PTRACE_PROBE uid=%lu dumpable=%d no_new_privs=1\n",
+         (unsigned long)getuid(), prctl(PR_GET_DUMPABLE));
   fflush(stdout);
   pid_t child = fork();
   if (child < 0) { perror("fork"); return 11; }
@@ -43,7 +44,8 @@ int main(void) {
   int status;
   if (waitpid(child,&status,0) != child || !WIFSTOPPED(status)) return 13;
   if (ptrace(PTRACE_CONT,child,0,0)) { perror("PTRACE_CONT"); return 14; }
-  if (waitpid(child,&status,0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) return 15;
+  if (waitpid(child,&status,0) != child || !WIFEXITED(status) || WEXITSTATUS(status))
+    return 15;
   puts("PTRACE_PROBE_OK"); return 0;
 }
 """
@@ -78,23 +80,39 @@ def oci_layer(archive, spec, target):
     manifest_sha = spec["manifest"].removeprefix("sha256:")
     part = target.with_name(target.name + ".part")
     with tarfile.open(archive, "r:xz") as src:
+
         def regular(name, limit):
             member = src.getmember(name)
             if not member.isfile() or member.size > limit:
                 raise ValueError(f"unexpected OCI member: {name}")
             return member
+
         index = json.loads(src.extractfile(regular("index.json", 1 << 16)).read())
         manifests = index.get("manifests")
-        if not isinstance(manifests, list) or len(manifests) != 1 or manifests[0].get("digest") != spec["manifest"]:
+        if (
+            not isinstance(manifests, list)
+            or len(manifests) != 1
+            or manifests[0].get("digest") != spec["manifest"]
+        ):
             raise ValueError("OCI index must name exactly the pinned manifest")
         raw = src.extractfile(regular("blobs/sha256/" + manifest_sha, 1 << 16)).read()
         if hashlib.sha256(raw).hexdigest() != manifest_sha:
             raise ValueError("OCI manifest does not match its digest")
         layers = json.loads(raw).get("layers")
-        if (not isinstance(layers, list) or len(layers) != 1 or layers[0].get("mediaType") != OCI_GZIP_LAYER
-                or layers[0].get("digest") != "sha256:" + spec["sha256"] or layers[0].get("size") != spec["size"]):
+        if (
+            not isinstance(layers, list)
+            or len(layers) != 1
+            or layers[0].get("mediaType") != OCI_GZIP_LAYER
+            or layers[0].get("digest") != "sha256:" + spec["sha256"]
+            or layers[0].get("size") != spec["size"]
+        ):
             raise ValueError("OCI manifest must list exactly the pinned gzip layer")
-        with src.extractfile(regular("blobs/sha256/" + spec["sha256"], spec["size"])) as data, part.open("xb") as out:
+        with (
+            src.extractfile(
+                regular("blobs/sha256/" + spec["sha256"], spec["size"])
+            ) as data,
+            part.open("xb") as out,
+        ):
             shutil.copyfileobj(data, out)
     verified(part, spec)
     part.rename(target)
@@ -125,7 +143,7 @@ def verify_inputs(inputs, pins):
 
 
 def download(url, part, size, attempts=3, pause=5):
-    """One pinned download with bounded retries; a stale partial file is removed first."""
+    """One pinned download with bounded retries; any stale partial file goes first."""
     for attempt in range(1, attempts + 1):
         part.unlink(missing_ok=True)
         try:
@@ -136,12 +154,20 @@ def download(url, part, size, attempts=3, pause=5):
                     if copied > size:
                         raise ValueError(f"oversized download: {part.name}")
                     out.write(chunk)
+            if copied != size:
+                raise ValueError(
+                    f"truncated download: {part.name} ({copied} of {size} bytes)"
+                )
             return
         except (OSError, ValueError, http.client.HTTPException) as error:
             part.unlink(missing_ok=True)
             if attempt == attempts:
                 raise
-            print(f"FEDORA_PROOT_RETRY {part.name} attempt {attempt}: {type(error).__name__}: {error}", flush=True)
+            print(
+                f"FEDORA_PROOT_RETRY {part.name} attempt {attempt}: "
+                f"{type(error).__name__}: {error}",
+                flush=True,
+            )
             time.sleep(pause * attempt)
 
 
@@ -227,11 +253,15 @@ def archived_repos(root):
         repo.rename(repo.with_suffix(".repo.disabled-pilot"))
     key = "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-42-primary"
     text = ""
-    for name, suffix in (("fedora", "releases/42/Everything/aarch64/os"),
-                         ("updates", "updates/42/Everything/aarch64")):
-        text += (f"[{name}]\nname=Fedora 42 archived {name}\n"
-                 f"baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux/{suffix}/\n"
-                 f"enabled=1\ngpgcheck=1\ngpgkey={key}\n\n")
+    for name, suffix in (
+        ("fedora", "releases/42/Everything/aarch64/os"),
+        ("updates", "updates/42/Everything/aarch64"),
+    ):
+        text += (
+            f"[{name}]\nname=Fedora 42 archived {name}\n"
+            f"baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux/{suffix}/\n"
+            f"enabled=1\ngpgcheck=1\ngpgkey={key}\n\n"
+        )
     target.write_text(text)
 
 
@@ -248,24 +278,44 @@ def run_pilot(work, source, pins):
         raise RuntimeError("the job must inherit no_new_privs")
     work.mkdir(parents=True, exist_ok=False)
     start = time.monotonic()
-    evidence = {"pins": pins, "host_arch": platform.machine(), "uid": os.getuid(),
-                "kernel": platform.release(), "steps": [], "result": "running"}
+    evidence = {
+        "pins": pins,
+        "host_arch": platform.machine(),
+        "uid": os.getuid(),
+        "kernel": platform.release(),
+        "steps": [],
+        "result": "running",
+    }
 
     def call(name, args, *, cwd=work, env=None, timeout=180):
         before = time.monotonic()
         print(f"FEDORA_PROOT_STEP {name}", flush=True)
         with (work / (name + ".log")).open("w") as log:
-            proc = subprocess.Popen(args, cwd=cwd, env=env, stdout=log,
-                                    stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen(
+                args,
+                cwd=cwd,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 import signal
+
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
+                print(
+                    (work / (name + ".log")).read_text(errors="replace"),
+                    end="",
+                    flush=True,
+                )
                 raise
         duration = time.monotonic() - before
-        evidence["steps"].append({"name": name, "seconds": duration, "exit": proc.returncode})
+        evidence["steps"].append(
+            {"name": name, "seconds": duration, "exit": proc.returncode}
+        )
         print((work / (name + ".log")).read_text(errors="replace"), end="", flush=True)
         if proc.returncode:
             raise subprocess.CalledProcessError(proc.returncode, args)
@@ -278,46 +328,104 @@ def run_pilot(work, source, pins):
         fetch_inputs(inputs, pins)
         verify_inputs(inputs, pins)
         (work / "ptrace.c").write_text(PTRACE_PROBE)
-        call("ptrace-build", ["cc", "-O2", "-Wall", "-Wextra", "-Werror", "ptrace.c", "-o", "ptrace"])
+        call(
+            "ptrace-build",
+            ["cc", "-O2", "-Wall", "-Wextra", "-Werror", "ptrace.c", "-o", "ptrace"],
+        )
         call("ptrace", [str(work / "ptrace")], timeout=15)
         deps = work / "deps"
-        for deb in ("libtalloc-dev.deb", "libtalloc2.deb", "pkgconf-bin.deb", "libpkgconf3.deb"):
+        for deb in (
+            "libtalloc-dev.deb",
+            "libtalloc2.deb",
+            "pkgconf-bin.deb",
+            "libpkgconf3.deb",
+        ):
             call(deb, ["dpkg-deb", "--extract", str(inputs / deb), str(deps)])
         (deps / "usr/bin/pkg-config").symlink_to("pkgconf")
         extract_root(inputs / "proot.tar.gz", work / "proot-source")
         proot_src = work / "proot-source" / ("proot-" + pins["proot_commit"]) / "src"
         evidence["proot_arm64_table_sha256"] = patch_proot_faccessat2(proot_src)
         lib = deps / "usr/lib/aarch64-linux-gnu"
-        env = dict(os.environ, PKG_CONFIG_LIBDIR=str(lib / "pkgconfig"),
-                   PKG_CONFIG_SYSROOT_DIR=str(deps), LDFLAGS=f"-Wl,-rpath,{lib}",
-                   PATH=f"{deps / 'usr/bin'}:{os.environ['PATH']}", LD_LIBRARY_PATH=str(lib))
-        call("proot-build", ["make", "-j2", "HAS_SWIG=", "HAS_PYTHON_CONFIG=", "proot"], cwd=proot_src, env=env)
+        env = dict(
+            os.environ,
+            PKG_CONFIG_LIBDIR=str(lib / "pkgconfig"),
+            PKG_CONFIG_SYSROOT_DIR=str(deps),
+            LDFLAGS=f"-Wl,-rpath,{lib}",
+            PATH=f"{deps / 'usr/bin'}:{os.environ['PATH']}",
+            LD_LIBRARY_PATH=str(lib),
+        )
+        call(
+            "proot-build",
+            ["make", "-j2", "HAS_SWIG=", "HAS_PYTHON_CONFIG=", "proot"],
+            cwd=proot_src,
+            env=env,
+        )
         proot = proot_src / "proot"
         call("proot-version", [str(proot), "--version"])
         with proot.open("rb") as src:
             evidence["proot_sha256"] = hashlib.file_digest(src, "sha256").hexdigest()
         extract_root(inputs / "fedora.tar.gz", work / "fedora")
         root = work / "fedora"
-        if 'VERSION_ID=42' not in (root / "etc/os-release").read_text():
+        if "VERSION_ID=42" not in (root / "etc/os-release").read_text():
             raise RuntimeError("rootfs is not Fedora42")
         archived_repos(root)
         scratch = work / "tmp"
         scratch.mkdir()
-        command = [str(proot), "-0", "-r", str(root), "-b", "/dev", "-b", "/proc",
-                   "-b", f"{scratch}:/tmp", "-b", f"{source}:/work", "-w", "/work"]
-        # The checkout belongs to the runner's UID 1000; git inside the fake-root guest must accept it.
-        guest = dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0="/work")
+        command = [
+            str(proot),
+            "-0",
+            "-r",
+            str(root),
+            "-b",
+            "/dev",
+            "-b",
+            "/proc",
+            "-b",
+            f"{scratch}:/tmp",
+            "-b",
+            f"{source}:/work",
+            "-w",
+            "/work",
+        ]
+        # The checkout belongs to the runner's UID 1000; git in the fake-root guest
+        # must accept it.
+        guest = dict(
+            os.environ,
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="safe.directory",
+            GIT_CONFIG_VALUE_0="/work",
+        )
         # No sudo, no Docker, no namespaces/capabilities, no host /etc or /run bind.
-        call("fedora-smoke", command + ["/bin/bash", "-ec",
-             "cat /etc/fedora-release; test $(uname -m) = aarch64; "
-             # faccessat2 translation: Fedora has dnf and no apt-get; the Ubuntu host has apt-get.
-             "test -x /usr/bin/dnf; test ! -x /usr/bin/apt-get; "
-             "test $(id -u) = 0; ldd --version; dnf --version; "
-             "grep '^NoNewPrivs:' /proc/self/status; (true)& wait"], env=guest, timeout=60)
+        call(
+            "fedora-smoke",
+            command
+            + [
+                "/bin/bash",
+                "-ec",
+                "cat /etc/fedora-release; test $(uname -m) = aarch64; "
+                # faccessat2 translation: Fedora has dnf and no apt-get; the Ubuntu host
+                # has apt-get.
+                "test -x /usr/bin/dnf; test ! -x /usr/bin/apt-get; "
+                "test $(id -u) = 0; ldd --version; dnf --version; "
+                "grep '^NoNewPrivs:' /proc/self/status; (true)& wait",
+            ],
+            env=guest,
+            timeout=60,
+        )
         # Exercise actual DNS/proxy/TLS and both literal archive repositories
         # before the expensive build, using Fedora's own libcurl/trust store.
-        call("fedora-archive-network", command + ["/usr/bin/dnf", "-q", "makecache", "--refresh"], env=guest, timeout=300)
-        call("fedora-build-test", command + ["/bin/bash", "/work/" + SCRIPT], env=guest, timeout=1800)
+        call(
+            "fedora-archive-network",
+            command + ["/usr/bin/dnf", "-q", "makecache", "--refresh"],
+            env=guest,
+            timeout=300,
+        )
+        call(
+            "fedora-build-test",
+            command + ["/bin/bash", "/work/" + SCRIPT],
+            env=guest,
+            timeout=1800,
+        )
         evidence["result"] = "pass"
     except BaseException as error:
         evidence["result"] = "failure"
@@ -326,6 +434,10 @@ def run_pilot(work, source, pins):
     finally:
         evidence["seconds"] = time.monotonic() - start
         (work / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        print(
+            json.dumps({k: v for k, v in evidence.items() if k != "pins"}, indent=2),
+            flush=True,
+        )
         print("FEDORA_PROOT_EVIDENCE " + str(work / "evidence.json"), flush=True)
     print("FEDORA_PROOT_OK " + evidence["result"], flush=True)
 
@@ -333,8 +445,12 @@ def run_pilot(work, source, pins):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("fetch", "run"))
-    parser.add_argument("--inputs", type=Path, help="fetch: download and verify the pinned inputs here")
-    parser.add_argument("--source", type=Path, help="run: the MLX checkout to build and test")
+    parser.add_argument(
+        "--inputs", type=Path, help="fetch: download and verify the pinned inputs here"
+    )
+    parser.add_argument(
+        "--source", type=Path, help="run: the MLX checkout to build and test"
+    )
     parser.add_argument("--work", type=Path, help="run: a new private work directory")
     args = parser.parse_args()
     pins = load_pins()

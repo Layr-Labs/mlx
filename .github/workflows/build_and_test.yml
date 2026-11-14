@@ -104,6 +104,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check the runner tools and test the Fedora PRoot helper
+        run: |
+          [[ "$RUNNER_NAME" == darkbloom-* ]]
+          [[ "$(uname -s)" == Linux && "$(uname -m)" == aarch64 ]]
+          cc --version
+          make --version
+          dpkg-deb --version
+          python3 --version
+          python3 -B .github/scripts/fedora-proot/test_fedora_proot.py
+
       - name: CPP Build Test - No Release
         run: |
           python3 .github/scripts/fedora-proot/fedora_proot.py run --source "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/fedora-proot"

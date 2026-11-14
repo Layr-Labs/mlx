@@ -1994,6 +1994,7 @@ template <
 // The affine qmv for 2 to 8 rows of x in one launch. Each row gets the bits of
 // the one-row kernel (qmv_fast_impl if fast, else qmv_impl): the same lanes,
 // expressions and order of additions. The rows share only the weight read.
+// 2 bits are served only where the one-row kernel is qmv_fast_impl.
 template <typename T, int group_size, int bits, bool fast, int rows>
 [[kernel]] void affine_qmv_rows(
     const device uint32_t* w [[buffer(0)]],
@@ -2008,17 +2009,21 @@ template <typename T, int group_size, int bits, bool fast, int rows>
     uint simd_gid [[simdgroup_index_in_threadgroup]],
     uint simd_lid [[thread_index_in_simdgroup]]) {
   static_assert(
-      bits == 4 || bits == 8, "Template undefined for bits not in {4, 8}");
+      bits == 2 || bits == 4 || bits == 8,
+      "Template undefined for bits not in {2, 4, 8}");
+  static_assert(bits != 2 || fast, "2 bits need the qmv_fast_impl layout");
   constexpr int num_simdgroups = 4;
   constexpr int results_per_simdgroup = 2;
-  constexpr int packs_per_thread = fast ? 2 : 1;
+  // As qmv_fast_impl: one pack per thread for 2 bits.
+  constexpr int packs_per_thread = fast && bits != 2 ? 2 : 1;
   constexpr int pack_factor = get_affine_pack_factor<bits, 32>();
   constexpr int bytes_per_pack = get_bytes_per_pack<bits, 32>();
   constexpr int values_per_thread = pack_factor * packs_per_thread;
   constexpr int block_size = values_per_thread * SIMD_SIZE;
   constexpr int scale_step_per_thread = group_size / values_per_thread;
-  // A thread keeps the weights of a block as 16-bit words (4 bits) or bytes.
-  constexpr int words = bits == 4 ? values_per_thread / 4 : values_per_thread;
+  // A thread keeps the weights of a block as 16-bit words (4 bits) or bytes
+  // (4 values of 2 bits, or one value of 8 bits).
+  constexpr int words = bits == 8 ? values_per_thread : values_per_thread / 4;
 
   typedef float U;
 
@@ -2074,7 +2079,23 @@ template <typename T, int group_size, int bits, bool fast, int rows>
       for (int row = 0; row < results_per_simdgroup; row++) {
         accum[row] = 0;
       }
-      if (bits == 4) {
+      if (bits == 2) {
+        // load_vector and qdot for 2 bits.
+        for (int i = 0; i < words; i++) {
+          sum += U(xl[4 * i]) + U(xl[4 * i + 1]) + U(xl[4 * i + 2]) +
+              U(xl[4 * i + 3]);
+          U x0 = xl[4 * i];
+          U x1 = xl[4 * i + 1] / 4.0f;
+          U x2 = xl[4 * i + 2] / 16.0f;
+          U x3 = xl[4 * i + 3] / 64.0f;
+          for (int row = 0; row < results_per_simdgroup; row++) {
+            uint8_t wi = uint8_t(wv[row * words + i]);
+            accum[row] +=
+                (x0 * (wi & 0x03) + x1 * (wi & 0x0c) + x2 * (wi & 0x30) +
+                 x3 * (wi & 0xc0));
+          }
+        }
+      } else if (bits == 4) {
         for (int i = 0; i < words; i++) {
           sum += U(xl[4 * i]) + U(xl[4 * i + 1]) + U(xl[4 * i + 2]) +
               U(xl[4 * i + 3]);

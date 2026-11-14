@@ -93,9 +93,10 @@ TEST_CASE("quantized matmul rows keep the bits of one row") {
       {9, 128},
       {64, 64}};
   for (auto [N, K] : shapes) {
-    for (int bits : {4, 8}) {
+    for (int bits : {2, 4, 8}) {
       for (int group_size : {32, 64, 128}) {
-        if (K % group_size != 0) {
+        // 2 bits are served where the one-row kernel is the fast one.
+        if (K % group_size != 0 || (bits == 2 && K % 512 != 0)) {
           continue;
         }
         for (auto dtype : {float32, float16, bfloat16}) {
@@ -131,6 +132,75 @@ TEST_CASE("quantized matmul rows keep the bits of one row") {
             CHECK(same_bytes(
                 reshape(y, {6, N}, Device::gpu), rows(singles, 0, 6)));
           }
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("quantized matmul broadcast batches keep the bits of one row") {
+  // A batch of one-row products with one weight matrix (x [..., 1, K], the
+  // weights broadcast over the batch). With MLX_QMV_ROWS_BROADCAST on (the
+  // default) the row-exact kernel serves it; the qmv_rows_broadcast_off ctest
+  // entry runs this case with the batched qmv (tests/CMakeLists.txt). Each row
+  // must have the bytes of the row alone either way.
+  const char* value = std::getenv("MLX_QMV_ROWS_BROADCAST");
+  bool on = value == nullptr || std::atoi(value) != 0;
+  REQUIRE(env::qmv_rows_broadcast() == on);
+
+  // K selects the one-row kernel: fast (K a multiple of 512 for 2 and 4 bits,
+  // of 256 for 8 bits), general (with a short last block), or qmv_quad
+  // (K = 64 or 128). 2 bits outside the fast kernel keep the batched qmv.
+  std::vector<std::pair<int, int>> shapes = {
+      {2048, 1024}, {61, 5120}, {1, 2048}, {1000, 768}, {5, 320}, {9, 128}};
+  for (auto [N, K] : shapes) {
+    for (int bits : {2, 4, 8}) {
+      for (int group_size : {32, 64, 128}) {
+        if (K % group_size != 0) {
+          continue;
+        }
+        for (auto dtype : {float32, float16, bfloat16}) {
+          CAPTURE(N);
+          CAPTURE(K);
+          CAPTURE(bits);
+          CAPTURE(group_size);
+          CAPTURE(dtype);
+          auto q = weights(N, K, group_size, bits, dtype, N + K + bits + 7);
+          Weights b{
+              group_size,
+              bits,
+              expand_dims(q.w, 0, Device::gpu),
+              expand_dims(q.scales, 0, Device::gpu),
+              expand_dims(q.biases, 0, Device::gpu)};
+          constexpr int count = 19;
+          auto x = astype(
+              random::normal(
+                  {count, K},
+                  float32,
+                  0.0f,
+                  1.0f,
+                  random::key(K + 1),
+                  Device::gpu),
+              dtype,
+              Device::gpu);
+          std::vector<array> alone;
+          for (int i = 0; i < count; ++i) {
+            alone.push_back(product(q, rows(x, i, i + 1)));
+          }
+          auto singles = concatenate(alone, 0, Device::gpu);
+          eval(singles);
+          // 2 to 19 rows: one tile, two tiles and a partial last tile.
+          for (int m : {2, 3, 7, 8, 9, 16, 19}) {
+            CAPTURE(m);
+            auto y = product(b, reshape(rows(x, 0, m), {m, 1, K}, Device::gpu));
+            CHECK(same_bytes(
+                reshape(y, {m, N}, Device::gpu), rows(singles, 0, m)));
+          }
+          // Two batch dimensions are more rows of one batch.
+          auto y =
+              product(b, reshape(rows(x, 0, 6), {2, 3, 1, K}, Device::gpu));
+          CHECK(
+              same_bytes(reshape(y, {6, N}, Device::gpu), rows(singles, 0, 6)));
         }
       }
     }

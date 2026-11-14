@@ -56,6 +56,8 @@ jobs:
         # todo 12/16/2025: enable TSAN later + consider enabling ASAN for GPU backend tests.
         # sanitizer: [ASAN, UBSAN, TSAN]
     runs-on: [self-hosted, linux, ARM64, darkbloom-linux-arm64]
+    # ASAN takes about 22 minutes natively; a hung run must not hold a sandbox for GitHub's 6-hour default.
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -65,9 +67,11 @@ jobs:
           [[ "$RUNNER_NAME" == darkbloom-* ]]
           [[ "$(uname -s)" == Linux && "$(uname -m)" == aarch64 ]]
           cmake --version
-          clang --version
+          cc --version
           c++ --version
-          command -v make git
+          clang --version
+          make --version
+          git --version
 
       - name: Linux Build and Test with ${{ matrix.sanitizer }}
         run: |

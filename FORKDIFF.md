@@ -25,8 +25,8 @@ Darkbloom Linux ARM64 runners. All eight Mac jobs in `fork-tests.yml` use only
 Darkbloom macOS ARM64 runners with the approved 12-core, 32-GiB profile.
 They keep their original steps, tests and job timeouts.
 The sanitizer jobs use the qualified image's compilers and dependencies, with a
-tool preflight in place of installing packages through sudo. When compatible
-capacity is busy they wait; these jobs have no GitHub-hosted or Blacksmith
+tool preflight in place of installing packages through sudo, and are capped
+at 60 minutes. When compatible capacity is busy they wait; these jobs have no GitHub-hosted or Blacksmith
 fallback. The current profile qualification lifetime is one hour, and the
 existing watchdog can cancel or retry a job after its 30-minute wait threshold.
 The watchdog can rerun a stranded workflow once, then cancel another stranded

@@ -1877,9 +1877,9 @@ template <
     typename T,
     int group_size,
     int bits,
+    bool has_global_scale, // unused
     bool batched,
     bool partial_rows = false,
-    bool has_global_scale = false,
     int results_per_simdgroup = 4>
 [[kernel]] void affine_qmv_fast(
     const device uint32_t* w [[buffer(0)]],
@@ -1935,10 +1935,10 @@ template <
 template <
     typename T,
     int group_size,
-    const int bits,
+    int bits,
+    bool has_global_scale, // unused
     bool batched,
-    bool partial_rows = false,
-    bool has_global_scale = false,
+    bool partial_rows = false, // unused
     int results_per_simdgroup = 4>
 [[kernel]] void affine_qmv(
     const device uint32_t* w [[buffer(0)]],
@@ -2052,10 +2052,10 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    bool batched,
-    bool has_global_scale = false>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool batched>
 [[kernel]] void affine_qvm(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -2109,7 +2109,7 @@ template <
 }
 
 template <typename T, const int group_size, const int bits, int split_k = 32>
-[[kernel]] void affine_qvm_split_k(
+[[kernel]] void affine_qvm_splitk(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
     const device T* biases [[buffer(2)]],
@@ -2170,14 +2170,14 @@ template <typename T, const int group_size, const int bits, int split_k = 32>
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool aligned_N,
-    const bool batched,
-    const bool has_global_scale = false,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N,
+    bool batched,
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 [[kernel]] void affine_qmm_t(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -2244,12 +2244,14 @@ template <
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool aligned_N,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N,
+    bool batched, // unused
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 [[kernel]] void affine_qmm_t_splitk(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -2305,8 +2307,9 @@ template <
     typename T,
     int group_size,
     int bits,
+    bool has_global_scale, // unused
+    bool aligned_N, // unused
     bool batched,
-    bool has_global_scale = false,
     int BM = 32,
     int BK = 32,
     int BN = 32>
@@ -2551,13 +2554,14 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
 
 template <
     typename T,
-    const int group_size,
-    const int bits,
-    const bool aligned_N,
-    const bool has_global_scale = false,
-    const int BM = 32,
-    const int BK = 32,
-    const int BN = 32>
+    int group_size,
+    int bits,
+    bool has_global_scale, // unused
+    bool aligned_N,
+    bool batched, // unused
+    int BM = 32,
+    int BK = 32,
+    int BN = 32>
 [[kernel]] void affine_gather_qmm_t(
     const device uint32_t* w [[buffer(0)]],
     const device T* scales [[buffer(1)]],
@@ -2636,7 +2640,9 @@ template <
     typename T,
     int group_size,
     int bits,
-    bool has_global_scale = false,
+    bool has_global_scale, // unused
+    bool aligned_N, // unused
+    bool batched, // unused
     int BM = 32,
     int BK = 32,
     int BN = 32>
@@ -2929,12 +2935,13 @@ template <
     typename T,
     int group_size,
     int bits,
-    int BM,
-    int BN,
-    int BK,
-    int WM,
-    int WN,
-    bool transpose>
+    bool has_global_scale, // unused
+    bool transpose,
+    int BM = 16,
+    int BN = 32,
+    int BK = 32,
+    int WM = 1,
+    int WN = 2>
 [[kernel]] void affine_gather_qmm_rhs(
     const device T* x [[buffer(0)]],
     const device uint32_t* w [[buffer(1)]],
@@ -3106,7 +3113,7 @@ template <typename T, int group_size, int bits, bool has_global_scale = false>
 
   float w_thread[values_per_reduce];
   float w_min = Limits<T>::max;
-  float w_max = 0;
+  float w_max = -Limits<T>::max;
 
 #pragma clang loop unroll(full)
   for (int i = 0; i < values_per_reduce; i++) {

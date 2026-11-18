@@ -38,7 +38,8 @@
       "test_compile",
       "test_fft",
       "test_array",
-      "test_blas"
+      "test_blas",
+      "test_config"
     ]
   ],
   "cpu": [
@@ -57,7 +58,8 @@
       "test_bf16",
       "test_einsum",
       "test_double",
-      "test_memory"
+      "test_memory",
+      "test_config"
     ],
     [
       "test_quantized:rest",

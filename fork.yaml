@@ -6,12 +6,12 @@ footer: |
 base:
   name: ml-explore/mlx
   url: https://github.com/ml-explore/mlx
-  # The upstream commit this fork is based on: upstream main on 2026-10-23, the
+  # The upstream commit this fork is based on: upstream main on 2026-10-30, the
   # head that the fork merged on that date. CI (`scripts/check_forkdiff.py`)
   # requires this hash to equal `git merge-base HEAD upstream/main`. Each upstream
   # merge moves the merge-base, so the gate fails until this hash and the
   # sections below are brought up to date.
-  hash: afc03c51105a8e25e70fa2ba0befb214e4f5ec6f
+  hash: 1ba7f969ad05d86decfeeb83787cc9b79e440962
 fork:
   name: Layr-Labs/mlx
   url: https://github.com/Layr-Labs/mlx
@@ -80,7 +80,11 @@ def:
         larger buffers (the CPU encodes further ahead of the GPU) while prefill keeps the
         defaults and their memory bound. The Ultra defaults (50 ops / 50 MB) count weight
         inputs, so multi-GB expert banks commit after almost every MoE operation.
-        Partitioning work into command buffers does not change results.
+        Partitioning work into command buffers does not change results. Upstream reads
+        `MLX_MAX_OPS_PER_BUFFER` / `MLX_MAX_MB_PER_BUFFER` through `config::get` in
+        `needs_commit`, once per dispatch (a shared lock and a string key, 16-23 ns a call on
+        an M5 Ultra); the fork reads them once when the device is created, as before, so the
+        commit check stays two memory reads.
       globs:
         - "mlx/backend/common/command_buffer_limits.h"
         - "mlx/backend/metal/device.h"
@@ -109,8 +113,10 @@ def:
         512 x 1024 products (one qmm, no split-K) at K = 96 (no NAX route) and K = 192 in
         groups of 64 at every tile, checks the 32 x 32 result against the dequantized
         product, and every other tile against its bytes. A wide tile passes upstream's
-        template arguments in order (global scale, then BM, BK, BN); upstream's own 64 x 64
-        FP4 tile (half-loader `fp_qmm_t`, precompiled) keeps its name and its selection.
+        template arguments in order (global scale, aligned N, batched, then BM, BK, BN) and
+        takes upstream's kernel name (`_bm_<BM>_bn_<BN>`), with `_bk_64` added for a K depth
+        of 64; upstream's own 64 x 64 FP4 tile (half-loader `fp_qmm_t`, precompiled) keeps
+        its name and its selection.
       globs:
         - "mlx/backend/common/command_buffer_limits.h"
         - "mlx/backend/metal/device.h"
@@ -122,6 +128,19 @@ def:
         - "mlx/utils.h"
         - "docs/src/usage/environment_variables.rst"
         - "tests/quantized_tile_tests.cpp"
+    - title: "Read-once switches on the dispatch path"
+      description: |
+        Upstream reads its environment switches through `config::get` (2026-10), which also
+        takes values from `mlx.core.config` and scoped updates, and removed `env::get_var`.
+        The fork keeps `env::get_var` (`utils.cpp`) for the switches it reads once into a
+        static: those read on every dispatch or kernel call (`MLX_QMV_BATCH_INVARIANT`,
+        `MLX_METAL_FAST_SYNCH`, `MLX_METAL_FENCED_INPUTS`, `MLX_METAL_FUSED_FENCE_UPDATE`,
+        the steel tile switches), the scheduler's task limits and the Gemma 4 expert route's
+        string switch, which `config::get` cannot hold. Upstream's own switches keep
+        `config::get`.
+      globs:
+        - "mlx/utils.cpp"
+        - "mlx/utils.h"
     - title: "Batch-invariant quantized matmul rows (opt-in)"
       description: |
         Opt-in (`MLX_QMV_BATCH_INVARIANT=1`, read once in each process). A quantized `x @ w.T`
@@ -160,7 +179,8 @@ def:
         separately measured prefill tile (`gptoss_mxfp4_policy.h`). (PR #14)
         `fp_quantized.metal` also builds the two m32n32k32 prefill-tile kernels (float and
         bfloat16) ahead of time, so CMake builds with the default `MLX_METAL_JIT=OFF` can load
-        them. (PR #24)
+        them. (PR #24) Upstream's gathered-matmul names carry no tile (one tile upstream), so a
+        tile other than upstream's adds its own (`_bm_32_bn_32_bk_32_wm_2_wn_2`).
       globs:
         - "mlx/backend/metal/gptoss_mxfp4_policy.h"
         - "mlx/backend/metal/kernels/fp_quantized.h"
@@ -200,7 +220,9 @@ def:
         ctest reports as skipped (`SKIP_RETURN_CODE`). David ruled on 2026-10-24 to skip by
         capability, like the 4 GiB capability skip below.
         Capped no-copy pages are first touched on the CPU so process physical
-        footprint accounts for pages later written by the GPU.
+        footprint accounts for pages later written by the GPU. Capped allocations are
+        recorded for upstream's debug-build graph check (`has_invalid_memory`, #4711) as
+        ordinary ones are.
         The native footprint contract is documented in `docs/src/usage/unified_memory.rst`.
       globs:
         - "mlx/memory.h"
@@ -315,8 +337,10 @@ def:
         - "docs/src/dev/custom_metal_kernels.rst"
     - title: "JACCL: zeroed send-frame tails, a progress guard and the advertised GID"
       description: |
-        JACCL is the RDMA-over-Thunderbolt backend. Upstream has changed none of the three
-        things below.
+        JACCL is the RDMA-over-Thunderbolt backend. Upstream changed none of the three things
+        below, but its dead-link detection
+        ([ml-explore/mlx#4767](https://github.com/ml-explore/mlx/pull/4767)) now also checks
+        completions in `Connection::poll`; the guard below works on top of it.
 
         Send frames: JACCL posts every frame at the full size of its scratch buffer, so a
         payload shorter than the buffer went to the peer followed by the bytes of earlier
@@ -326,7 +350,9 @@ def:
 
         Progress guard: the polling loops waited for completions without a limit and never
         read `wc.status`, so a rank whose peer had died spun on a full core until it was
-        killed, and a failed completion was used as data. `ProgressGuard`
+        killed, and a failed completion was used as data. Since #4767 `Connection::poll`
+        throws at a failed completion or poll and when a stalled queue pair is in an error
+        state, and the connections of a group share that failure. `ProgressGuard`
         (`progress_guard.h`) is called after every poll of every mesh and ring loop. A
         completion with a failure status, or a failed `ibv_poll_cq`, is an error at once; no
         completion for longer than `JACCL_PROGRESS_TIMEOUT_MS` /
@@ -346,9 +372,10 @@ def:
         and so one guard, for each wire, and the wires of a `MeshGroup` share one failure
         flag: a failed wire closes its own queue pairs and buffers, a wire that waits in the
         same call stops with `WireStopped` and closes its own, and every later call on the
-        group is refused. The mesh runs its wires through the
-        shared `dispatch_wires` in `threadpool.h`, which upstream lets drop the error of a
-        pool wire; the fork throws that error after all wires returned. A region that the
+        group is refused. A mesh call that a connection failed (not the guard) leaves with
+        that connection's reason (`Connection::failure_reason`). The shared `dispatch_wires`
+        in `threadpool.h` is upstream's: since #4767 it reports a pool wire's error after all
+        wires returned, as the fork's did. A region that the
         verbs refuse to deregister is reported and kept for the destructor, as a refused
         queue pair or completion queue is. Each completion
         queue has four times the entries its queue pair can have outstanding
@@ -367,6 +394,10 @@ def:
         `queue_pair_rtr` sent from GID index 1 whatever the index of that GID. The connection
         now remembers the index where the advertised GID was found and sends from it;
         behaviour is unchanged where that index is 1.
+
+        Upstream's `tests/jaccl_tests.cpp` (in the main tests binary) sets
+        `JACCL_TIMEOUT_ACTION=throw` unless it is set, because its unplug cases expect the
+        failed calls to throw.
 
         `tests/jaccl` is a separate CMake project that the MLX build does not build; the
         `build-cpp` job of Fork Tests builds it and runs it. It
@@ -390,11 +421,11 @@ def:
         - "mlx/distributed/jaccl/lib/jaccl/ring.cpp"
         - "mlx/distributed/jaccl/lib/jaccl/ring_impl.h"
         - "mlx/distributed/jaccl/lib/jaccl/send_frame.h"
-        - "mlx/distributed/jaccl/lib/jaccl/threadpool.h"
         - "docs/src/usage/distributed.rst"
         - "docs/src/usage/environment_variables.rst"
         - "tests/jaccl/*"
         - "tests/jaccl/fake_verbs/infiniband/verbs.h"
+        - "tests/jaccl_tests.cpp"
     - title: "Two-rank sealed all-sum"
       description: |
         The embedding program installs an authenticated frame codec for a two-rank

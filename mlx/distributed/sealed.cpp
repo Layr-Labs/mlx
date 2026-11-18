@@ -326,14 +326,14 @@ void SealedAllSum::eval_streamed(const array& in, array& out) {
                     dst = out.data<char>(),
                     mine = sealed.data<char>(),
                     theirs = received.data<char>()]() {
-    detail::StreamedSum sum(
+    detail::StreamedSum streamed(
         codec, layout, counter, rank, src, src, dst, mine, theirs, add);
-    bool ok = sum.run([&group](
-                          const char* send,
-                          char* recv,
-                          size_t n,
-                          const detail::ReadyFn& ready,
-                          const detail::ArrivedFn& arrived) {
+    bool ok = streamed.run([&group](
+                               const char* send,
+                               char* recv,
+                               size_t n,
+                               const detail::ReadyFn& ready,
+                               const detail::ArrivedFn& arrived) {
       group->exchange(send, recv, n, ready, arrived);
     });
     if (!ok) {
@@ -441,7 +441,7 @@ void run_gathered(
     const char* send,
     const char* addend,
     char* dst,
-    detail::AddPieceFn add,
+    detail::AddPieceFn add_piece,
     const char* name) {
   size_t frame = n + codec.overhead;
   int sealed_len = detail::frame_extent(frame, name);
@@ -474,15 +474,15 @@ void run_gathered(
                     frame,
                     counter,
                     rank,
-                    add,
+                    add_piece,
                     label]() {
     const char* peer_frame = frames + (rank == 0 ? frame : 0);
     if (codec.open(codec.ctx, peer_frame, n, dst, counter, 1 - rank) != 0) {
       throw std::runtime_error(
           label + " a peer frame did not authenticate: refused");
     }
-    if (add != nullptr) {
-      add(rank, addend, dst, n);
+    if (add_piece != nullptr) {
+      add_piece(rank, addend, dst, n);
     }
   });
   encoder.add_temporary(sealed);

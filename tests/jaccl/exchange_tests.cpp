@@ -165,9 +165,9 @@ void exchange_failure() {
     }
   };
   fixture::both([&] { run(0); }, [&] { run(1); });
+  // Connection::poll (upstream #4767) raises the failed completion.
   fixture::require(
-      errors[1].find("mesh exchange") != std::string::npos &&
-          errors[1].find("failed with status") != std::string::npos,
+      errors[1].rfind("[jaccl] Work completion failed with status", 0) == 0,
       "A failed completion must fail the exchange");
   std::string later;
   try {

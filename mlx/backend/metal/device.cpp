@@ -37,6 +37,17 @@ namespace {
 
 constexpr const char* default_mtllib_path = METAL_PATH;
 
+const std::string& metal_gpu_arch() {
+  static std::string gpu_arch_ = []() {
+    if (const char* str = std::getenv("MLX_METAL_GPU_ARCH")) {
+      return str;
+    } else {
+      return "";
+    }
+  }();
+  return gpu_arch_;
+}
+
 void set_compile_options(
     MTL::CompileOptions* mtl_options,
     const CompileOptions& compile_options) {
@@ -368,6 +379,12 @@ void CommandEncoder::set_input_array(
   if (all_inputs_.insert(a.buffer().ptr())) {
     buffer_sizes_ += a.data_size();
   }
+#ifndef NDEBUG
+  if (a.data_shared_ptr()->is_owned()) {
+    registered_data_ptrs_.push_back(a.buffer().raw_ptr());
+  }
+#endif
+
   auto r_buf = static_cast<MTL::Resource*>(const_cast<void*>(a.buffer().ptr()));
   next_inputs_.insert(r_buf);
   needs_barrier_ = needs_barrier_ | prev_outputs_.contains(r_buf);
@@ -386,6 +403,11 @@ void CommandEncoder::set_output_array(
 
 void CommandEncoder::register_output_array(const array& a) {
   all_outputs_.insert(a.buffer().ptr());
+#ifndef NDEBUG
+  if (a.data_shared_ptr()->is_owned()) {
+    registered_data_ptrs_.push_back(a.buffer().raw_ptr());
+  }
+#endif
 
   auto buf = static_cast<MTL::Resource*>(const_cast<void*>(a.buffer().ptr()));
   if (concurrent_) {
@@ -524,6 +546,9 @@ void CommandEncoder::end_encoding(bool wait_in_flight) {
   concurrent_outputs_.clear();
   all_inputs_.clear();
   all_outputs_.clear();
+#ifndef NDEBUG
+  registered_data_ptrs_.clear();
+#endif
 }
 
 void CommandEncoder::signal_event(Event event, uint64_t value) {
@@ -645,6 +670,44 @@ void CommandEncoder::synchronize() {
   }
 }
 
+#ifndef NDEBUG
+void CommandEncoder::verify_graph(
+    const char* primitive_name,
+    const std::vector<array>& inputs,
+    const std::vector<array>& outputs) {
+  if (exiting_) {
+    return;
+  }
+  if (allocator::allocator().has_invalid_memory(registered_data_ptrs_)) {
+    throw std::runtime_error(
+        fmt::format(
+            "There are invalid memory registered when calling {}::eval_gpu, "
+            "which is a bug that corrupts the graph, and usually caused by "
+            "temporary arrays not registered with \"add_temporary\" method.",
+            primitive_name));
+  }
+  for (const auto& temp : temporaries_) {
+    auto pred = [&temp](auto& arr) {
+      return arr.data_shared_ptr() == temp.data_shared_ptr();
+    };
+    if (std::find_if(inputs.begin(), inputs.end(), pred) != inputs.end()) {
+      throw std::runtime_error(
+          fmt::format(
+              "An input of array is registered as temporary when calling "
+              "{}::eval_gpu, which is a bug that corrupts the graph.",
+              primitive_name));
+    }
+    if (std::find_if(outputs.begin(), outputs.end(), pred) != outputs.end()) {
+      throw std::runtime_error(
+          fmt::format(
+              "A output of array is registered as temporary when calling "
+              "{}::eval_gpu, which is a bug that corrupts the graph.",
+              primitive_name));
+    }
+  }
+}
+#endif
+
 MTL::ComputeCommandEncoder* CommandEncoder::get_command_encoder() {
   if (!encoder_) {
     error_.check();
@@ -705,7 +768,7 @@ Device::Device() : device_(load_device()), residency_sets_(device_.get()) {
       gemma4_expert_qmm_aot_available_ = false;
     }
   }
-  arch_ = env::metal_gpu_arch();
+  arch_ = metal_gpu_arch();
   if (arch_.empty()) {
     arch_ = std::string(device_->architecture()->name()->utf8String());
   }

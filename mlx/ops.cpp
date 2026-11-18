@@ -5622,8 +5622,10 @@ array fp_dequantize(
           : array(1.0f, out_type);
       scales = multiply(from_fp8(scales, out_type, s), inv_scale_enc, s);
     } else {
+      auto nan_mask = equal(scales, array(uint8_t(0xFF), scales.dtype()), s);
       scales = subtract(astype(scales, out_type, s), array(127, out_type), s);
       scales = power(array(2.0f, out_type), scales, s);
+      scales = where(nan_mask, array(NAN, out_type), scales, s);
     }
     return {reshape(multiply(out, scales, s), wshape, s)};
   };
@@ -6619,10 +6621,15 @@ std::vector<array> depends(
   std::vector<array> all_inputs = inputs;
   all_inputs.insert(all_inputs.end(), dependencies.begin(), dependencies.end());
 
-  // Compute the stream. Maybe do it in a smarter way at some point in the
-  // future.
-  Stream s = (inputs[0].has_primitive()) ? inputs[0].primitive().stream()
-                                         : to_stream({});
+  // Use the stream of the first input or dependency that has one.
+  std::optional<Stream> found;
+  for (auto& in : all_inputs) {
+    if (in.has_primitive()) {
+      found = in.primitive().stream();
+      break;
+    }
+  }
+  Stream s = found ? *found : to_stream({});
   // Make the output info
   std::vector<Shape> shapes;
   std::vector<Dtype> dtypes;
@@ -6726,12 +6733,14 @@ array number_of_elements(
     }
     return array(inverted ? 1.0 / numel : numel, dtype);
   }
-  return stop_gradient(array(
-      Shape{},
-      dtype,
-      std::make_shared<NumberOfElements>(
-          to_stream(s), std::move(axes), inverted, dtype),
-      {a}));
+  return stop_gradient(
+      array(
+          Shape{},
+          dtype,
+          std::make_shared<NumberOfElements>(
+              to_stream(s), std::move(axes), inverted, dtype),
+          {a}),
+      s);
 }
 
 array conjugate(const array& a, StreamOrDevice s /* = {} */) {
@@ -6959,7 +6968,7 @@ array real(const array& a, StreamOrDevice s /* = {} */) {
 
 array imag(const array& a, StreamOrDevice s /* = {} */) {
   if (!issubdtype(a.dtype(), complexfloating)) {
-    return zeros_like(a);
+    return zeros_like(a, s);
   }
   return array(a.shape(), float32, std::make_shared<Imag>(to_stream(s)), {a});
 }

@@ -157,6 +157,24 @@ Metal
    that are different from the bits of the same row among two or more rows.
    MLX reads this variable once in each process.
 
+.. envvar:: MLX_QMV_ROW_EXACT
+
+   The highest row count of a quantized matrix product ``x @ w.T`` that uses
+   the row-exact kernel. With a value from ``2``, a product with 2 rows up to
+   this count gives each row the bits that the row gets alone (``qmv``), and
+   the rows share one read of the weights. Thus a row keeps its bits when
+   other rows are in the same product, for example the tokens of a
+   multiple-token decode step or the rows of different requests. The kernel
+   serves the affine mode with 4 or 8 bits and a group size of 32, 64 or 128;
+   other products do not change. It is faster than one product for each row. It is
+   usually slower than the default kernels, and the difference increases with
+   the row count. With a value from ``2``, the products that it serves get
+   bits that are different from the default bits. With
+   ``MLX_QMV_BATCH_INVARIANT=1`` also, the kernel serves each row count below
+   the vector limit, thus a row keeps its bits from 1 row to the limit minus
+   1. The default, ``0``, does not use the kernel. MLX reads this variable
+   once in each process.
+
 Advanced tuning
 ---------------
 

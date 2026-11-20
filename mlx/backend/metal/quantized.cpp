@@ -638,6 +638,89 @@ void qmv_wide(
   compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
 }
 
+// The row-exact kernel (qmv_rows) serves the affine x @ w.T with 4 or 8 bits
+// for 2 rows up to row_limit, which comes from MLX_QMV_ROW_EXACT.
+inline bool use_qmv_rows(
+    const std::optional<array>& biases,
+    QuantizationMode mode,
+    bool transpose,
+    bool non_batched,
+    int group_size,
+    int bits,
+    int M,
+    int K,
+    int row_limit) {
+  return M >= 2 && M <= row_limit && transpose && non_batched &&
+      mode == QuantizationMode::Affine && biases.has_value() &&
+      (bits == 4 || bits == 8) &&
+      (group_size == 32 || group_size == 64 || group_size == 128) &&
+      K % group_size == 0;
+}
+
+// Dispatches affine_qmv_rows: each row of x gets the bits that qmv gives it
+// alone, and one launch reads each weight once for a tile of rows. A tile has
+// up to 8 rows (4 bits) or 6 rows (8 bits, where 7 or 8 rows are slower than
+// two tiles).
+void qmv_rows(
+    const array& x,
+    const array& w,
+    const array& scales,
+    const array& biases,
+    array& out,
+    int group_size,
+    int bits,
+    int M,
+    int N,
+    int K,
+    metal::Device& d,
+    const Stream& s) {
+  const int max_rows = bits == 8 ? 6 : 8;
+  constexpr int bn = 8;
+  int n_tiles = (M + max_rows - 1) / max_rows;
+  int rows = (M + n_tiles - 1) / n_tiles;
+  // The kernel that qmv uses for one row of this K.
+  bool fast = (K % qmv_fast_k_alignment(bits) == 0);
+  MTL::Size group_dims(32, 4, 1);
+  MTL::Size grid_dims(n_tiles, (N + bn - 1) / bn, 1);
+
+  std::string kname;
+  kname.reserve(64);
+  std::string type_string = get_type_string(x.dtype());
+  concatenate(
+      kname,
+      "affine_qmv_rows_",
+      type_string,
+      "_gs_",
+      group_size,
+      "_b_",
+      bits,
+      fast ? "_fast_1" : "_fast_0",
+      "_rows_",
+      rows);
+  auto kernel = get_quantized_kernel_wrapped(
+      d,
+      kname,
+      "qmv_rows",
+      "affine",
+      type_string,
+      group_size,
+      bits,
+      fast,
+      rows);
+
+  auto& compute_encoder = metal::get_command_encoder(s);
+  compute_encoder.set_compute_pipeline_state(kernel);
+  compute_encoder.set_input_array(w, 0);
+  compute_encoder.set_input_array(scales, 1);
+  compute_encoder.set_input_array(biases, 2);
+  compute_encoder.set_input_array(x, 3);
+  compute_encoder.set_output_array(out, 4);
+  compute_encoder.set_bytes(K, 5);
+  compute_encoder.set_bytes(N, 6);
+  compute_encoder.set_bytes(M, 7);
+  compute_encoder.dispatch_threadgroups(grid_dims, group_dims);
+}
+
 inline bool use_qmv_mma(
     const array& x,
     const array& w,
@@ -2509,6 +2592,33 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // split-K routes. Then each row has the same bits at each row count from 2
   // to the limit - 1.
   bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
+  // With MLX_QMV_ROW_EXACT, each row of a few rows has the bits of the row
+  // alone. One row of K = 64 or 128 is qmv_quad, which makes each row alone.
+  // With MLX_QMV_BATCH_INVARIANT also, the kernel serves each row count below
+  // the vector limit. Then a row keeps its bits from 1 row to the limit - 1.
+  int row_limit = env::qmv_row_exact();
+  if (row_limit >= 2 && env::qmv_batch_invariant()) {
+    row_limit = std::max(row_limit, vector_limit - 1);
+  }
+  if (use_qmv_rows(
+          biases,
+          mode_,
+          transpose_,
+          non_batched,
+          group_size_,
+          bits_,
+          M,
+          K,
+          row_limit)) {
+    if (K == 64 || K == 128) {
+      qmv_quad(
+          x, w, scales, biases, out, group_size_, bits_, M, N, K, d, s, mode);
+    } else {
+      qmv_rows(x, w, scales, *biases, out, group_size_, bits_, M, N, K, d, s);
+    }
+    return;
+  }
 
   // For few rows use qmv_mma when N/K is large enough.
   if (!vector_rows && transpose_ && non_batched && (M >= 6) && (M <= 16) &&

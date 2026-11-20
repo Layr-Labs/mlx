@@ -242,6 +242,14 @@ inline bool qmv_batch_invariant() {
   return invariant_;
 }
 
+// The highest row count of a quantized matmul (x @ w.T) that uses the
+// row-exact kernel (see `qmv_rows` in backend/metal/quantized.cpp). Then each
+// row has the bits that it has alone. 0 is off.
+inline int qmv_row_exact() {
+  static int rows_ = get_var("MLX_QMV_ROW_EXACT", 0);
+  return rows_;
+}
+
 inline bool metal_fast_synch() {
   static bool metal_fast_synch = get_var("MLX_METAL_FAST_SYNCH", 0);
   return metal_fast_synch;

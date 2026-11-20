@@ -32,8 +32,8 @@ MACOS = "darkbloom-macos-arm64"
 SIZES = {
     ("fork-tests.yml", "build-wheel"): "4x16",
     ("fork-tests.yml", "build-cpp"): "4x16",
-    ("fork-tests.yml", "python-gpu"): "4x16",
-    ("fork-tests.yml", "python-cpu"): "4x24",
+    ("fork-tests.yml", "python-gpu"): "4x24",
+    ("fork-tests.yml", "python-cpu"): "12x32",
     ("fork-tests.yml", "metal-build-and-test"): "4x16",
 }
 

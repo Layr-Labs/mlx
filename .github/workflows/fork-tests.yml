@@ -240,7 +240,7 @@ jobs:
 
   python-gpu:
     needs: build-wheel
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x16]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x24]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -361,7 +361,7 @@ jobs:
   python-cpu:
     # Run the CPU code of ops that also have a Metal implementation.
     needs: build-wheel
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x24]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-12x32]
     timeout-minutes: 30
     strategy:
       fail-fast: false

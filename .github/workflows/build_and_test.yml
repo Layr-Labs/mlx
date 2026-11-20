@@ -45,6 +45,11 @@ jobs:
           key: pre-commit-3|${{ runner.os }}|${{ runner.arch }}|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Run pre-commit
         run: pre-commit run --show-diff-on-failure --color=always --all-files
+      - name: Test the runner sizes and the resource sampler
+        # Fails when a macOS job names no signed VM size (FORKDIFF.md, Job sizes).
+        run: |
+          python3 .github/scripts/test-runner-sizes.py
+          python3 .github/scripts/test-ci-resource-sampler.py
 
   linux_sanitizer_build_and_test:
     name: Linux Sanitizer Tests (${{ matrix.sanitizer }})

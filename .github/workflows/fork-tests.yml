@@ -49,7 +49,7 @@ env:
 
 jobs:
   build-wheel:
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x16]
     timeout-minutes: 45
     env:
       # The runners have macOS 26 or later. Version 26.2 is the lowest
@@ -57,6 +57,11 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '26.2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource sampler
+        # Report-only (.github/scripts/ci-resource-sampler.py): every 5 s it
+        # samples memory and busy vCPUs. It never fails the job.
+        run: python3 .github/scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
 
       - name: Check the Python shard map
         run: python3 .github/scripts/fork-tests/python_shards.py check
@@ -94,13 +99,23 @@ jobs:
           retention-days: 3
           overwrite: true
 
+      - name: Report the resource samples
+        # Prints the peaks that size this job (FORKDIFF.md, Job sizes). Report-only.
+        if: ${{ always() }}
+        run: python3 .github/scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+
   build-cpp:
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-8x16]
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '26.2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource sampler
+        # Report-only (.github/scripts/ci-resource-sampler.py): every 5 s it
+        # samples memory and busy vCPUs. It never fails the job.
+        run: python3 .github/scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
 
       - uses: ./.github/actions/fork-build-cache
         id: cache
@@ -218,9 +233,14 @@ jobs:
           retention-days: 3
           overwrite: true
 
+      - name: Report the resource samples
+        # Prints the peaks that size this job (FORKDIFF.md, Job sizes). Report-only.
+        if: ${{ always() }}
+        run: python3 .github/scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+
   python-gpu:
     needs: build-wheel
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x16]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -235,6 +255,11 @@ jobs:
       # LLVM_PROFILE_FILE.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource sampler
+        # Report-only (.github/scripts/ci-resource-sampler.py): every 5 s it
+        # samples memory and busy vCPUs. It never fails the job.
+        run: python3 .github/scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
 
       - uses: ./.github/actions/setup
         with:
@@ -328,10 +353,15 @@ jobs:
           retention-days: 3
           overwrite: true
 
+      - name: Report the resource samples
+        # Prints the peaks that size this job (FORKDIFF.md, Job sizes). Report-only.
+        if: ${{ always() }}
+        run: python3 .github/scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+
   python-cpu:
     # Run the CPU code of ops that also have a Metal implementation.
     needs: build-wheel
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x16]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -349,6 +379,11 @@ jobs:
         test_fast_sdpa.TestFastSDPA.test_sdpa_full_head_dim_256
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource sampler
+        # Report-only (.github/scripts/ci-resource-sampler.py): every 5 s it
+        # samples memory and busy vCPUs. It never fails the job.
+        run: python3 .github/scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
 
       - uses: ./.github/actions/setup
         with:
@@ -404,13 +439,23 @@ jobs:
           retention-days: 3
           overwrite: true
 
+      - name: Report the resource samples
+        # Prints the peaks that size this job (FORKDIFF.md, Job sizes). Report-only.
+        if: ${{ always() }}
+        run: python3 .github/scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true
+
   metal-build-and-test:
     needs: [build-wheel, build-cpp, python-gpu, python-cpu]
     if: ${{ !cancelled() }}
-    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64]
+    runs-on: [self-hosted, macOS, ARM64, darkbloom-macos-arm64-4x16]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start the resource sampler
+        # Report-only (.github/scripts/ci-resource-sampler.py): every 5 s it
+        # samples memory and busy vCPUs. It never fails the job.
+        run: python3 .github/scripts/ci-resource-sampler.py start "$RUNNER_TEMP/resource-samples"
 
       - name: Download the lists of tests that ran
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -582,3 +627,8 @@ jobs:
             echo "::error::Jobs that did not succeed: $bad"
             exit 1
           fi
+
+      - name: Report the resource samples
+        # Prints the peaks that size this job (FORKDIFF.md, Job sizes). Report-only.
+        if: ${{ always() }}
+        run: python3 .github/scripts/ci-resource-sampler.py report "$RUNNER_TEMP/resource-samples" || true

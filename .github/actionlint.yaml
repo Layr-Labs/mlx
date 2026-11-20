@@ -1,4 +1,7 @@
 self-hosted-runner:
   labels:
     - darkbloom-linux-arm64
-    - darkbloom-macos-arm64
+    - darkbloom-macos-arm64-4x16
+    - darkbloom-macos-arm64-4x24
+    - darkbloom-macos-arm64-8x16
+    - darkbloom-macos-arm64-12x32

@@ -756,8 +756,14 @@ def:
         its arguments, the metal compiler version and the SDK build. The ccache key holds
         the clang version, and ccache checks the compiler content of each object.
 
-        All eight Mac jobs in `fork-tests.yml` use native macOS ARM64 labels and
-        the approved 12-core, 32-GiB profile. They wait for compatible capacity
+        All eight Mac jobs in `fork-tests.yml` use native macOS ARM64 labels. Each
+        label names the job's VM size: the `python-cpu` shards ask for 12 vCPUs and
+        32 GiB (`darkbloom-macos-arm64-12x32`), the `python-gpu` shards for 4 vCPUs and
+        24 GiB, and the other jobs for 4 vCPUs and 16 GiB.
+        `FORKDIFF.md` (Job sizes) gives the data. Each Mac job runs the report-only
+        `.github/scripts/ci-resource-sampler.py`, which prints its memory and vCPU
+        peaks, and `.github/scripts/test-runner-sizes.py` (in Check Lint) fails when a
+        Mac job names no signed size. They wait for compatible capacity
         without a hosted fallback. The Linux lint, ASAN/UBSAN, fork-diff check
         and Pages renderer also use native-only labels. The sanitizer jobs use
         the qualified compiler image and a tool preflight, retaining their
@@ -792,7 +798,8 @@ def:
         #4437, which needs 2^32 output elements (more than one 32-bit grid dimension), and
         bool outputs of one byte each give 4 GiB. David ruled on 2026-10-23 to keep this skip
         and not to use a larger runner. A Darkbloom Sandbox caps a Metal buffer at half its memory
-        (16 GiB of the approved 32 GiB), so the test runs there. When a Python test entry fails, the job prints the end of
+        (12 GiB of the 24 GiB of the GPU shards), and the CPU shards have a `memory_size` of 32 GiB,
+        so the test runs there on the GPU and on the CPU. When a Python test entry fails, the job prints the end of
         its log at once. Upstream tests that run only a GPU path (forced fused SDPA, global-scale
         `qqmm` and `gather_qmm`) check on the CPU pass that the documented error is raised.
       globs:
@@ -814,6 +821,9 @@ def:
         - ".github/scripts/codeql_artifacts.py"
         - ".github/scripts/codeql_artifacts_test.py"
         - ".github/scripts/update-bypass-list.js"
+        - ".github/scripts/ci-resource-sampler.py"
+        - ".github/scripts/test-ci-resource-sampler.py"
+        - ".github/scripts/test-runner-sizes.py"
         - "scripts/check_forkdiff.py"
         - "FORKDIFF.md"
         - "docs/ci-codeql-native.md"

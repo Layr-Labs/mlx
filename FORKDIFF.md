@@ -22,7 +22,7 @@ as a run artifact, `forkdiff-page`) and exits with a notice instead of failing.
 
 The Linux lint job, ASAN/UBSAN tests, fork-diff check and page renderer use only
 Darkbloom Linux ARM64 runners. All eight Mac jobs in `fork-tests.yml` use only
-Darkbloom macOS ARM64 runners with the approved 12-core, 32-GiB profile.
+Darkbloom macOS ARM64 runners. Each names its VM size ([Job sizes](#job-sizes)).
 They keep their original steps, tests and job timeouts.
 The sanitizer jobs use the qualified image's compilers and dependencies, with a
 tool preflight in place of installing packages through sudo, and are capped
@@ -46,6 +46,45 @@ the rendered artifact through its protected environment. If its first deploy
 fails before it creates a deployment (the packaged artifact is not listed yet),
 it waits 20 seconds and tries once more. The disabled native CodeQL workflow keeps its separate routing
 and activation rules.
+
+### Job sizes
+
+Each Darkbloom macOS job names its VM size in its runner label, for example
+`darkbloom-macos-arm64-4x16` (4 vCPUs, 16 GiB). A job without a size gets the
+size that the approval pins (12 vCPUs, 32 GiB). The image pipeline signs
+4x16, 4x24, 8x16 and 12x32. A job gets the smallest signed size that has 30%
+headroom over its measured memory peak. A job that took less than 10 minutes
+must stay under 10 minutes.
+
+The peak of a job is the larger of two sampler figures: used memory (app +
+wired + compressed) and the sum of the lifetime peak footprints of the
+runner user's processes. The second matters where memory is compressed:
+used memory counts compressed pages at their compressed size. The idle VM
+uses about 6 GiB. Pull request runs 44750715218 and 44754340762 measured
+every job.
+
+| Job | Size | Wall time on 12 vCPUs (runs 43368507444 to 43569480732) | Hosted 3 vCPUs, 7 GiB | Measured (size: wall time, peak) |
+|---|---|---|---|---|
+| `build-wheel` | 4x16 | 153 to 354 s | 575 s (run 43120201853, `macos-26`) | 4x16: 230 and 242 s, 10.65 GiB |
+| `build-cpp` | 4x16 | 277 to 620 s; p90 about 480 s. The slow runs spend up to 190 s in the build cache action. | 940 s, of which the compile is 632 s (run 43120201853) | 8x16: 302 s, 10.42 GiB; 4x16: 374 s, 10.56 GiB |
+| `python-gpu` (2 shards) | 4x24 | 171 to 541 s | 297 to 635 s (run 43531506709, `xcode-27`) | 4x16: 182 to 307 s. Shard 1 used 11.65 GiB with 4.1 GiB compressed; its processes' footprints sum to 13.21 GiB. 16 GiB is less than 1.3 times that. |
+| `python-cpu` (3 shards) | 12x32 | 152 to 444 s | 279 to 546 s | 4x16: 190 to 258 s, 13.20 GiB used with 7.1 GiB compressed, memory pressure at warning. 4x24: 163 to 273 s, 19.26 GiB used (footprints 17.89 GiB). 24 GiB is less than 1.3 times 19.26 GiB, and 12x32 is the next signed size with more memory. |
+| `metal-build-and-test` | 4x16 | 34 to 190 s | 20 to 23 s | 4x16: 36 and 38 s, 6.07 GiB |
+
+`test_init_reduce_large_output` needs a 4 GiB Metal buffer on the GPU and a
+`memory_size` of 16 GiB on the CPU. The GPU shards (a Metal buffer can have
+half of the VM's memory) and the CPU shards give both, so the test still
+runs. Runs 44750715218 and 44754340762 ran it on both.
+
+Every macOS job runs `.github/scripts/ci-resource-sampler.py`, a copy of the
+sampler of Layr-Labs/d-inference (wrapped to this repository's ruff rules), from
+its checkout on. Its last step,
+"Report the resource samples", prints the memory peak of each class, the
+three largest processes, the busy vCPUs and the sampled time scaled to 4 and
+8 vCPUs. Use these numbers to change a size. Check Lint runs
+`.github/scripts/test-runner-sizes.py`. It fails when a macOS job names no
+size, a size that is not signed, or a size other than the one its table
+gives.
 
 ## The gate
 

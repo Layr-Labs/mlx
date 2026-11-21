@@ -276,13 +276,15 @@ class ScaledDotProductAttention : public Custom {
       bool do_causal,
       bool has_sinks,
       bool output_logsumexp,
-      bool force_fused)
+      bool force_fused,
+      int prefill_rows = 0)
       : Custom(stream, std::move(fallback)),
         scale_(scale),
         do_causal_(do_causal),
         has_sinks_(has_sinks),
         output_logsumexp_(output_logsumexp),
-        force_fused_(force_fused) {}
+        force_fused_(force_fused),
+        prefill_rows_(prefill_rows) {}
 
   static bool use_fallback(
       const array& q,
@@ -325,6 +327,11 @@ class ScaledDotProductAttention : public Custom {
         output_logsumexp_,
         force_fused_);
   }
+  // The building thread's prefill reference rows (`thread_prefill_rows`).
+  // Not part of `state()`: an exported graph imports with 0.
+  int prefill_rows() const {
+    return prefill_rows_;
+  }
 
  private:
   float scale_;
@@ -332,6 +339,7 @@ class ScaledDotProductAttention : public Custom {
   bool has_sinks_;
   bool output_logsumexp_;
   bool force_fused_;
+  int prefill_rows_;
 };
 
 class ScaledDotProductAttentionVJP : public Custom {

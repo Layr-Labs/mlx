@@ -1,5 +1,6 @@
 // Copyright © 2023 Apple Inc.
 
+#include <algorithm>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -7,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "mlx/backend/common/command_buffer_limits.h"
 #include "mlx/dtype_utils.h"
 #include "mlx/types/limits.h"
 #include "mlx/utils.h"
@@ -289,6 +291,20 @@ std::ostream& operator<<(std::ostream& os, array a) {
   return os;
 }
 
+namespace {
+thread_local int thread_prefill_rows_ = 0;
+} // namespace
+
+int thread_prefill_rows() {
+  return thread_prefill_rows_;
+}
+
+int set_thread_prefill_rows(int rows) {
+  int previous = thread_prefill_rows_;
+  thread_prefill_rows_ = std::max(0, rows);
+  return previous;
+}
+
 namespace env {
 
 int get_var(const char* name, int default_value) {
@@ -356,3 +372,18 @@ iinfo::iinfo(Dtype dtype) : dtype(dtype) {
 }
 
 } // namespace mlx::core
+
+#if defined(__APPLE__)
+extern "C" void mlx_metal_set_thread_prefill_rows(
+    int rows,
+    int* previous_rows) {
+  int previous = mlx::core::set_thread_prefill_rows(rows);
+  if (previous_rows != nullptr) {
+    *previous_rows = previous;
+  }
+}
+
+extern "C" int mlx_metal_thread_prefill_rows(void) {
+  return mlx::core::thread_prefill_rows();
+}
+#endif

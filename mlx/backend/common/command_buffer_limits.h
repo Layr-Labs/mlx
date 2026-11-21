@@ -33,6 +33,20 @@ MLX_API void mlx_metal_set_thread_command_buffer_limits(
 /// 32 x 32 whatever the tile.
 MLX_API void mlx_metal_set_thread_qmm_steel_tile(int tile, int* previous_tile);
 
+/// Reference row count for the quantized matmuls and attention ops that the
+/// calling thread builds from now on; 0 ends the scope. Stores the thread's
+/// previous value in `previous_rows` when it is not null. An op keeps the
+/// value of the thread that builds it, whichever thread evaluates it. On the
+/// GPU, a quantized `x @ w.T` of two or more rows built with `rows` > 0 splits
+/// K as a product of `rows` rows would (and skips the NAX split-K kernel), so
+/// a row's bits do not depend on how many rows share the call. Head-dim 256
+/// causal or masked attention takes the fused NAX kernel from 16 queries
+/// instead of 1024. Ops built with 0 are unchanged.
+MLX_API void mlx_metal_set_thread_prefill_rows(int rows, int* previous_rows);
+
+/// The calling thread's prefill reference rows (0 outside a scope).
+MLX_API int mlx_metal_thread_prefill_rows(void);
+
 #ifdef __cplusplus
 }
 #endif

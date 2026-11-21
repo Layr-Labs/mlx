@@ -1446,10 +1446,12 @@ bool ScaledDotProductAttention::use_fallback(
   }
 
   // Use headdim-split kernel when NAX is enabled and there are enough query
-  // blocks to fill the machine.
+  // blocks to fill the machine. Inside a prefill-row scope it starts from 16
+  // queries, so a prompt chunk takes one kernel whatever its length.
+  const int d256_nax_min_queries = thread_prefill_rows() > 0 ? 16 : 1024;
   if (metal::is_nax_available() &&
       (env::enable_tf32() || q.dtype() != float32) &&
-      query_sequence_length >= 1024 && query_head_dim == 256 &&
+      query_sequence_length >= d256_nax_min_queries && query_head_dim == 256 &&
       (do_causal || has_arr_mask)) {
     return false;
   }

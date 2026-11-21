@@ -323,10 +323,12 @@ std::uintptr_t get_function_address(const std::function<T(U...)>& fun) {
 class CompileCache {
  public:
   struct CacheEntry {
-    CacheEntry(std::optional<Stream> stream, bool shapeless)
-        : stream(stream), shapeless(shapeless) {}
+    CacheEntry(std::optional<Stream> stream, bool shapeless, int prefill_rows)
+        : stream(stream), shapeless(shapeless), prefill_rows(prefill_rows) {}
     std::optional<Stream> stream;
     bool shapeless;
+    // The traced ops keep the prefill rows of the thread that traced them.
+    int prefill_rows;
     std::vector<array> inputs;
     std::vector<array> outputs;
     std::vector<array> tape;
@@ -395,14 +397,19 @@ class CompileCache {
     };
     // Loop over entries and check:
     // - Default stream and device match the entry's default stream
+    // - The thread's prefill rows match the entry's
     // - Inputs match i.e. shapes and types must be equal.
     auto stream = peek_default_stream(default_device());
+    int prefill_rows = thread_prefill_rows();
     for (CacheEntry& entry : entries) {
       // Check that the default stream and device match
       if (entry.stream != stream) {
         continue;
       }
       if (entry.shapeless != shapeless) {
+        continue;
+      }
+      if (entry.prefill_rows != prefill_rows) {
         continue;
       }
 
@@ -413,7 +420,7 @@ class CompileCache {
       }
     }
     // Otherwise append a new cache entry
-    entries.push_back(CacheEntry{stream, shapeless});
+    entries.push_back(CacheEntry{stream, shapeless, prefill_rows});
     return {entries.back(), std::move(entries_ptr)};
   }
 

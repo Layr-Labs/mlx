@@ -180,6 +180,29 @@ inline int next_power_of_2(int n) {
   return pow(2, std::ceil(std::log2(n)));
 }
 
+// The calling thread's prefill reference rows: 0 outside a prefill-row scope.
+// A quantized matmul or an attention op keeps the value of the thread that
+// builds it (see `mlx_metal_set_thread_prefill_rows`).
+MLX_API int thread_prefill_rows();
+
+// Sets the calling thread's prefill reference rows (negative values are 0)
+// and returns the previous value.
+MLX_API int set_thread_prefill_rows(int rows);
+
+// Sets the calling thread's prefill reference rows for the life of the object.
+struct ThreadPrefillRows {
+  explicit ThreadPrefillRows(int rows)
+      : previous_(set_thread_prefill_rows(rows)) {}
+  ~ThreadPrefillRows() {
+    set_thread_prefill_rows(previous_);
+  }
+  ThreadPrefillRows(const ThreadPrefillRows&) = delete;
+  ThreadPrefillRows& operator=(const ThreadPrefillRows&) = delete;
+
+ private:
+  int previous_;
+};
+
 namespace env {
 
 int get_var(const char* name, int default_value);

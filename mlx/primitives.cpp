@@ -3622,6 +3622,7 @@ std::vector<array> QuantizedMatmul::vjp(
   for (auto arg : argnums) {
     // gradient wrt to x
     if (arg == 0) {
+      ThreadPrefillRows scope(prefill_rows_);
       vjps.push_back(quantized_matmul(
           cotangents[0],
           primals[1],
@@ -3686,6 +3687,7 @@ std::vector<array> QuantizedMatmul::jvp(
     throw std::runtime_error(
         "[QuantizedMatmul::jvp] No JVP wrt the quantized matrix yet.");
   }
+  ThreadPrefillRows scope(prefill_rows_);
   return {quantized_matmul(
       tangents[0],
       primals[1],
@@ -3702,7 +3704,8 @@ std::vector<array> QuantizedMatmul::jvp(
 bool QuantizedMatmul::is_equivalent(const Primitive& other) const {
   const QuantizedMatmul& qm_other = static_cast<const QuantizedMatmul&>(other);
   return group_size_ == qm_other.group_size_ && bits_ == qm_other.bits_ &&
-      mode_ == qm_other.mode_ && transpose_ == qm_other.transpose_;
+      mode_ == qm_other.mode_ && transpose_ == qm_other.transpose_ &&
+      prefill_rows_ == qm_other.prefill_rows_;
 }
 
 std::vector<Shape> QuantizedMatmul::output_shapes(

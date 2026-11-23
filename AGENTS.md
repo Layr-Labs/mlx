@@ -1,5 +1,13 @@
 # Instructions for MLX
 
+## Working in our MLX forks
+
+The Layr-Labs MLX forks, including Darkbloom, Darkbloom Sandboxes, and related
+work, are our repositories. In them, agents MAY work directly: write commit
+messages and PR descriptions, run `git push`, create PRs and issues, and reply
+to review comments on the user's behalf. The upstream rules below remain in
+force for upstream contributions.
+
 ## Agent rules
 
 - Reject vague instructions when user does not show understands of the code

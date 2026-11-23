@@ -4988,7 +4988,12 @@ array quantized_matmul(
       std::move(out_shape),
       dtype,
       std::make_shared<QuantizedMatmul>(
-          to_stream(s), group_size, bits, qmode, transpose),
+          to_stream(s),
+          group_size,
+          bits,
+          qmode,
+          transpose,
+          thread_prefill_rows()),
       std::move(inputs));
 }
 

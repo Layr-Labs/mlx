@@ -1541,18 +1541,23 @@ void qmm_splitk(
     int K,
     metal::Device& d,
     const Stream& s,
-    const std::string& mode) {
-  // The split-K NAX route.
-  if (use_qmm_nax_splitk(x, biases, mode, M, N, K, group_size)) {
+    const std::string& mode,
+    int ref_rows = 0) {
+  // The split-K NAX route. A product with reference rows (a prefill-row
+  // scope) skips it, because that route chooses its K split from M.
+  if (ref_rows == 0 &&
+      use_qmm_nax_splitk(x, biases, mode, M, N, K, group_size)) {
     return qmm_splitk_nax(
         x, w, scales, biases, out, group_size, bits, M, N, K, d, s, mode);
   }
 
-  // Choose split_k to target ~512 threadgroups
+  // Choose split_k to target ~512 threadgroups, counted for `ref_rows` rows
+  // when they are given so that the split does not depend on M.
   int bm = 32, bn = 32;
   int n_tiles = (N + bn - 1) / bn;
   int m_tiles = (M + bm - 1) / bm;
-  int current_tgs = n_tiles * m_tiles;
+  int split_m_tiles = ref_rows > 0 ? (ref_rows + bm - 1) / bm : m_tiles;
+  int current_tgs = n_tiles * split_m_tiles;
   int split_k = std::max(1, 512 / current_tgs);
 
   // Each K partition must be a whole number of BK-wide (32) K-tiles as well as
@@ -2509,6 +2514,28 @@ void QuantizedMatmul::eval_gpu(const std::vector<array>& inputs, array& out) {
   // split-K routes. Then each row has the same bits at each row count from 2
   // to the limit - 1.
   bool vector_rows = env::qmv_batch_invariant() && M < vector_limit;
+
+  // A product built in a prefill-row scope (`thread_prefill_rows`) takes the
+  // split-K route with the K split of `prefill_rows_` rows from two rows on.
+  // Then each row has the same bits whatever the row count of the call.
+  if (prefill_rows_ > 0 && transpose_ && non_batched && M >= 2) {
+    qmm_splitk(
+        x,
+        w,
+        scales,
+        biases,
+        out,
+        group_size_,
+        bits_,
+        M,
+        N,
+        K,
+        d,
+        s,
+        mode,
+        prefill_rows_);
+    return;
+  }
 
   // For few rows use qmv_mma when N/K is large enough.
   if (!vector_rows && transpose_ && non_batched && (M >= 6) && (M <= 16) &&

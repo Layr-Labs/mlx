@@ -148,6 +148,40 @@ def:
         - "tests/qmv_batch_invariant_tests.cpp"
         - "tests/CMakeLists.txt"
         - ".github/workflows/fork-tests.yml"
+    - title: "Prefill-row invariance scope (opt-in, per thread)"
+      description: |
+        A thread-local scope, `ThreadPrefillRows` in C++ and
+        `mlx_metal_set_thread_prefill_rows` in C, that names a number of reference rows.
+        `quantized_matmul` and `fast::scaled_dot_product_attention` read it when the op is
+        built and keep it in the primitive (`prefill_rows()`), so the route follows the
+        thread that built the graph, not the one that evaluates it; `is_equivalent` compares
+        it, autograd keeps it, and the compile cache keeps traces from inside and outside a
+        scope apart. In a scope a transposed, non-batched quantized product of two or more
+        rows takes `qmm_splitk` with the K split that the reference rows would get, and skips
+        the NAX split-K route, which chooses its split from the row count; head-dim 256 causal
+        or masked attention takes the fused NAX kernel from 16 queries instead of 1024. Each
+        row of a prompt chunk then has the same bits whatever the chunk's length, the
+        batch-invariant kernel idea of Thinking Machines (2025) applied to prompt chunks. Ops
+        built outside a scope, and with 0 rows, take the routes they took before; one-row
+        products keep `qmv`, and attention of 8 or fewer queries keeps the vector kernels.
+        `state()` is unchanged, so an exported graph imports with 0. `tests/prefill_rows_tests.cpp`
+        checks that ops built outside a scope keep their bits, that each short product in a
+        scope matches the same rows of a 4096-row product, that compiled functions trace again
+        in a scope, and the head-dim 256 attention route.
+      globs:
+        - "mlx/utils.h"
+        - "mlx/utils.cpp"
+        - "mlx/backend/common/command_buffer_limits.h"
+        - "mlx/primitives.h"
+        - "mlx/primitives.cpp"
+        - "mlx/ops.cpp"
+        - "mlx/fast_primitives.h"
+        - "mlx/fast.cpp"
+        - "mlx/compile.cpp"
+        - "mlx/backend/metal/quantized.cpp"
+        - "mlx/backend/metal/scaled_dot_product_attention.cpp"
+        - "tests/prefill_rows_tests.cpp"
+        - "tests/CMakeLists.txt"
     - title: "GPT-OSS MXFP4 decode: masked-tail gathered qmv"
       description: |
         GPT-OSS 20B gathered MXFP4 decode has K=2880, which misses the fast vector kernel's

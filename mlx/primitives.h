@@ -1642,12 +1642,14 @@ class QuantizedMatmul : public UnaryPrimitive {
       int group_size,
       int bits,
       QuantizationMode mode,
-      bool transpose)
+      bool transpose,
+      int prefill_rows = 0)
       : UnaryPrimitive(stream),
         group_size_(group_size),
         bits_(bits),
         mode_(mode),
-        transpose_(transpose) {}
+        transpose_(transpose),
+        prefill_rows_(prefill_rows) {}
 
   void eval_cpu(const std::vector<array>& inputs, array& out) override;
   void eval_gpu(const std::vector<array>& inputs, array& out) override;
@@ -1660,12 +1662,18 @@ class QuantizedMatmul : public UnaryPrimitive {
   auto state() const {
     return std::make_tuple(group_size_, bits_, mode_, transpose_);
   }
+  // The building thread's prefill reference rows (`thread_prefill_rows`).
+  // Not part of `state()`: an exported graph imports with 0.
+  int prefill_rows() const {
+    return prefill_rows_;
+  }
 
  private:
   int group_size_;
   int bits_;
   QuantizationMode mode_;
   bool transpose_;
+  int prefill_rows_;
 };
 
 class QQMatmul : public UnaryPrimitive {

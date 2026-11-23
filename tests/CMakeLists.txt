@@ -25,8 +25,14 @@ if(MLX_BUILD_METAL)
       PROPERTIES TIMEOUT 60 ENVIRONMENT
                  "MLX_METAL_FAST_SYNCH=1;MLX_MAX_OPS_PER_BUFFER=${ops}")
   endforeach()
-  list(APPEND GPU_TEST_SOURCES residency_tests.cpp gptoss_mxfp4_tests.cpp
-       quantized_tile_tests.cpp qmv_batch_invariant_tests.cpp)
+  list(
+    APPEND
+    GPU_TEST_SOURCES
+    residency_tests.cpp
+    gptoss_mxfp4_tests.cpp
+    quantized_tile_tests.cpp
+    qmv_batch_invariant_tests.cpp
+    qmv_row_exact_tests.cpp)
   # MLX reads MLX_QMV_BATCH_INVARIANT once in each process, so this entry runs
   # the case again in a new process with the switch on. The tests entries run it
   # with the switch off. The entry fails also if no test case has this name.
@@ -39,6 +45,29 @@ if(MLX_BUILD_METAL)
   set_tests_properties(
     qmv_batch_invariant
     PROPERTIES ENVIRONMENT "MLX_QMV_BATCH_INVARIANT=1" PASS_REGULAR_EXPRESSION
+               "test cases: +1 \\| +1 passed \\| +0 failed")
+  # MLX reads MLX_QMV_ROW_EXACT once in each process, so this entry runs the
+  # case in a new process with the row-exact kernel on for 2 to 16 rows. The
+  # tests entries run it with the kernel off, and then it compares nothing.
+  add_test(NAME qmv_row_exact
+           COMMAND tests
+                   "--test-case=quantized matmul rows keep the bits of one row")
+  set_tests_properties(
+    qmv_row_exact
+    PROPERTIES ENVIRONMENT "MLX_QMV_ROW_EXACT=16" PASS_REGULAR_EXPRESSION
+               "test cases: +1 \\| +1 passed \\| +0 failed")
+  # With the two switches, the row-exact kernel serves each row count below the
+  # vector limit, and the batch-invariant case must stay correct.
+  add_test(
+    NAME qmv_row_exact_batch_invariant
+    COMMAND
+      tests
+      "--test-case=quantized matmul rows keep their bits below the vector limit"
+  )
+  set_tests_properties(
+    qmv_row_exact_batch_invariant
+    PROPERTIES ENVIRONMENT "MLX_QMV_ROW_EXACT=4;MLX_QMV_BATCH_INVARIANT=1"
+               PASS_REGULAR_EXPRESSION
                "test cases: +1 \\| +1 passed \\| +0 failed")
 endif()
 

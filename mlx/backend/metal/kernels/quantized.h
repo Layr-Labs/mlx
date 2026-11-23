@@ -1991,6 +1991,136 @@ template <
       simd_lid);
 }
 
+// The affine qmv for 2 to 8 rows of x in one launch. Each row gets the bits of
+// the one-row kernel (qmv_fast_impl if fast, else qmv_impl): the same lanes,
+// expressions and order of additions. The rows share only the weight read.
+template <typename T, int group_size, int bits, bool fast, int rows>
+[[kernel]] void affine_qmv_rows(
+    const device uint32_t* w [[buffer(0)]],
+    const device T* scales [[buffer(1)]],
+    const device T* biases [[buffer(2)]],
+    const device T* x [[buffer(3)]],
+    device T* y [[buffer(4)]],
+    const constant int& in_vec_size [[buffer(5)]],
+    const constant int& out_vec_size [[buffer(6)]],
+    const constant int& num_rows [[buffer(7)]],
+    uint3 tid [[threadgroup_position_in_grid]],
+    uint simd_gid [[simdgroup_index_in_threadgroup]],
+    uint simd_lid [[thread_index_in_simdgroup]]) {
+  static_assert(
+      bits == 4 || bits == 8, "Template undefined for bits not in {4, 8}");
+  constexpr int num_simdgroups = 4;
+  constexpr int results_per_simdgroup = 2;
+  constexpr int packs_per_thread = fast ? 2 : 1;
+  constexpr int pack_factor = get_affine_pack_factor<bits, 32>();
+  constexpr int bytes_per_pack = get_bytes_per_pack<bits, 32>();
+  constexpr int values_per_thread = pack_factor * packs_per_thread;
+  constexpr int block_size = values_per_thread * SIMD_SIZE;
+  constexpr int scale_step_per_thread = group_size / values_per_thread;
+  // A thread keeps the weights of a block as 16-bit words (4 bits) or bytes.
+  constexpr int words = bits == 4 ? values_per_thread / 4 : values_per_thread;
+
+  typedef float U;
+
+  thread U result[rows * results_per_simdgroup] = {0};
+  thread U scale[results_per_simdgroup];
+  thread U bias[results_per_simdgroup];
+  thread U accum[results_per_simdgroup];
+  thread uint16_t wv[results_per_simdgroup * words];
+
+  const int in_vec_size_w = in_vec_size * bytes_per_pack / pack_factor;
+  const int in_vec_size_g = in_vec_size / group_size;
+  const int out_row = tid.y * (num_simdgroups * results_per_simdgroup) +
+      simd_gid * results_per_simdgroup;
+  if (out_row >= out_vec_size) {
+    return;
+  }
+  // An output row after the last one uses the weights of the last one and is
+  // not stored. A row of x after the last one is the same.
+  const int last_row =
+      min(results_per_simdgroup - 1, out_vec_size - 1 - out_row);
+  const int first_vec = tid.x * rows;
+
+  const device uint8_t* ws = (const device uint8_t*)w +
+      out_row * in_vec_size_w + simd_lid * packs_per_thread * bytes_per_pack;
+  scales += out_row * in_vec_size_g + simd_lid / scale_step_per_thread;
+  biases += out_row * in_vec_size_g + simd_lid / scale_step_per_thread;
+  x += simd_lid * values_per_thread;
+
+  // The last block can be short. Its lanes after the end add nothing, as in
+  // qmv_impl.
+  const int num_blocks = (in_vec_size + block_size - 1) / block_size;
+  const int last_values = in_vec_size - (num_blocks - 1) * block_size;
+  const int lane = simd_lid * values_per_thread;
+
+  for (int b = 0; b < num_blocks; b++) {
+    if (b == num_blocks - 1 && lane >= last_values) {
+      break;
+    }
+    for (int row = 0; row < results_per_simdgroup; row++) {
+      int src = min(row, last_row);
+      const device uint8_t* wl = ws + src * in_vec_size_w;
+      for (int i = 0; i < words; i++) {
+        wv[row * words + i] =
+            bits == 4 ? ((const device uint16_t*)wl)[i] : uint16_t(wl[i]);
+      }
+      scale[row] = scales[src * in_vec_size_g];
+      bias[row] = biases[src * in_vec_size_g];
+    }
+
+    for (int t = 0; t < rows; t++) {
+      const device T* xl = x + min(first_vec + t, num_rows - 1) * in_vec_size;
+      U sum = 0;
+      for (int row = 0; row < results_per_simdgroup; row++) {
+        accum[row] = 0;
+      }
+      if (bits == 4) {
+        for (int i = 0; i < words; i++) {
+          sum += U(xl[4 * i]) + U(xl[4 * i + 1]) + U(xl[4 * i + 2]) +
+              U(xl[4 * i + 3]);
+          U x0 = xl[4 * i];
+          U x1 = xl[4 * i + 1] / 16.0f;
+          U x2 = xl[4 * i + 2] / 256.0f;
+          U x3 = xl[4 * i + 3] / 4096.0f;
+          for (int row = 0; row < results_per_simdgroup; row++) {
+            uint16_t wi = wv[row * words + i];
+            accum[row] +=
+                (x0 * (wi & 0x000f) + x1 * (wi & 0x00f0) + x2 * (wi & 0x0f00) +
+                 x3 * (wi & 0xf000));
+          }
+        }
+      } else {
+        for (int i = 0; i < words; i++) {
+          U xi = xl[i];
+          sum += xi;
+          for (int row = 0; row < results_per_simdgroup; row++) {
+            accum[row] += xi * wv[row * words + i];
+          }
+        }
+      }
+      for (int row = 0; row < results_per_simdgroup; row++) {
+        result[t * results_per_simdgroup + row] +=
+            scale[row] * accum[row] + sum * bias[row];
+      }
+    }
+
+    ws += block_size * bytes_per_pack / pack_factor;
+    scales += block_size / group_size;
+    biases += block_size / group_size;
+    x += block_size;
+  }
+
+  for (int t = 0; t < rows; t++) {
+    device T* yl = y + (first_vec + t) * out_vec_size + out_row;
+    for (int row = 0; row < results_per_simdgroup; row++) {
+      U r = simd_sum(result[t * results_per_simdgroup + row]);
+      if (simd_lid == 0 && row <= last_row && first_vec + t < num_rows) {
+        yl[row] = static_cast<T>(r);
+      }
+    }
+  }
+}
+
 template <
     typename T,
     int group_size,
